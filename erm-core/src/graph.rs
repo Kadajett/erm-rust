@@ -515,7 +515,10 @@ mod tests {
 
         assert_eq!(r.len(), b * l * d);
         assert_eq!(ew.len(), b * l * cfg.emax);
-        assert!(r.iter().all(|&v| v == 0.0), "r must be zero for empty graph");
+        assert!(
+            r.iter().all(|&v| v == 0.0),
+            "r must be zero for empty graph"
+        );
         assert!(
             ew.iter().all(|&v| v == 0.0),
             "edge_weights must be zero for empty graph"
