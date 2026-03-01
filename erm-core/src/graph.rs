@@ -645,6 +645,56 @@ mod tests {
     }
 
     #[test]
+    fn test_route_aggregate_no_nan_no_inf() {
+        // Verify no NaN or Inf appears in output even with varied phi/taint/age.
+        let cfg = ErmConfig {
+            batch_size: 2,
+            seq_len: 6,
+            emax: 4,
+            ..ErmConfig::default()
+        };
+        let mut g = RouteGraph::new(&cfg);
+
+        // Add edges with extreme phi/taint/age values.
+        g.add_edge(0, 0, 1, 0.0001).unwrap(); // very small phi
+        g.add_edge(0, 0, 2, 100.0).unwrap(); // large phi
+        let flat = g.idx(0, 0, 0);
+        g.taint[flat] = 4.9; // near taint_max
+        g.age[flat] = 10000; // very old edge
+
+        g.add_edge(1, 3, 0, 0.05).unwrap();
+        g.add_edge(1, 3, 5, 0.05).unwrap();
+        let flat2 = g.idx(1, 3, 1);
+        g.age[flat2] = 999;
+
+        let d = 8_usize;
+        let hidden: Vec<f32> = (0..cfg.batch_size * cfg.seq_len * d)
+            .map(|i| (i as f32) * 0.01 - 0.5)
+            .collect();
+
+        let (r, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+
+        for (i, &v) in r.iter().enumerate() {
+            assert!(!v.is_nan(), "NaN in r at index {i}");
+            assert!(!v.is_infinite(), "Inf in r at index {i}");
+        }
+        for (i, &v) in ew.iter().enumerate() {
+            assert!(!v.is_nan(), "NaN in edge_weights at index {i}");
+            assert!(!v.is_infinite(), "Inf in edge_weights at index {i}");
+        }
+    }
+
+    #[test]
+    fn test_route_aggregate_shape_mismatch() {
+        let cfg = test_config();
+        let g = RouteGraph::new(&cfg);
+
+        // Wrong hidden length.
+        let hidden = vec![1.0_f32; 5];
+        assert!(g.route_aggregate(&hidden, 8, EPS, LAMBDA, MU).is_err());
+    }
+
+    #[test]
     fn test_route_aggregate_timing() {
         use std::time::Instant;
 
@@ -677,5 +727,156 @@ mod tests {
         assert_eq!(ew.len(), cfg.batch_size * cfg.seq_len * cfg.emax);
         assert!(elapsed.as_secs() < 2);
         println!("route_aggregate B=8 L=128 Emax=16 d=256: {elapsed:?}");
+    }
+}
+
+// ── Proptest-based property tests ────────────────────────────────────────────
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::config::ErmConfig;
+    use proptest::prelude::*;
+
+    /// Default hyperparams for route_aggregate tests.
+    const EPS: f32 = 1e-6;
+    const LAMBDA: f32 = 1.0;
+    const MU: f32 = 0.01;
+
+    /// Strategy: generate a RouteGraph with random edges and matching hidden state.
+    ///
+    /// Fixed dims: B=2, L=8, Emax=4, d=16 to keep tests fast.
+    fn route_aggregate_inputs() -> impl Strategy<Value = (RouteGraph, Vec<f32>, usize)> {
+        let b = 2_usize;
+        let l = 8_usize;
+        let emax = 4_usize;
+        let d = 16_usize;
+
+        // Generate hidden values in a reasonable range.
+        let hidden_strategy = proptest::collection::vec(-10.0_f32..10.0_f32, b * l * d);
+
+        // Generate per-edge data: for each (b, i) slot, decide whether to fill.
+        let edge_fill = proptest::collection::vec(proptest::bool::ANY, b * l * emax);
+        let phi_vals = proptest::collection::vec(0.001_f32..10.0_f32, b * l * emax);
+        let taint_vals = proptest::collection::vec(0.0_f32..5.0_f32, b * l * emax);
+        let age_vals = proptest::collection::vec(0_i32..1000_i32, b * l * emax);
+
+        (hidden_strategy, edge_fill, phi_vals, taint_vals, age_vals).prop_map(
+            move |(hidden, fill, phi, taint, age)| {
+                let cfg = ErmConfig {
+                    batch_size: b,
+                    seq_len: l,
+                    emax,
+                    ..ErmConfig::default()
+                };
+                let mut g = RouteGraph::new(&cfg);
+
+                // Fill edges according to the random fill vector.
+                for bi in 0..b {
+                    for i in 0..l {
+                        for e in 0..emax {
+                            let flat = g.idx(bi, i, e);
+                            if fill[flat] {
+                                // Pick a valid source (any position in [0, L) except i itself).
+                                let src = if e % l != i { e % l } else { (e + 1) % l };
+                                g.nbr_idx[flat] = src as i32;
+                                g.phi[flat] = phi[flat];
+                                g.taint[flat] = taint[flat];
+                                g.age[flat] = age[flat];
+                            }
+                        }
+                    }
+                }
+
+                (g, hidden, d)
+            },
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+
+        /// Output shapes always match [B, L, d] and [B, L, Emax].
+        #[test]
+        fn prop_route_aggregate_output_shapes((ref g, ref hidden, d) in route_aggregate_inputs()) {
+            let (r, ew) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU).unwrap();
+            prop_assert_eq!(r.len(), g.batch_size * g.seq_len * d);
+            prop_assert_eq!(ew.len(), g.batch_size * g.seq_len * g.emax);
+        }
+
+        /// No NaN or Inf in output.
+        #[test]
+        fn prop_route_aggregate_no_nan_inf((ref g, ref hidden, d) in route_aggregate_inputs()) {
+            let (r, ew) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU).unwrap();
+            for &v in r.iter() {
+                prop_assert!(!v.is_nan(), "NaN in r");
+                prop_assert!(!v.is_infinite(), "Inf in r");
+            }
+            for &v in ew.iter() {
+                prop_assert!(!v.is_nan(), "NaN in ew");
+                prop_assert!(!v.is_infinite(), "Inf in ew");
+            }
+        }
+
+        /// Edge weights sum to ≈1.0 for destinations with valid neighbors;
+        /// exactly 0.0 for destinations with no neighbors.
+        #[test]
+        fn prop_route_aggregate_weights_sum((ref g, ref hidden, d) in route_aggregate_inputs()) {
+            let (_, ew) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU).unwrap();
+
+            for bi in 0..g.batch_size {
+                for i in 0..g.seq_len {
+                    let ew_base = (bi * g.seq_len + i) * g.emax;
+                    let has_valid = (0..g.emax).any(|e| {
+                        g.nbr_idx[g.idx(bi, i, e)] != EMPTY_SLOT
+                    });
+                    let weight_sum: f32 = ew[ew_base..ew_base + g.emax].iter().sum();
+
+                    if has_valid {
+                        prop_assert!(
+                            (weight_sum - 1.0).abs() < 1e-4,
+                            "weight sum {weight_sum} != 1.0 at ({bi}, {i})"
+                        );
+                    } else {
+                        prop_assert!(
+                            weight_sum == 0.0,
+                            "weight sum {weight_sum} != 0.0 at empty ({bi}, {i})"
+                        );
+                    }
+                }
+            }
+        }
+
+        /// EMPTY_SLOT neighbors always get zero weight.
+        #[test]
+        fn prop_route_aggregate_empty_slot_zero_weight((ref g, ref hidden, d) in route_aggregate_inputs()) {
+            let (_, ew) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU).unwrap();
+
+            for bi in 0..g.batch_size {
+                for i in 0..g.seq_len {
+                    for e in 0..g.emax {
+                        let flat = g.idx(bi, i, e);
+                        if g.nbr_idx[flat] == EMPTY_SLOT {
+                            let ew_idx = (bi * g.seq_len + i) * g.emax + e;
+                            let w = ew[ew_idx];
+                            prop_assert!(
+                                w == 0.0,
+                                "EMPTY_SLOT at ({}, {}, {}) has weight {}",
+                                bi, i, e, w
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        /// Deterministic: same input always produces the same output.
+        #[test]
+        fn prop_route_aggregate_deterministic((ref g, ref hidden, d) in route_aggregate_inputs()) {
+            let (r1, ew1) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU).unwrap();
+            let (r2, ew2) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU).unwrap();
+            prop_assert_eq!(&r1, &r2);
+            prop_assert_eq!(&ew1, &ew2);
+        }
     }
 }
