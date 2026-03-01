@@ -7,10 +7,6 @@ description = "Training loop, data pipeline, and optimization for the Emergent R
 
 [dependencies]
 erm-core = { path = "../erm-core" }
-burn = { workspace = true }
-burn-ndarray = { workspace = true }
-burn-autodiff = { workspace = true }
-tokenizers = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

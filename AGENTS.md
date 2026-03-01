@@ -78,6 +78,22 @@ These invariants must hold at ALL times. Add assertions in debug builds.
 - Format: `feat:`, `fix:`, `test:`, `docs:`, `refactor:`, `chore:`
 - Keep messages concise and descriptive
 
+## Critical Design Decisions (from Gemini audit — docs/gemini-audit.md)
+
+1. **Inference Δ must be unsupervised.** Training uses ground-truth CE, but inference has no ground truth. Use confidence-based delta:
+   `Δ_inf = Σ_{i in edited} [ max_v p(v|y_{t-1},G) - max_v p(v|y_t,G) ]`
+   Every function computing Δ must accept a `Mode::Train` / `Mode::Inference` flag.
+
+2. **Graph nodes must be semantic, not positional.** Position→position edges don't generalize across sentences. The persistent graph routes between vocabulary tokens or concept clusters. RouteAggregate maps positions → concept nodes → traverse pheromone edges → map back to positions. Positional graphs are acceptable for v1/prototyping but the architecture must support swapping to semantic nodes.
+
+3. **Pheromone deposit must be bounded.** Use `η * tanh(relu(Δ))` not just `η * relu(Δ)` to prevent single lucky trajectories from dominating the graph.
+
+4. **Follower score needs epsilon floor.** `score_i = conf_i * (route_strength_i + ε)` — zero route strength must not permanently kill positions.
+
+5. **Warm-start is mandatory.** Train scorer as plain denoiser for ~10% of steps before engaging pheromone graph. Random weights + random graph = reinforced garbage.
+
+6. **Ant death tracking is hard to vectorize.** Consider simpler alternative: randomize 10% of candidate pool each step instead of per-ant streak counters. Decide at Milestone 5.
+
 ## Common Mistakes (grows over time)
 
 1. **Computing A_L and A_F independently** — always derive: `A_F = A - A_L`

@@ -560,7 +560,7 @@ mod tests {
         let d = 2_usize;
         let bi: usize = 0;
         let l: usize = 3;
-        let mut hidden = vec![0.0_f32; 1 * l * d];
+        let mut hidden = vec![0.0_f32; l * d];
         hidden[0] = 10.0; // [b=0, pos=0, k=0]
         hidden[1] = 20.0; // [b=0, pos=0, k=1]
 
