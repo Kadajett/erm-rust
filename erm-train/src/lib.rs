@@ -27,3 +27,11 @@ pub mod dataset {
         pub t: Vec<i32>,
     }
 }
+
+#[cfg(test)]
+mod simple_test {
+    #[test]
+    fn test_simple() {
+        assert!(true);
+    }
+}

@@ -19,6 +19,7 @@ pub mod corruption;
 pub mod error;
 pub mod graph;
 pub mod scorer;
+pub mod tokenizer;
 pub mod types;
 
 // Re-export the most commonly used items at crate root.
