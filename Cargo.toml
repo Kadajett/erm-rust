@@ -1,0 +1,38 @@
+[workspace]
+members = ["erm-core", "erm-train", "erm-cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/your-org/erm-rust"
+
+[workspace.dependencies]
+# Deep learning framework — use ndarray backend for CPU-only dev, wgpu for GPU
+burn = { version = "0.20", default-features = false, features = ["std"] }
+burn-ndarray = { version = "0.20" }
+burn-autodiff = { version = "0.20" }
+burn-wgpu = { version = "0.20" }
+
+# Tokenization
+tokenizers = { version = "0.21", default-features = false, features = ["progressbar", "onig"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Random number generation
+rand = "0.8"
+rand_chacha = "0.3"
+
+# Dev dependencies
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1"

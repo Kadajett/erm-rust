@@ -1,0 +1,26 @@
+//! # erm-core
+//!
+//! Core library for the **Emergent Route Model** (ERM) — a non-autoregressive
+//! text generator that learns via stigmergic exploration and exploitation.
+//!
+//! This crate provides:
+//!
+//! - [`config`] — full hyperparameter configuration with serde support
+//! - [`types`] — core type aliases (TokenId, EdgeType, etc.)
+//! - [`error`] — error types for the entire ERM pipeline
+//! - [`graph`] — dense-neighbor route graph storage and mutation
+//! - [`corruption`] — discrete corruption schedule (mask/replace/keep)
+//! - [`scorer`] — neural scorer network (transformer encoder + output heads)
+//! - [`ants`] — ant colony structures, edit proposals, and conflict-free merge
+
+pub mod ants;
+pub mod config;
+pub mod corruption;
+pub mod error;
+pub mod graph;
+pub mod scorer;
+pub mod types;
+
+// Re-export the most commonly used items at crate root.
+pub use config::ErmConfig;
+pub use error::{ErmError, ErmResult};

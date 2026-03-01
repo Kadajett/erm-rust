@@ -1,0 +1,22 @@
+[package]
+name = "erm-train"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Training loop, data pipeline, and optimization for the Emergent Route Model"
+
+[dependencies]
+erm-core = { path = "../erm-core" }
+burn = { workspace = true }
+burn-ndarray = { workspace = true }
+burn-autodiff = { workspace = true }
+tokenizers = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }

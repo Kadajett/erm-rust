@@ -1,0 +1,20 @@
+[package]
+name = "erm-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CLI entrypoint for training, evaluation, and generation with the Emergent Route Model"
+
+[[bin]]
+name = "erm"
+path = "src/main.rs"
+
+[dependencies]
+erm-core = { path = "../erm-core" }
+erm-train = { path = "../erm-train" }
+burn = { workspace = true }
+burn-ndarray = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
