@@ -6,9 +6,6 @@ license.workspace = true
 description = "Core types, graph, scorer, corruption, and ant colony for the Emergent Route Model"
 
 [dependencies]
-burn = { workspace = true }
-burn-ndarray = { workspace = true }
-burn-autodiff = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

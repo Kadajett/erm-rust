@@ -208,19 +208,152 @@ impl RouteGraph {
         Ok(Some(removed_nbr))
     }
 
-    /// Placeholder for the differentiable route aggregation kernel.
+    /// Compute the route-aggregate message for all positions in a batch.
     ///
-    /// # Shape
+    /// For each destination position `(b, i)`, aggregates incoming neighbour
+    /// hidden states, weighted by a softmax over pheromone / taint / age scores:
     ///
-    /// Given hidden states `h: [B, L, d]`, computes `r: [B, L, d]` where each
-    /// `r[b, i, :]` is a weighted sum of neighbor hidden states gated by
-    /// pheromone, taint, and age.
+    /// ```text
+    /// w_raw[b,i,e] = log(φ[b,i,e] + ε) - λ · τ[b,i,e] - μ · age[b,i,e]
+    /// w[b,i,:]     = softmax(w_raw[b,i,:])   (−∞ mask on EMPTY_SLOT entries)
+    /// r[b,i,:]     = Σ_e  w[b,i,e] · h[b, nbr[b,i,e], :]
+    /// ```
     ///
-    /// # Panics
+    /// EMPTY_SLOT neighbours receive zero weight and contribute zero to `r`.
     ///
-    /// Always panics — this stub will be replaced in Phase 2.
-    pub fn route_aggregate(&self, _hidden: &[f32], _d: usize) -> Vec<f32> {
-        todo!("RouteAggregate kernel not yet implemented — Phase 2")
+    /// **Does not materialise `h_nbr [B, L, Emax, d]`** — iterates one
+    /// destination at a time to keep peak memory at `O(B · Emax · d)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `hidden` — source embeddings, **flat** layout `[B, L, d]`
+    ///   (row-major: index = `(b * L + i) * d + k`).
+    /// * `d` — hidden dimension.
+    /// * `epsilon` — additive constant for `log(phi + eps)`.  Use `1e-6`.
+    /// * `lambda` — taint penalty coefficient.
+    /// * `mu` — age penalty coefficient.
+    ///
+    /// # Returns
+    ///
+    /// `(r, edge_weights)` where:
+    ///
+    /// * `r` — route messages, flat `[B, L, d]`.
+    /// * `edge_weights` — per-edge softmax weights, flat `[B, L, Emax]`.
+    ///   Empty slots have weight `0.0`.  Weights sum to `≈1.0` for every
+    ///   `(b, i)` that has at least one valid neighbour; rows with no valid
+    ///   neighbours are all zeros.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErmError::ShapeMismatch`] if `hidden.len() != B * L * d`.
+    ///
+    /// # Shape reference
+    ///
+    /// | Tensor | Shape | Notes |
+    /// |---|---|---|
+    /// | `hidden` (input) | `[B, L, d]` | row-major flat |
+    /// | `r` (output) | `[B, L, d]` | row-major flat |
+    /// | `edge_weights` (output) | `[B, L, Emax]` | row-major flat |
+    pub fn route_aggregate(
+        &self,
+        hidden: &[f32],
+        d: usize,
+        epsilon: f32,
+        lambda: f32,
+        mu: f32,
+    ) -> ErmResult<(Vec<f32>, Vec<f32>)> {
+        let b = self.batch_size;
+        let l = self.seq_len;
+        let e = self.emax;
+
+        let expected_hidden = b * l * d;
+        if hidden.len() != expected_hidden {
+            return Err(ErmError::ShapeMismatch {
+                expected: format!("[B={b}, L={l}, d={d}] = {expected_hidden}"),
+                got: format!("{}", hidden.len()),
+            });
+        }
+
+        let mut r = vec![0.0_f32; b * l * d];
+        let mut edge_weights = vec![0.0_f32; b * l * e];
+
+        for bi in 0..b {
+            for i in 0..l {
+                // --- Compute raw scores for each edge slot ---
+                // w_raw[e] = log(phi + eps) - lambda * taint - mu * age
+                // EMPTY_SLOT → -inf (masked out)
+                let mut w_raw = [f32::NEG_INFINITY; 64]; // stack array; Emax ≤ 64
+                let w_raw = &mut w_raw[..e];
+                let mut any_valid = false;
+
+                // `ei` indexes both `w_raw` and the graph arrays via `self.idx`
+                // so an enumerate-iterator refactor would not reduce clarity.
+                #[allow(clippy::needless_range_loop)]
+                for ei in 0..e {
+                    let flat = self.idx(bi, i, ei);
+                    let nbr = self.nbr_idx[flat];
+                    if nbr == EMPTY_SLOT {
+                        w_raw[ei] = f32::NEG_INFINITY;
+                    } else {
+                        let phi_v = self.phi[flat];
+                        let taint_v = self.taint[flat];
+                        let age_v = self.age[flat] as f32;
+                        w_raw[ei] = (phi_v + epsilon).ln() - lambda * taint_v - mu * age_v;
+                        any_valid = true;
+                    }
+                }
+
+                if !any_valid {
+                    // All slots empty — r stays zero, weights stay zero.
+                    continue;
+                }
+
+                // --- Numerically stable softmax over valid edges ---
+                let max_w = w_raw
+                    .iter()
+                    .copied()
+                    .filter(|v| v.is_finite())
+                    .fold(f32::NEG_INFINITY, f32::max);
+
+                let mut exp_sum = 0.0_f32;
+                let mut exps = [0.0_f32; 64];
+                let exps = &mut exps[..e];
+                for ei in 0..e {
+                    if w_raw[ei].is_finite() {
+                        let v = (w_raw[ei] - max_w).exp();
+                        exps[ei] = v;
+                        exp_sum += v;
+                    }
+                }
+
+                // Normalise → softmax weights
+                let ew_base = (bi * l + i) * e;
+                for ei in 0..e {
+                    edge_weights[ew_base + ei] = if exp_sum > 0.0 {
+                        exps[ei] / exp_sum
+                    } else {
+                        0.0
+                    };
+                }
+
+                // --- Weighted sum of neighbour embeddings ---
+                let r_base = (bi * l + i) * d;
+                for ei in 0..e {
+                    let w = edge_weights[ew_base + ei];
+                    if w == 0.0 {
+                        continue;
+                    }
+                    let flat = self.idx(bi, i, ei);
+                    let nbr = self.nbr_idx[flat] as usize; // safe: w>0 ⇒ not EMPTY_SLOT
+                    let h_base = (bi * l + nbr) * d;
+                    for k in 0..d {
+                        r[r_base + k] += w * hidden[h_base + k];
+                    }
+                }
+            }
+        }
+
+        Ok((r, edge_weights))
     }
 }
 
@@ -237,6 +370,11 @@ mod tests {
             ..ErmConfig::default()
         }
     }
+
+    /// Default RouteAggregate hyperparams used in tests.
+    const EPS: f32 = 1e-6;
+    const LAMBDA: f32 = 1.0;
+    const MU: f32 = 0.01;
 
     #[test]
     fn test_init_shapes() {
@@ -359,5 +497,185 @@ mod tests {
         for &idx in &g.nbr_idx {
             assert!(idx == EMPTY_SLOT || (idx >= 0 && (idx as usize) < g.seq_len));
         }
+    }
+
+    // ── RouteAggregate unit tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_route_aggregate_empty_graph() {
+        // With all slots empty, r must be zeros. Edge weights must also be zeros.
+        let cfg = test_config();
+        let g = RouteGraph::new(&cfg);
+        let b = cfg.batch_size;
+        let l = cfg.seq_len;
+        let d = 8_usize;
+
+        let hidden = vec![1.0_f32; b * l * d];
+        let (r, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+
+        assert_eq!(r.len(), b * l * d);
+        assert_eq!(ew.len(), b * l * cfg.emax);
+        assert!(
+            r.iter().all(|&v| v == 0.0),
+            "r must be zero for empty graph"
+        );
+        assert!(
+            ew.iter().all(|&v| v == 0.0),
+            "edge_weights must be zero for empty graph"
+        );
+    }
+
+    #[test]
+    fn test_route_aggregate_output_shapes() {
+        // Verify r shape [B, L, d] and edge_weights shape [B, L, Emax].
+        let cfg = ErmConfig {
+            batch_size: 3,
+            seq_len: 5,
+            emax: 4,
+            ..ErmConfig::default()
+        };
+        let mut g = RouteGraph::new(&cfg);
+        g.add_edge(0, 1, 0, 0.5).unwrap();
+
+        let d = 16_usize;
+        let hidden = vec![0.5_f32; cfg.batch_size * cfg.seq_len * d];
+        let (r, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+
+        assert_eq!(r.len(), cfg.batch_size * cfg.seq_len * d);
+        assert_eq!(ew.len(), cfg.batch_size * cfg.seq_len * cfg.emax);
+    }
+
+    #[test]
+    fn test_route_aggregate_single_edge() {
+        // Manually verify the math for a single edge.
+        let cfg = ErmConfig {
+            batch_size: 1,
+            seq_len: 3,
+            emax: 2,
+            ..ErmConfig::default()
+        };
+        let mut g = RouteGraph::new(&cfg);
+        g.add_edge(0, 1, 0, 1.0).unwrap();
+
+        let d = 2_usize;
+        let bi: usize = 0;
+        let l: usize = 3;
+        let mut hidden = vec![0.0_f32; l * d];
+        hidden[0] = 10.0; // [b=0, pos=0, k=0]
+        hidden[1] = 20.0; // [b=0, pos=0, k=1]
+
+        let (r, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+
+        let r_base = (bi * l + 1) * d;
+        assert!((r[r_base] - 10.0).abs() < 1e-4);
+        assert!((r[r_base + 1] - 20.0).abs() < 1e-4);
+
+        let emax = cfg.emax;
+        let ew_base = (bi * l + 1) * emax;
+        assert!((ew[ew_base] - 1.0).abs() < 1e-4);
+        assert_eq!(ew[ew_base + 1], 0.0);
+    }
+
+    #[test]
+    fn test_route_aggregate_empty_slot_zero_weight() {
+        let cfg = ErmConfig {
+            batch_size: 1,
+            seq_len: 4,
+            emax: 3,
+            ..ErmConfig::default()
+        };
+        let mut g = RouteGraph::new(&cfg);
+        g.add_edge(0, 2, 1, 0.5).unwrap();
+
+        let bi: usize = 0;
+        let l: usize = 4;
+        let emax: usize = 3;
+        let d = 4_usize;
+        let hidden = vec![1.0_f32; l * d];
+        let (_, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+
+        let ew_base = (bi * l + 2) * emax;
+        assert!(ew[ew_base] > 0.0);
+        assert_eq!(ew[ew_base + 1], 0.0);
+        assert_eq!(ew[ew_base + 2], 0.0);
+    }
+
+    #[test]
+    fn test_route_aggregate_weights_sum_one() {
+        let cfg = ErmConfig {
+            batch_size: 1,
+            seq_len: 5,
+            emax: 4,
+            ..ErmConfig::default()
+        };
+        let mut g = RouteGraph::new(&cfg);
+        g.add_edge(0, 3, 0, 1.0).unwrap();
+        g.add_edge(0, 3, 1, 0.5).unwrap();
+        g.add_edge(0, 3, 2, 2.0).unwrap();
+
+        let bi: usize = 0;
+        let l: usize = 5;
+        let emax: usize = 4;
+        let d = 8_usize;
+        let hidden = vec![1.0_f32; l * d];
+        let (_, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+
+        let ew_base = (bi * l + 3) * emax;
+        let weight_sum: f32 = ew[ew_base..ew_base + emax].iter().sum();
+        assert!((weight_sum - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_route_aggregate_deterministic() {
+        let cfg = test_config();
+        let mut g = RouteGraph::new(&cfg);
+        g.add_edge(0, 0, 1, 0.8).unwrap();
+        g.add_edge(0, 0, 3, 0.3).unwrap();
+
+        let d = 6_usize;
+        let hidden: Vec<f32> = (0..cfg.batch_size * cfg.seq_len * d)
+            .map(|i| i as f32 * 0.1)
+            .collect();
+
+        let (r1, ew1) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+        let (r2, ew2) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+
+        assert_eq!(r1, r2);
+        assert_eq!(ew1, ew2);
+    }
+
+    #[test]
+    fn test_route_aggregate_timing() {
+        use std::time::Instant;
+
+        let cfg = ErmConfig {
+            batch_size: 8,
+            seq_len: 128,
+            emax: 16,
+            hidden_dim: 256,
+            ..ErmConfig::default()
+        };
+        let mut g = RouteGraph::new(&cfg);
+
+        for bi in 0..cfg.batch_size {
+            for i in 0..cfg.seq_len {
+                let src1 = if i > 0 { i - 1 } else { 0 };
+                let src2 = if i + 1 < cfg.seq_len { i + 1 } else { i };
+                let _ = g.add_edge(bi, i, src1, 1.0);
+                let _ = g.add_edge(bi, i, src2, 0.5);
+            }
+        }
+
+        let d = 256_usize;
+        let hidden = vec![0.01_f32; cfg.batch_size * cfg.seq_len * d];
+
+        let t0 = Instant::now();
+        let (r, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+        let elapsed = t0.elapsed();
+
+        assert_eq!(r.len(), cfg.batch_size * cfg.seq_len * d);
+        assert_eq!(ew.len(), cfg.batch_size * cfg.seq_len * cfg.emax);
+        assert!(elapsed.as_secs() < 2);
+        println!("route_aggregate B=8 L=128 Emax=16 d=256: {elapsed:?}");
     }
 }
