@@ -19,9 +19,14 @@
 //!
 //! Total: < 1 MB — negligible.
 
+use rand::Rng;
+
 use serde::{Deserialize, Serialize};
 
 use crate::config::ErmConfig;
+use crate::error::{ErmError, ErmResult};
+use crate::graph::{RouteGraph, EMPTY_SLOT};
+use crate::merge::SimpleEditProposal;
 use crate::types::{AntIdx, BatchIdx, PosIdx, TokenId};
 
 /// Type of an ant in the colony.
@@ -263,6 +268,286 @@ pub fn apply_edits(y_t: &[TokenId], merged: &MergedEdits) -> Vec<TokenId> {
         .collect()
 }
 
+/// Configuration for follower ant sampling.
+#[derive(Debug, Clone)]
+pub struct FollowerConfig {
+    /// Epsilon floor for route strength (prevents zero-strength positions from
+    /// being permanently ignored).
+    pub epsilon: f32,
+    /// Sampling temperature for token selection (< 1.0 = more conservative).
+    pub temperature: f32,
+    /// Maximum positions each ant proposes edits at.
+    pub pmax: usize,
+    /// Top-k candidates per position.
+    pub topk: usize,
+}
+
+impl Default for FollowerConfig {
+    fn default() -> Self {
+        Self {
+            epsilon: 1e-4,
+            temperature: 0.7,
+            pmax: 8,
+            topk: 8,
+        }
+    }
+}
+
+impl FollowerConfig {
+    /// Build from the global ErmConfig.
+    #[must_use]
+    pub fn from_config(config: &ErmConfig) -> Self {
+        Self {
+            epsilon: 1e-4,
+            temperature: 0.7,
+            pmax: config.pmax,
+            topk: config.topk,
+        }
+    }
+}
+
+/// Ant colony that produces edit proposals from follower ants.
+///
+/// Followers exploit existing route graph pheromone trails and scorer confidence
+/// to select high-value edit positions, then sample replacement tokens from the
+/// top-k logit candidates with low temperature.
+pub struct AntColony;
+
+impl AntColony {
+    /// Sample follower edit proposals from scorer logits and route graph.
+    ///
+    /// For each follower ant, scores every editable position by:
+    ///
+    /// ```text
+    /// score_i = conf_i * (route_strength_i + epsilon)
+    /// ```
+    ///
+    /// where:
+    /// - `conf_i = max(softmax(logits[i]))` (prediction confidence)
+    /// - `route_strength_i = Σ_e φ[i,e]` for valid edges to position `i`
+    /// - `epsilon` is the epsilon floor per AGENTS.md
+    ///
+    /// Then samples `pmax` positions per ant weighted by score, and for each
+    /// position samples a token from the top-k logits with temperature scaling.
+    ///
+    /// # Arguments
+    ///
+    /// - `logits`: flat `[L * V]` logit values for one sequence.
+    /// - `graph`: route graph providing pheromone strengths.
+    /// - `batch_idx`: which batch element to look up in the graph.
+    /// - `follower_config`: sampling parameters (epsilon, temperature, pmax, topk).
+    /// - `editable`: boolean mask `[L]`, `true` = position may be edited.
+    /// - `num_followers`: number of follower ants to sample proposals for.
+    /// - `first_follower_id`: ant id offset for the first follower.
+    /// - `seq_len`: sequence length `L`.
+    /// - `vocab_size`: vocabulary size `V`.
+    /// - `rng`: random number generator.
+    ///
+    /// # Returns
+    ///
+    /// A vector of [`SimpleEditProposal`]s (one per position per ant).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErmError::ShapeMismatch`] if input dimensions don't match.
+    ///
+    /// # Shape reference
+    ///
+    /// | Tensor | Shape |
+    /// |---|---|
+    /// | `logits` (input) | `[L, V]` flat |
+    /// | `editable` (input) | `[L]` |
+    /// | output | `Vec<SimpleEditProposal>`, up to `num_followers * pmax` |
+    #[allow(clippy::too_many_arguments)]
+    pub fn sample_follower_proposals<R: Rng>(
+        logits: &[f32],
+        graph: &RouteGraph,
+        batch_idx: usize,
+        follower_config: &FollowerConfig,
+        editable: &[bool],
+        num_followers: usize,
+        first_follower_id: usize,
+        seq_len: usize,
+        vocab_size: usize,
+        rng: &mut R,
+    ) -> ErmResult<Vec<SimpleEditProposal>> {
+        let expected_logits = seq_len * vocab_size;
+        if logits.len() != expected_logits {
+            return Err(ErmError::ShapeMismatch {
+                expected: format!("[L={seq_len}, V={vocab_size}] = {expected_logits}"),
+                got: format!("{}", logits.len()),
+            });
+        }
+        if editable.len() != seq_len {
+            return Err(ErmError::ShapeMismatch {
+                expected: format!("editable length = {seq_len}"),
+                got: format!("{}", editable.len()),
+            });
+        }
+
+        let epsilon = follower_config.epsilon;
+        let temperature = follower_config.temperature;
+        let pmax = follower_config.pmax;
+        let topk = follower_config.topk.min(vocab_size);
+
+        // Step 1: Compute per-position scores.
+        // conf_i = max(softmax(logits[i]))
+        // route_strength_i = sum of phi for valid neighbors of i
+        // score_i = conf_i * (route_strength_i + epsilon) if editable[i]
+        let mut scores = Vec::with_capacity(seq_len);
+        let mut confs = Vec::with_capacity(seq_len);
+
+        for (i, &is_editable) in editable.iter().enumerate() {
+            if !is_editable {
+                scores.push(0.0_f32);
+                confs.push(0.0_f32);
+                continue;
+            }
+
+            // Compute softmax max for numerical stability, then conf.
+            let row_start = i * vocab_size;
+            let row = &logits[row_start..row_start + vocab_size];
+
+            let max_logit = row.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+            let mut exp_sum = 0.0_f32;
+            for &v in row {
+                exp_sum += (v - max_logit).exp();
+            }
+
+            // conf_i = max probability in softmax
+            let mut max_prob = 0.0_f32;
+            for &v in row {
+                let p = (v - max_logit).exp() / exp_sum;
+                if p > max_prob {
+                    max_prob = p;
+                }
+            }
+
+            confs.push(max_prob);
+
+            // route_strength_i = sum of phi for valid edges at this position.
+            let mut route_strength = 0.0_f32;
+            if batch_idx < graph.batch_size && i < graph.seq_len {
+                for e in 0..graph.emax {
+                    let flat = graph.idx(batch_idx, i, e);
+                    if graph.nbr_idx[flat] != EMPTY_SLOT {
+                        route_strength += graph.phi[flat];
+                    }
+                }
+            }
+
+            let score = max_prob * (route_strength + epsilon);
+            scores.push(score);
+        }
+
+        // Step 2: Build CDF for weighted sampling over editable positions.
+        let editable_positions: Vec<usize> = (0..seq_len).filter(|&i| editable[i]).collect();
+        if editable_positions.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let score_sum: f32 = editable_positions.iter().map(|&i| scores[i]).sum();
+
+        // Step 3: For each follower ant, sample pmax positions and propose tokens.
+        let mut proposals = Vec::with_capacity(num_followers * pmax);
+
+        for ant_offset in 0..num_followers {
+            let ant_id = first_follower_id + ant_offset;
+
+            // Sample pmax positions (with replacement for simplicity).
+            let mut sampled_positions = Vec::with_capacity(pmax);
+
+            for _ in 0..pmax {
+                let pos = if score_sum > 0.0 {
+                    // Weighted sampling.
+                    let r: f32 = rng.gen::<f32>() * score_sum;
+                    let mut cumulative = 0.0_f32;
+                    let mut chosen = editable_positions[editable_positions.len() - 1];
+                    for &p in &editable_positions {
+                        cumulative += scores[p];
+                        if cumulative >= r {
+                            chosen = p;
+                            break;
+                        }
+                    }
+                    chosen
+                } else {
+                    // Uniform fallback.
+                    let idx = rng.gen_range(0..editable_positions.len());
+                    editable_positions[idx]
+                };
+                sampled_positions.push(pos);
+            }
+
+            // Deduplicate positions (keep first occurrence).
+            sampled_positions.sort_unstable();
+            sampled_positions.dedup();
+
+            // For each sampled position, pick a token from top-k with temperature.
+            for pos in sampled_positions {
+                let row_start = pos * vocab_size;
+                let row = &logits[row_start..row_start + vocab_size];
+
+                // Find top-k indices and scores.
+                let mut indexed: Vec<(u32, f32)> = row
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &v)| (j as u32, v))
+                    .collect();
+
+                if topk < vocab_size {
+                    indexed.select_nth_unstable_by(topk - 1, |a, b| {
+                        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                }
+                let top_slice = &mut indexed[..topk];
+
+                // Apply temperature and sample from softmax over top-k.
+                let max_val = top_slice
+                    .iter()
+                    .map(|(_, v)| *v)
+                    .fold(f32::NEG_INFINITY, f32::max);
+
+                let mut exp_vals: Vec<f32> = top_slice
+                    .iter()
+                    .map(|(_, v)| ((v - max_val) / temperature).exp())
+                    .collect();
+
+                let exp_sum: f32 = exp_vals.iter().sum();
+                if exp_sum > 0.0 {
+                    for v in &mut exp_vals {
+                        *v /= exp_sum;
+                    }
+                }
+
+                // Sample token from this distribution.
+                let r: f32 = rng.gen();
+                let mut cumulative = 0.0_f32;
+                let mut chosen_idx = 0;
+                for (j, &p) in exp_vals.iter().enumerate() {
+                    cumulative += p;
+                    if cumulative >= r {
+                        chosen_idx = j;
+                        break;
+                    }
+                }
+
+                let token = top_slice[chosen_idx].0;
+                let predicted_gain = confs[pos] * scores[pos];
+
+                proposals.push(SimpleEditProposal {
+                    position: pos,
+                    token,
+                    predicted_gain,
+                    ant_id,
+                });
+            }
+        }
+
+        Ok(proposals)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,5 +706,243 @@ mod tests {
         let m2 = merge_edits(&proposals, &editable, &cfg);
         assert_eq!(m1.best_tok, m2.best_tok);
         assert_eq!(m1.num_edited, m2.num_edited);
+    }
+
+    // ── Follower ant sampler tests ──────────────────────────────────────
+
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+
+    #[test]
+    fn test_follower_produces_valid_proposals() {
+        let seq_len = 8;
+        let vocab_size = 16;
+        let cfg = ErmConfig {
+            batch_size: 1,
+            seq_len,
+            vocab_size,
+            emax: 4,
+            ..ErmConfig::default()
+        };
+        let graph = RouteGraph::new(&cfg);
+        let editable = vec![true; seq_len];
+        let follower_cfg = FollowerConfig {
+            epsilon: 1e-4,
+            temperature: 0.7,
+            pmax: 4,
+            topk: 4,
+        };
+
+        // Random logits.
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let logits: Vec<f32> = (0..seq_len * vocab_size)
+            .map(|i| (i as f32 * 0.1) - 5.0)
+            .collect();
+
+        let proposals = AntColony::sample_follower_proposals(
+            &logits,
+            &graph,
+            0,
+            &follower_cfg,
+            &editable,
+            3, // 3 followers
+            0, // first follower id
+            seq_len,
+            vocab_size,
+            &mut rng,
+        )
+        .unwrap();
+
+        // Check all proposals are valid.
+        for p in &proposals {
+            assert!(p.position < seq_len, "position {} out of range", p.position);
+            assert!(
+                (p.token as usize) < vocab_size,
+                "token {} out of vocab range {}",
+                p.token,
+                vocab_size
+            );
+            assert!(p.predicted_gain.is_finite(), "gain must be finite");
+            assert!(p.ant_id < 3, "ant_id {} out of range", p.ant_id);
+        }
+
+        // Should produce some proposals (not empty).
+        assert!(
+            !proposals.is_empty(),
+            "should produce at least some proposals"
+        );
+    }
+
+    #[test]
+    fn test_follower_deterministic_with_seed() {
+        let seq_len = 8;
+        let vocab_size = 16;
+        let cfg = ErmConfig {
+            batch_size: 1,
+            seq_len,
+            vocab_size,
+            emax: 4,
+            ..ErmConfig::default()
+        };
+        let graph = RouteGraph::new(&cfg);
+        let editable = vec![true; seq_len];
+        let follower_cfg = FollowerConfig {
+            epsilon: 1e-4,
+            temperature: 0.7,
+            pmax: 4,
+            topk: 4,
+        };
+
+        let logits: Vec<f32> = (0..seq_len * vocab_size)
+            .map(|i| (i as f32 * 0.1) - 5.0)
+            .collect();
+
+        let mut rng1 = ChaCha8Rng::seed_from_u64(123);
+        let p1 = AntColony::sample_follower_proposals(
+            &logits,
+            &graph,
+            0,
+            &follower_cfg,
+            &editable,
+            2,
+            0,
+            seq_len,
+            vocab_size,
+            &mut rng1,
+        )
+        .unwrap();
+
+        let mut rng2 = ChaCha8Rng::seed_from_u64(123);
+        let p2 = AntColony::sample_follower_proposals(
+            &logits,
+            &graph,
+            0,
+            &follower_cfg,
+            &editable,
+            2,
+            0,
+            seq_len,
+            vocab_size,
+            &mut rng2,
+        )
+        .unwrap();
+
+        assert_eq!(p1.len(), p2.len());
+        for (a, b) in p1.iter().zip(p2.iter()) {
+            assert_eq!(a.position, b.position);
+            assert_eq!(a.token, b.token);
+            assert_eq!(a.ant_id, b.ant_id);
+            assert!((a.predicted_gain - b.predicted_gain).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_follower_respects_non_editable() {
+        let seq_len = 4;
+        let vocab_size = 8;
+        let cfg = ErmConfig {
+            batch_size: 1,
+            seq_len,
+            vocab_size,
+            emax: 2,
+            ..ErmConfig::default()
+        };
+        let graph = RouteGraph::new(&cfg);
+        // Only position 2 is editable.
+        let editable = vec![false, false, true, false];
+        let follower_cfg = FollowerConfig {
+            epsilon: 1e-4,
+            temperature: 0.7,
+            pmax: 4,
+            topk: 4,
+        };
+
+        let logits: Vec<f32> = (0..seq_len * vocab_size).map(|i| i as f32).collect();
+        let mut rng = ChaCha8Rng::seed_from_u64(77);
+
+        let proposals = AntColony::sample_follower_proposals(
+            &logits,
+            &graph,
+            0,
+            &follower_cfg,
+            &editable,
+            5,
+            0,
+            seq_len,
+            vocab_size,
+            &mut rng,
+        )
+        .unwrap();
+
+        // All proposals must be at position 2.
+        for p in &proposals {
+            assert_eq!(p.position, 2, "only position 2 is editable");
+        }
+    }
+
+    #[test]
+    fn test_follower_no_editable_returns_empty() {
+        let seq_len = 4;
+        let vocab_size = 8;
+        let cfg = ErmConfig {
+            batch_size: 1,
+            seq_len,
+            vocab_size,
+            emax: 2,
+            ..ErmConfig::default()
+        };
+        let graph = RouteGraph::new(&cfg);
+        let editable = vec![false; seq_len];
+        let follower_cfg = FollowerConfig::default();
+
+        let logits = vec![0.0_f32; seq_len * vocab_size];
+        let mut rng = ChaCha8Rng::seed_from_u64(0);
+
+        let proposals = AntColony::sample_follower_proposals(
+            &logits,
+            &graph,
+            0,
+            &follower_cfg,
+            &editable,
+            3,
+            0,
+            seq_len,
+            vocab_size,
+            &mut rng,
+        )
+        .unwrap();
+
+        assert!(proposals.is_empty());
+    }
+
+    #[test]
+    fn test_follower_shape_mismatch() {
+        let cfg = ErmConfig {
+            batch_size: 1,
+            seq_len: 4,
+            vocab_size: 8,
+            emax: 2,
+            ..ErmConfig::default()
+        };
+        let graph = RouteGraph::new(&cfg);
+        let editable = vec![true; 4];
+        let follower_cfg = FollowerConfig::default();
+        let mut rng = ChaCha8Rng::seed_from_u64(0);
+
+        // Wrong logits size.
+        let bad_logits = vec![0.0_f32; 10];
+        assert!(AntColony::sample_follower_proposals(
+            &bad_logits,
+            &graph,
+            0,
+            &follower_cfg,
+            &editable,
+            1,
+            0,
+            4,
+            8,
+            &mut rng,
+        )
+        .is_err());
     }
 }

@@ -12,14 +12,20 @@
 //! - [`corruption`] — discrete corruption schedule (mask/replace/keep)
 //! - [`scorer`] — neural scorer network (transformer encoder + output heads)
 //! - [`ants`] — ant colony structures, edit proposals, and conflict-free merge
+//! - [`topk`] — top-k extraction from logits
+//! - [`merge`] — conflict-free merge of edit proposals with per-ant Δ
+//! - [`refinement`] — one-step refinement pipeline
 
 pub mod ants;
 pub mod config;
 pub mod corruption;
 pub mod error;
 pub mod graph;
+pub mod merge;
+pub mod refinement;
 pub mod scorer;
 pub mod tokenizer;
+pub mod topk;
 pub mod types;
 
 // Re-export the most commonly used items at crate root.
