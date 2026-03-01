@@ -217,8 +217,16 @@ mod tests {
 
         let result = train_step(&scorer, &batch, Some(3), &cfg, &mut rng).unwrap();
 
-        assert!(result.loss.is_finite(), "loss should be finite, got {}", result.loss);
-        assert!(result.loss >= 0.0, "loss should be non-negative, got {}", result.loss);
+        assert!(
+            result.loss.is_finite(),
+            "loss should be finite, got {}",
+            result.loss
+        );
+        assert!(
+            result.loss >= 0.0,
+            "loss should be non-negative, got {}",
+            result.loss
+        );
     }
 
     #[test]
@@ -234,8 +242,13 @@ mod tests {
         let mut rng2 = ChaCha8Rng::seed_from_u64(100);
         let batch2 = ds.get_batch(2, &mut rng2);
         let result2 = train_step(
-            &scorer, &batch2, Some(cfg.refinement_steps), &cfg, &mut rng2,
-        ).unwrap();
+            &scorer,
+            &batch2,
+            Some(cfg.refinement_steps),
+            &cfg,
+            &mut rng2,
+        )
+        .unwrap();
 
         // Both should be finite
         assert!(result1.loss.is_finite());
@@ -284,7 +297,10 @@ mod tests {
         let mut logits = vec![0.0f32; 10];
         logits[3] = 100.0;
         let ce = cross_entropy_loss(&logits, 3);
-        assert!(ce < 0.01, "confident prediction CE should be near 0, got {ce}");
+        assert!(
+            ce < 0.01,
+            "confident prediction CE should be near 0, got {ce}"
+        );
     }
 
     #[test]

@@ -54,14 +54,9 @@ impl TextDataset {
     /// # Errors
     ///
     /// Returns an error if the file cannot be read or produces too few tokens.
-    pub fn from_file(
-        path: &str,
-        tokenizer: &CharTokenizer,
-        seq_len: usize,
-    ) -> ErmResult<Self> {
-        let text = std::fs::read_to_string(path).map_err(|e| {
-            ErmError::InvalidConfig(format!("cannot read file {path}: {e}"))
-        })?;
+    pub fn from_file(path: &str, tokenizer: &CharTokenizer, seq_len: usize) -> ErmResult<Self> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| ErmError::InvalidConfig(format!("cannot read file {path}: {e}")))?;
 
         Self::from_text(&text, tokenizer, seq_len)
     }
@@ -77,11 +72,7 @@ impl TextDataset {
     /// # Errors
     ///
     /// Returns an error if the text produces fewer tokens than `seq_len`.
-    pub fn from_text(
-        text: &str,
-        tokenizer: &CharTokenizer,
-        seq_len: usize,
-    ) -> ErmResult<Self> {
+    pub fn from_text(text: &str, tokenizer: &CharTokenizer, seq_len: usize) -> ErmResult<Self> {
         let all_tokens = tokenizer.encode(text);
 
         if all_tokens.len() < seq_len {
@@ -199,7 +190,7 @@ mod tests {
     fn test_dataset_not_empty() {
         let ds = make_dataset();
         assert!(!ds.is_empty());
-        assert!(ds.len() > 0);
+        assert!(!ds.is_empty());
     }
 
     #[test]
@@ -232,10 +223,7 @@ mod tests {
 
         let vocab = tokenizer.vocab_size() as u32;
         for &tok in &batch.tokens {
-            assert!(
-                tok < vocab,
-                "token {tok} out of vocab range [0, {vocab})"
-            );
+            assert!(tok < vocab, "token {tok} out of vocab range [0, {vocab})");
         }
     }
 

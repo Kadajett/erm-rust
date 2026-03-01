@@ -73,31 +73,23 @@ impl FeedForwardBlock {
     /// Input: `x` of length `d`.
     /// Output: `x + down(relu(up(x)))` of length `d`.
     fn forward_vec(&self, x: &[f32]) -> Vec<f32> {
-        // up: [4d] = W_up @ x + b_up
-        let mut hidden = vec![0.0f32; self.d_inner];
-        for i in 0..self.d_inner {
-            let mut sum = self.b_up[i];
-            let row_start = i * self.d_in;
-            for j in 0..self.d_in {
-                sum += self.w_up[row_start + j] * x[j];
-            }
-            // ReLU
-            hidden[i] = sum.max(0.0);
-        }
+        // up: [4d] = W_up @ x + b_up, then ReLU
+        let hidden: Vec<f32> = (0..self.d_inner)
+            .map(|i| {
+                let row = &self.w_up[i * self.d_in..(i + 1) * self.d_in];
+                let dot: f32 = row.iter().zip(x.iter()).map(|(&w, &xi)| w * xi).sum();
+                (dot + self.b_up[i]).max(0.0) // ReLU
+            })
+            .collect();
 
-        // down: [d] = W_down @ hidden + b_down
-        let mut out = vec![0.0f32; self.d_in];
-        for i in 0..self.d_in {
-            let mut sum = self.b_down[i];
-            let row_start = i * self.d_inner;
-            for j in 0..self.d_inner {
-                sum += self.w_down[row_start + j] * hidden[j];
-            }
-            // Residual connection
-            out[i] = x[i] + sum;
-        }
-
-        out
+        // down: [d] = W_down @ hidden + b_down + x (residual)
+        (0..self.d_in)
+            .map(|i| {
+                let row = &self.w_down[i * self.d_inner..(i + 1) * self.d_inner];
+                let dot: f32 = row.iter().zip(hidden.iter()).map(|(&w, &hi)| w * hi).sum();
+                x[i] + dot + self.b_down[i] // residual
+            })
+            .collect()
     }
 }
 
@@ -238,10 +230,11 @@ impl Scorer {
                 let pos_start = pos * d;
 
                 // h = token_emb[tok_id] + pos_emb[pos]
-                let mut h = vec![0.0f32; d];
-                for i in 0..d {
-                    h[i] = self.token_emb[tok_start + i] + self.pos_emb[pos_start + i];
-                }
+                let mut h: Vec<f32> = self.token_emb[tok_start..tok_start + d]
+                    .iter()
+                    .zip(&self.pos_emb[pos_start..pos_start + d])
+                    .map(|(&te, &pe)| te + pe)
+                    .collect();
 
                 // Pass through feed-forward blocks
                 for block in &self.blocks {
@@ -250,19 +243,24 @@ impl Scorer {
 
                 // Logit head: [V] = W_logit @ h + b_logit
                 for vi in 0..v {
-                    let row_start = vi * d;
-                    let mut sum = self.logit_b[vi];
-                    for j in 0..d {
-                        sum += self.logit_w[row_start + j] * h[j];
-                    }
+                    let row = &self.logit_w[vi * d..(vi + 1) * d];
+                    let sum: f32 = row
+                        .iter()
+                        .zip(h.iter())
+                        .map(|(&w, &hj)| w * hj)
+                        .sum::<f32>()
+                        + self.logit_b[vi];
                     logits.push(sum);
                 }
 
                 // Uncertainty head: scalar = sigmoid(W_unc @ h + b_unc)
-                let mut u_raw = self.uncertainty_b[0];
-                for j in 0..d {
-                    u_raw += self.uncertainty_w[j] * h[j];
-                }
+                let u_raw: f32 = self
+                    .uncertainty_w
+                    .iter()
+                    .zip(h.iter())
+                    .map(|(&w, &hj)| w * hj)
+                    .sum::<f32>()
+                    + self.uncertainty_b[0];
                 let u = sigmoid(u_raw);
                 uncertainty.push(u);
             }
@@ -274,7 +272,7 @@ impl Scorer {
         })
     }
 
-    /// Collect all weights into a single flat vector (for serialization/inspection).
+    /// Count total number of parameters in the scorer.
     #[must_use]
     pub fn num_parameters(&self) -> usize {
         let mut count = 0;
@@ -306,10 +304,9 @@ fn sigmoid(x: f32) -> f32 {
 
 /// Generate a vector of random floats from `N(0, scale)`.
 fn random_vec(len: usize, scale: f32, rng: &mut ChaCha8Rng) -> Vec<f32> {
-    use rand_chacha::ChaCha8Rng as _;
     (0..len)
         .map(|_| {
-            // Box-Muller approximation using uniform samples.
+            // Box-Muller using uniform samples.
             let u1: f32 = rng.gen::<f32>().max(1e-10);
             let u2: f32 = rng.gen();
             let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();

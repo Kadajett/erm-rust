@@ -12,8 +12,6 @@ path = "src/main.rs"
 [dependencies]
 erm-core = { path = "../erm-core" }
 erm-train = { path = "../erm-train" }
-burn = { workspace = true }
-burn-ndarray = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
