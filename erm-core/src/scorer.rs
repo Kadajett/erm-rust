@@ -72,6 +72,7 @@ impl FeedForwardBlock {
     ///
     /// Input: `x` of length `d`.
     /// Output: `x + down(relu(up(x)))` of length `d`.
+    #[allow(clippy::needless_range_loop)]
     fn forward_vec(&self, x: &[f32]) -> Vec<f32> {
         // up: [4d] = W_up @ x + b_up
         let mut hidden = vec![0.0f32; self.d_inner];
@@ -209,6 +210,7 @@ impl Scorer {
     /// # Errors
     ///
     /// Returns [`ErmError::ShapeMismatch`] if input dimensions don't match.
+    #[allow(clippy::needless_range_loop)]
     pub fn forward(&self, y_t: &[u32], batch_size: usize) -> ErmResult<ScorerOutput> {
         let l = self.seq_len;
         let d = self.hidden_dim;
@@ -238,10 +240,12 @@ impl Scorer {
                 let pos_start = pos * d;
 
                 // h = token_emb[tok_id] + pos_emb[pos]
-                let mut h = vec![0.0f32; d];
-                for i in 0..d {
-                    h[i] = self.token_emb[tok_start + i] + self.pos_emb[pos_start + i];
-                }
+                let h: Vec<f32> = self.token_emb[tok_start..tok_start + d]
+                    .iter()
+                    .zip(&self.pos_emb[pos_start..pos_start + d])
+                    .map(|(&te, &pe)| te + pe)
+                    .collect();
+                let mut h = h;
 
                 // Pass through feed-forward blocks
                 for block in &self.blocks {
@@ -251,18 +255,23 @@ impl Scorer {
                 // Logit head: [V] = W_logit @ h + b_logit
                 for vi in 0..v {
                     let row_start = vi * d;
-                    let mut sum = self.logit_b[vi];
-                    for j in 0..d {
-                        sum += self.logit_w[row_start + j] * h[j];
-                    }
+                    let sum: f32 = self.logit_w[row_start..row_start + d]
+                        .iter()
+                        .zip(h.iter())
+                        .map(|(&w, &hj)| w * hj)
+                        .sum::<f32>()
+                        + self.logit_b[vi];
                     logits.push(sum);
                 }
 
                 // Uncertainty head: scalar = sigmoid(W_unc @ h + b_unc)
-                let mut u_raw = self.uncertainty_b[0];
-                for j in 0..d {
-                    u_raw += self.uncertainty_w[j] * h[j];
-                }
+                let u_raw: f32 = self
+                    .uncertainty_w
+                    .iter()
+                    .zip(h.iter())
+                    .map(|(&w, &hj)| w * hj)
+                    .sum::<f32>()
+                    + self.uncertainty_b[0];
                 let u = sigmoid(u_raw);
                 uncertainty.push(u);
             }
@@ -306,7 +315,6 @@ fn sigmoid(x: f32) -> f32 {
 
 /// Generate a vector of random floats from `N(0, scale)`.
 fn random_vec(len: usize, scale: f32, rng: &mut ChaCha8Rng) -> Vec<f32> {
-    use rand_chacha::ChaCha8Rng as _;
     (0..len)
         .map(|_| {
             // Box-Muller approximation using uniform samples.
@@ -319,6 +327,7 @@ fn random_vec(len: usize, scale: f32, rng: &mut ChaCha8Rng) -> Vec<f32> {
 }
 
 #[cfg(test)]
+#[allow(unused_imports)]
 mod tests {
     use super::*;
 

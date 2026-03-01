@@ -515,7 +515,10 @@ mod tests {
 
         assert_eq!(r.len(), b * l * d);
         assert_eq!(ew.len(), b * l * cfg.emax);
-        assert!(r.iter().all(|&v| v == 0.0), "r must be zero for empty graph");
+        assert!(
+            r.iter().all(|&v| v == 0.0),
+            "r must be zero for empty graph"
+        );
         assert!(
             ew.iter().all(|&v| v == 0.0),
             "edge_weights must be zero for empty graph"
@@ -555,17 +558,20 @@ mod tests {
         g.add_edge(0, 1, 0, 1.0).unwrap();
 
         let d = 2_usize;
-        let mut hidden = vec![0.0_f32; 1 * 3 * 2];
+        let bi: usize = 0;
+        let l: usize = 3;
+        let mut hidden = vec![0.0_f32; 1 * l * d];
         hidden[0] = 10.0; // [b=0, pos=0, k=0]
         hidden[1] = 20.0; // [b=0, pos=0, k=1]
 
         let (r, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
 
-        let r_base = (0 * 3 + 1) * 2;
+        let r_base = (bi * l + 1) * d;
         assert!((r[r_base] - 10.0).abs() < 1e-4);
         assert!((r[r_base + 1] - 20.0).abs() < 1e-4);
 
-        let ew_base = (0 * 3 + 1) * 2;
+        let emax = cfg.emax;
+        let ew_base = (bi * l + 1) * emax;
         assert!((ew[ew_base] - 1.0).abs() < 1e-4);
         assert_eq!(ew[ew_base + 1], 0.0);
     }
@@ -581,11 +587,14 @@ mod tests {
         let mut g = RouteGraph::new(&cfg);
         g.add_edge(0, 2, 1, 0.5).unwrap();
 
+        let bi: usize = 0;
+        let l: usize = 4;
+        let emax: usize = 3;
         let d = 4_usize;
-        let hidden = vec![1.0_f32; 1 * 4 * d];
+        let hidden = vec![1.0_f32; l * d];
         let (_, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
 
-        let ew_base = (0 * 4 + 2) * 3;
+        let ew_base = (bi * l + 2) * emax;
         assert!(ew[ew_base] > 0.0);
         assert_eq!(ew[ew_base + 1], 0.0);
         assert_eq!(ew[ew_base + 2], 0.0);
@@ -604,12 +613,15 @@ mod tests {
         g.add_edge(0, 3, 1, 0.5).unwrap();
         g.add_edge(0, 3, 2, 2.0).unwrap();
 
+        let bi: usize = 0;
+        let l: usize = 5;
+        let emax: usize = 4;
         let d = 8_usize;
-        let hidden = vec![1.0_f32; 1 * 5 * d];
+        let hidden = vec![1.0_f32; l * d];
         let (_, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
 
-        let ew_base = (0 * 5 + 3) * 4;
-        let weight_sum: f32 = ew[ew_base..ew_base + 4].iter().sum();
+        let ew_base = (bi * l + 3) * emax;
+        let weight_sum: f32 = ew[ew_base..ew_base + emax].iter().sum();
         assert!((weight_sum - 1.0).abs() < 1e-5);
     }
 
