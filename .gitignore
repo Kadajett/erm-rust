@@ -1,0 +1,30 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Checkpoints and model weights
+/checkpoints/
+*.safetensors
+*.bin
+*.pt
+
+# Dataset files
+/data/
+*.jsonl
+*.parquet
+
+# Logs
+*.log
+*.jsonl
+/logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
