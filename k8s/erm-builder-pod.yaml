@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: erm-builder
+  namespace: pcn-train
+spec:
+  restartPolicy: Never
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/hostname
+            operator: In
+            values:
+            - theshire
+  containers:
+  - name: builder
+    image: rust:latest
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      set -eo pipefail
+      echo "=== ERM Builder (incremental rebuild) ==="
+      echo "Rust: $(rustc --version)"
+      cd /workspace/erm-rust-src
+      # Touch main.rs to force recompilation of erm-cli
+      touch erm-cli/src/main.rs
+      echo "Building release binary..."
+      cargo build --release --bin erm 2>&1
+      echo "=== Build complete ==="
+      ls -la /workspace/erm-rust-src/target/release/erm
+      cp /workspace/erm-rust-src/target/release/erm /workspace/erm-rust/bin/erm.new
+      echo "Binary staged at /workspace/erm-rust/bin/erm.new"
+      echo "=== Done ==="
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "2Gi"
+      limits:
+        cpu: "8"
+        memory: "16Gi"
+    volumeMounts:
+    - name: erm-rust-src
+      mountPath: /workspace/erm-rust-src
+    - name: erm-rust
+      mountPath: /workspace/erm-rust
+  volumes:
+  - name: erm-rust-src
+    hostPath:
+      path: /home/kadajett/dev/erm-rust-src
+      type: Directory
+  - name: erm-rust
+    hostPath:
+      path: /home/kadajett/dev/erm-rust
+      type: Directory

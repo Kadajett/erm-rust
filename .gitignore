@@ -29,3 +29,5 @@ Thumbs.db
 *.swp
 *.swo
 /bin/
+experiments/*/smoke/io_example.json
+experiments/*/checkpoints/*/io_example.json
