@@ -33,6 +33,10 @@ pub enum ErmError {
     #[error("serde error: {0}")]
     SerdeError(#[from] serde_json::Error),
 
+    /// I/O error.
+    #[error("io error: {0}")]
+    IoError(#[from] std::io::Error),
+
     /// A feature or code path is not yet implemented.
     #[error("not implemented: {0}")]
     NotImplemented(String),

@@ -26,6 +26,7 @@ use erm_core::graph::RouteGraph;
 
 use crate::colony_training::{ColonyStepResult, ColonyTrainer};
 use crate::dataset::TextDataset;
+use crate::graph_snapshot::GraphSnapshot;
 
 /// Colony training configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -171,6 +172,25 @@ impl<B: AutodiffBackend> ColonyOrchestrator<B> {
                     && (self.step + 1).is_multiple_of(self.config.checkpoint_every)
                 {
                     self.save_checkpoint(dir)?;
+                }
+            }
+
+            // Save snapshot for visualization every 100 steps.
+            if (self.step + 1).is_multiple_of(100) {
+                let snapshot = GraphSnapshot::new(
+                    self.step + 1,
+                    result.loss,
+                    result.num_edits,
+                    result.pheromone_stats.mean_phi,
+                    result.edges_pruned,
+                    result.edges_inserted,
+                    result.deaths,
+                    self.trainer.graph.clone(),
+                    self.trainer.ant_state.clone(),
+                );
+                let snapshot_dir = format!("{}/snapshots", checkpoint_dir.unwrap_or("."));
+                if let Err(e) = snapshot.save(&snapshot_dir) {
+                    eprintln!("Warning: failed to save snapshot: {}", e);
                 }
             }
 

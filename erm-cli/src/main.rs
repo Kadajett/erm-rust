@@ -149,6 +149,40 @@ enum Commands {
         #[arg(long)]
         checkpoint_dir: Option<String>,
     },
+
+    /// Render a graph snapshot to SVG.
+    RenderGraph {
+        /// Path to snapshot JSON file.
+        #[arg(long)]
+        snapshot: String,
+
+        /// Output directory for SVG file.
+        #[arg(long, default_value = ".")]
+        output_dir: String,
+
+        /// Batch index to visualize (0 to batch_size-1).
+        #[arg(long, default_value = "0")]
+        batch_idx: usize,
+    },
+
+    /// Generate a GIF animation from graph snapshots.
+    GenerateGif {
+        /// Directory containing snapshot JSON files.
+        #[arg(long)]
+        snapshots_dir: String,
+
+        /// Output GIF file path.
+        #[arg(long, default_value = "colony_growth.gif")]
+        output: String,
+
+        /// Frames per second in output GIF.
+        #[arg(long, default_value = "10")]
+        fps: u16,
+
+        /// Batch index to visualize.
+        #[arg(long, default_value = "0")]
+        batch_idx: usize,
+    },
 }
 
 /// Backend choice for burn-based training.
@@ -222,6 +256,21 @@ fn main() {
                 log_every,
                 checkpoint_dir.as_deref(),
             );
+        }
+        Commands::RenderGraph {
+            snapshot,
+            output_dir,
+            batch_idx,
+        } => {
+            run_render_graph(&snapshot, &output_dir, batch_idx);
+        }
+        Commands::GenerateGif {
+            snapshots_dir,
+            output,
+            fps,
+            batch_idx,
+        } => {
+            run_generate_gif(&snapshots_dir, &output, fps, batch_idx);
         }
     }
 }
@@ -687,6 +736,133 @@ fn colony_train_loop<B: burn::tensor::backend::AutodiffBackend>(
             std::process::exit(1);
         }
     }
+}
+
+/// Render a graph snapshot to SVG file.
+fn run_render_graph(snapshot_path: &str, output_dir: &str, batch_idx: usize) {
+    use erm_train::graph_snapshot::GraphSnapshot;
+    use erm_train::render_graph::save_snapshot_svg;
+
+    let snapshot = match GraphSnapshot::load(snapshot_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("ERROR: cannot load snapshot '{}': {}", snapshot_path, e);
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(e) = save_snapshot_svg(&snapshot, batch_idx, output_dir) {
+        eprintln!("ERROR: cannot render snapshot: {}", e);
+        std::process::exit(1);
+    }
+
+    println!(
+        "Rendered snapshot step {} to {}/frame_{:05}.svg",
+        snapshot.step, output_dir, snapshot.step
+    );
+}
+
+/// Generate GIF from graph snapshots.
+fn run_generate_gif(snapshots_dir: &str, output_path: &str, fps: u16, batch_idx: usize) {
+    use erm_train::graph_snapshot::GraphSnapshot;
+    use erm_train::render_graph::render_snapshot_to_svg;
+    use std::fs;
+    use std::path::Path;
+
+    // Find all snapshot files
+    let entries = match fs::read_dir(snapshots_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!(
+                "ERROR: cannot read snapshots directory '{}': {}",
+                snapshots_dir, e
+            );
+            std::process::exit(1);
+        }
+    };
+
+    let mut snapshot_files: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name();
+            let name_str = name.to_string_lossy();
+            name_str.starts_with("step_") && name_str.ends_with(".json")
+        })
+        .collect();
+
+    snapshot_files.sort_by_key(|a| a.file_name());
+
+    if snapshot_files.is_empty() {
+        eprintln!("ERROR: no snapshot files found in '{}'", snapshots_dir);
+        std::process::exit(1);
+    }
+
+    println!(
+        "Found {} snapshots. Rendering frames...",
+        snapshot_files.len()
+    );
+
+    // Create frames directory
+    let frames_dir = Path::new(output_path)
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("frames");
+    fs::create_dir_all(&frames_dir).expect("create frames dir");
+
+    // Render each snapshot to SVG, then convert to PNG using resvg if available
+    // For now, just save SVGs - user can convert to GIF externally
+    for (i, entry) in snapshot_files.iter().enumerate() {
+        let path = entry.path();
+        let snapshot = match GraphSnapshot::load(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Warning: cannot load snapshot '{}': {}", path.display(), e);
+                continue;
+            }
+        };
+
+        let svg = match render_snapshot_to_svg(&snapshot, batch_idx) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "Warning: cannot render snapshot '{}': {}",
+                    path.display(),
+                    e
+                );
+                continue;
+            }
+        };
+
+        let frame_path = frames_dir.join(format!("frame_{:04}.svg", i));
+        if let Err(e) = fs::write(&frame_path, svg) {
+            eprintln!(
+                "Warning: cannot write frame '{}': {}",
+                frame_path.display(),
+                e
+            );
+            continue;
+        }
+
+        if (i + 1) % 10 == 0 || i == snapshot_files.len() - 1 {
+            println!("  Rendered {}/{} frames", i + 1, snapshot_files.len());
+        }
+    }
+
+    println!("SVG frames saved to: {}", frames_dir.display());
+    println!("To create GIF, run:");
+    println!(
+        "  ffmpeg -i {}/frame_%04d.svg -vf \"fps={},scale=1200:-1:flags=lanczos\" {}",
+        frames_dir.display(),
+        fps,
+        output_path
+    );
+    println!("Or use ImageMagick:");
+    println!(
+        "  convert -delay {} -loop 0 {}/*.svg {}",
+        100 / fps as i32,
+        frames_dir.display(),
+        output_path
+    );
 }
 
 #[cfg(test)]

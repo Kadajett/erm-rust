@@ -24,6 +24,8 @@ pub mod colony_training;
 pub mod comparison;
 pub mod dataset;
 pub mod eval;
+pub mod graph_snapshot;
 pub mod image_dataset;
 pub mod orchestrator;
+pub mod render_graph;
 pub mod training;
