@@ -95,28 +95,36 @@ pub struct DiffusionTrainer<B: AutodiffBackend> {
 
 impl<B: AutodiffBackend> DiffusionTrainer<B> {
     /// Create a new diffusion trainer.
+    ///
+    /// Syncs `refinement_steps` to `diffusion_steps` so the corruption schedule
+    /// validates correctly against the diffusion step count.
     pub fn new(config: &ErmConfig, device: B::Device) -> Self {
-        let scorer_cfg = BurnScorerConfig::from_erm(config);
+        // Ensure refinement_steps = diffusion_steps so corrupt() validates correctly.
+        let mut config = config.clone();
+        config.refinement_steps = config.diffusion_steps;
+
+        let scorer_cfg = BurnScorerConfig::from_erm(&config);
         let scorer = scorer_cfg.init::<B>(&device);
 
         let optimizer = AdamConfig::new()
             .with_weight_decay(Some(WeightDecayConfig::new(config.weight_decay as f32)))
             .init();
 
-        let graph = RouteGraph::new(config);
-        let ant_state = AntState::new(config);
-        let pheromone_config = PheromoneConfig::from_config(config);
+        let graph = RouteGraph::new(&config);
+        let ant_state = AntState::new(&config);
+        let pheromone_config = PheromoneConfig::from_config(&config);
 
+        let lr = config.learning_rate;
         Self {
             scorer,
             optimizer,
             graph,
             ant_state,
-            config: config.clone(),
+            config,
             pheromone_config,
             delta_stats: RunningDeltaStats::new(),
             step: 0,
-            lr: config.learning_rate,
+            lr,
             device,
         }
     }
