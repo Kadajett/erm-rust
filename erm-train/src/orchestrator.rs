@@ -236,14 +236,19 @@ impl Orchestrator {
         let mut result = train_step(&self.scorer, batch, None, &self.config.erm, &mut self.rng)?;
         result.step = self.global_step;
 
-        if self.global_step.is_multiple_of(self.config.log_every) {
-            self.loss_log.push(LossRecord {
+        if self.global_step == 0 || self.global_step.is_multiple_of(self.config.log_every) {
+            let record = LossRecord {
                 step: self.global_step,
                 phase: phase.to_string(),
                 loss: result.loss,
                 num_corrupted: result.num_corrupted,
                 t: result.t,
-            });
+            };
+            eprintln!(
+                "[step {:>6}] phase={:<11} loss={:.4} corrupted={} t={}",
+                record.step, record.phase, record.loss, record.num_corrupted, record.t
+            );
+            self.loss_log.push(record);
         }
 
         self.global_step += 1;
