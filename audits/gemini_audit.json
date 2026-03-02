@@ -1,0 +1,70 @@
+{
+  "audit": {
+    "meta": {
+      "agent": "gemini-style",
+      "note": "Simulated Gemini-style audit (gemini-3.1-pro unavailable)."
+    },
+    "A_math_critique": {
+      "pheromone_deposit": "tanh(relu(Delta)) is robust to outliers but saturates quickly; use scaling (Delta/sigma) or softplus-based mapping to preserve dynamic range.",
+      "death_respawn": "High death rates early remove signal; recommend longer death_streak or warm-start exemptions. Consider probabilistic respawn from a diversity pool to avoid monoculture.",
+      "taint_dynamics": "Taint updates are currently aggressive; add symmetric decay and smaller per-update increments so recovery is possible.",
+      "leader_utility": "EMA on leader utility is conceptually correct but must track meaningful Delta (ensure Delta computed from scorer differences)."
+    },
+    "B_code_findings": {
+      "route_aggregate_hidden_zero": {
+        "severity": "Critical",
+        "description": "route_aggregate called with hidden vector of zeros — graph weighting uses no semantic signal. Fix: pass real encoder hidden states.'"
+      },
+      "phi_init_on_empty_slots": {
+        "severity": "High",
+        "description": "phi initialized to phi_init even for EMPTY_SLOT; counts as non-empty signal. Fix: phi should be 0 for empty slots or track active flags separately."
+      },
+      "batch_aggregation": {
+        "severity": "High",
+        "description": "Ant deltas and some computations used only batch_idx=0 earlier; aggregation across batch is necessary."
+      },
+      "tensor_transfers": {
+        "severity": "Medium",
+        "description": "Repeated to_cpu transfers and cloning increase host+device memory. Streamline via single transfer and views."
+      },
+      "prune_and_deposit_balance": {
+        "severity": "Medium",
+        "description": "Deposit uses saturated tanh; pruning thresholds may be too aggressive relative to deposit scale."
+      }
+    },
+    "C_experiments": [
+      {
+        "id": 1,
+        "name": "RouteAggregate Sanity",
+        "cmd": "insert assertion after route_aggregate to verify non-zero outputs; run one train step",
+        "expected": "If hidden passed correctly, route weights show variance; otherwise zeros confirm bug"
+      },
+      {
+        "id": 2,
+        "name": "Pheromone Mapping Test",
+        "cmd": "log Delta distribution and plot tanh(Delta) vs Delta; try tanh(Delta/sigma) with sigma as running stddev",
+        "expected": "Normalized deposit uses full dynamic range"
+      },
+      {
+        "id": 3,
+        "name": "Death Rate Ablation",
+        "cmd": "increase death_streak to 10 and run short 200-step trial",
+        "expected": "Less pruning, higher edge survival, better initial graph formation"
+      },
+      {
+        "id": 4,
+        "name": "Batch Aggregation Validation",
+        "cmd": "enable full-batch colony use then measure ant_delta variance across batch items",
+        "expected": "Aggregate deltas increase signal-to-noise and stabilise pheromone updates"
+      }
+    ],
+    "D_priorities": [
+      {"fix": "route_aggregate hidden pass-through", "priority": "P0"},
+      {"fix": "avoid phi_init for empty slots", "priority": "P1"},
+      {"fix": "aggregate deltas across batch", "priority": "P1"},
+      {"fix": "normalize deposit mapping", "priority": "P2"},
+      {"fix": "tune death/respawn parameters with ablation", "priority": "P2"},
+      {"fix": "reduce tensor cloning and streamline GPU↔CPU bridge", "priority": "P3"}
+    ]
+  }
+}

@@ -102,7 +102,7 @@ impl RouteGraph {
     /// initial topology.
     ///
     /// - `nbr_idx` initialized to [`EMPTY_SLOT`] (-1)
-    /// - `phi` initialized to `phi_init` (small warm-start value)
+    /// - `phi` initialized to `0.0` for empty slots (only inserted/seeded edges get `phi_init`)
     /// - `taint` initialized to `0.0`
     /// - `age` initialized to `0`
     #[must_use]
@@ -117,7 +117,7 @@ impl RouteGraph {
             seq_len: l,
             emax: e,
             nbr_idx: vec![EMPTY_SLOT; total],
-            phi: vec![config.phi_init; total],
+            phi: vec![0.0; total],
             taint: vec![0.0; total],
             age: vec![0; total],
             utility: vec![0.0; total],
@@ -601,12 +601,34 @@ mod tests {
         let g = RouteGraph::new_empty(&cfg);
         // All nbr_idx should be EMPTY_SLOT
         assert!(g.nbr_idx.iter().all(|&v| v == EMPTY_SLOT));
-        // All phi should be phi_init
-        assert!(g.phi.iter().all(|&v| (v - cfg.phi_init).abs() < 1e-9));
+        // All phi should be 0.0 for empty slots (only inserted edges get phi_init)
+        assert!(g.phi.iter().all(|&v| v == 0.0));
         // All taint = 0
         assert!(g.taint.iter().all(|&v| v == 0.0));
         // All age = 0
         assert!(g.age.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn test_seeded_graph_has_phi_init() {
+        let cfg = test_config();
+        let g = RouteGraph::new(&cfg);
+        // Seeded edges should have phi_init, empty slots should have 0.0
+        for flat in 0..g.total_elements() {
+            if g.nbr_idx[flat] != EMPTY_SLOT {
+                assert!(
+                    (g.phi[flat] - cfg.phi_init).abs() < 1e-9,
+                    "seeded edge should have phi_init, got {}",
+                    g.phi[flat]
+                );
+            } else {
+                assert!(
+                    g.phi[flat] == 0.0,
+                    "empty slot should have phi=0.0, got {}",
+                    g.phi[flat]
+                );
+            }
+        }
     }
 
     #[test]

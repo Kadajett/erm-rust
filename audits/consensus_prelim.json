@@ -1,0 +1,19 @@
+{
+  "consensus": {
+    "summary": "Both audits (Opus + Gemini-style) converge on the same core issues: the route aggregate receives zero hidden states (critical), lot of pruning due to aggressive death/taint rules, saturated pheromone deposit function, and batch aggregation bugs. Primary fix: wire encoder hidden states into route_aggregate immediately. Secondary fixes: adjust death_streak and normalize deposit. Also streamline tensor transfers to reduce memory pressure.",
+    "disagreements": [],
+    "recommendations": [
+      "P0: Fix route_aggregate hidden pass-through (encode hidden states from scorer and pass to graph).",
+      "P1: Change new_empty/new() phi initialization so empty slots have phi=0; only seeded edges have phi_init.",
+      "P1: Aggregate deltas across the entire batch before pheromone updates.",
+      "P2: Replace tanh(relu(Delta)) with tanh(Delta / sigma) or softplus mapping to avoid saturation.",
+      "P2: Increase death_streak for early warm-start; add respawn-from-pool behavior.",
+      "P3: Reduce cloning of tensors; use single transfer or memory-map where possible."
+    ],
+    "files_saved": [
+      "audits/opus_audit.json",
+      "audits/gemini_audit.json",
+      "audits/consensus_prelim.json"
+    ]
+  }
+}

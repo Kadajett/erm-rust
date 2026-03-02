@@ -1,0 +1,294 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: erm-books-train-gpu
+  namespace: pcn-train
+  labels:
+    app: erm-books-train
+    variant: books-robust-gpu
+spec:
+  restartPolicy: Never
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/hostname
+            operator: In
+            values:
+            - theshire
+  containers:
+  - name: erm-books-train
+    image: ubuntu:24.04
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      set -e
+      echo "=== ERM Books Robust GPU Training ==="
+      echo "Host: $(hostname)"
+      echo "Start time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      # Minimal package install (skip heavy ones like ffmpeg)
+      apt-get update -qq 2>&1 | tail -1 || true
+      apt-get install -y -qq --no-install-recommends libvulkan1 mesa-vulkan-drivers ca-certificates 2>&1 | tail -3 || true
+
+      # Set up Vulkan ICD for NVIDIA
+      mkdir -p /etc/vulkan/icd.d
+      echo '{"file_format_version":"1.0.0","ICD":{"library_path":"libGLX_nvidia.so.0","api_version":"1.3"}}' > /etc/vulkan/icd.d/nvidia_icd.json || true
+
+      echo "=== Preparing corpus ==="
+      mkdir -p /workspace/erm-rust/data/text
+
+      # Use a SUBSET of books to avoid OOM during corpus load
+      # Take first 50 books (~300-400MB instead of 1.8GB)
+      BOOK_DIR="/workspace/rust-pcn/data/books"
+      CORPUS="/workspace/erm-rust/data/text/corpus_books.txt"
+
+      if [ -d "$BOOK_DIR" ]; then
+        echo "Found books dir: $BOOK_DIR"
+        BOOK_COUNT=$(ls "$BOOK_DIR"/*.txt 2>/dev/null | wc -l)
+        echo "Total books available: $BOOK_COUNT"
+
+        # Concatenate first 80 books (alphabetically) for manageable size
+        ls "$BOOK_DIR"/*.txt | head -80 | xargs cat > "$CORPUS" 2>/dev/null || true
+        CORPUS_SIZE=$(wc -c < "$CORPUS")
+        echo "Corpus size: $CORPUS_SIZE bytes ($(echo "$CORPUS_SIZE / 1048576" | bc)MB from 80 books)"
+      else
+        echo "ERROR: No books found at $BOOK_DIR" >&2
+        exit 1
+      fi
+
+      # Check for existing warmstart checkpoint
+      CKPT_DIR="/workspace/erm-rust/data/colony-checkpoints"
+      WARMSTART_DIR="$CKPT_DIR/warmstart"
+      if [ -d "$WARMSTART_DIR" ] && [ -f "$WARMSTART_DIR/graph.json" ]; then
+        echo "Found warmstart checkpoint at $WARMSTART_DIR"
+        WARMSTART_FLAG="--warmstart $WARMSTART_DIR"
+      else
+        echo "No warmstart checkpoint found, starting fresh"
+        WARMSTART_FLAG=""
+      fi
+
+      # ===== TIERED CONFIG SYSTEM =====
+      # Tier 1: Conservative (start here)
+      # Tier 2: Minimal (if Tier 1 OOMs)
+      # Tier 3: Tiny (last resort)
+
+      TIER=${ERM_TIER:-1}
+      echo "=== Using config Tier $TIER ==="
+
+      case $TIER in
+        1)
+          # Conservative: balanced for GPU with moderate memory
+          cat > /workspace/erm-rust/data/train_config.json <<'JSONEOF'
+      {
+        "vocab_size": 0,
+        "seq_len": 384,
+        "hidden_dim": 192,
+        "num_blocks": 3,
+        "num_heads": 6,
+        "mlp_expansion": 4,
+        "dropout": 0.0,
+        "emax": 8,
+        "num_ants": 64,
+        "topk": 6,
+        "pmax": 6,
+        "refinement_steps": 4,
+        "batch_size": 2,
+        "mask_rate_max": 0.8,
+        "mask_rate_min": 0.15,
+        "replace_rate_max": 0.1,
+        "replace_rate_min": 0.02,
+        "pheromone_evap": 0.1,
+        "pheromone_eta": 0.7,
+        "taint_zeta": 0.3,
+        "taint_max": 5.0,
+        "taint_decay": 0.05,
+        "phi_max": 100.0,
+        "phi_init": 0.05,
+        "route_epsilon": 1e-6,
+        "route_lambda": 1.0,
+        "route_mu": 0.01,
+        "prune_min_score": -1.0,
+        "prune_max_age": 1000,
+        "leader_ema_gamma": 0.3,
+        "death_streak": 5,
+        "max_edits_per_step": 0.18,
+        "leader_fraction": 0.12,
+        "learning_rate": 0.0005,
+        "weight_decay": 0.01,
+        "warmup_steps": 100
+      }
+      JSONEOF
+          ;;
+        2)
+          # Minimal: smaller model, fewer ants
+          cat > /workspace/erm-rust/data/train_config.json <<'JSONEOF'
+      {
+        "vocab_size": 0,
+        "seq_len": 256,
+        "hidden_dim": 128,
+        "num_blocks": 2,
+        "num_heads": 4,
+        "mlp_expansion": 4,
+        "dropout": 0.0,
+        "emax": 6,
+        "num_ants": 32,
+        "topk": 4,
+        "pmax": 4,
+        "refinement_steps": 3,
+        "batch_size": 2,
+        "mask_rate_max": 0.8,
+        "mask_rate_min": 0.15,
+        "replace_rate_max": 0.1,
+        "replace_rate_min": 0.02,
+        "pheromone_evap": 0.1,
+        "pheromone_eta": 0.6,
+        "taint_zeta": 0.3,
+        "taint_max": 5.0,
+        "taint_decay": 0.05,
+        "phi_max": 100.0,
+        "phi_init": 0.05,
+        "route_epsilon": 1e-6,
+        "route_lambda": 1.0,
+        "route_mu": 0.01,
+        "prune_min_score": -1.0,
+        "prune_max_age": 1000,
+        "leader_ema_gamma": 0.3,
+        "death_streak": 5,
+        "max_edits_per_step": 0.15,
+        "leader_fraction": 0.10,
+        "learning_rate": 0.0005,
+        "weight_decay": 0.01,
+        "warmup_steps": 100
+      }
+      JSONEOF
+          ;;
+        3)
+          # Tiny: absolute minimum
+          cat > /workspace/erm-rust/data/train_config.json <<'JSONEOF'
+      {
+        "vocab_size": 0,
+        "seq_len": 128,
+        "hidden_dim": 64,
+        "num_blocks": 2,
+        "num_heads": 2,
+        "mlp_expansion": 4,
+        "dropout": 0.0,
+        "emax": 4,
+        "num_ants": 16,
+        "topk": 4,
+        "pmax": 4,
+        "refinement_steps": 2,
+        "batch_size": 4,
+        "mask_rate_max": 0.8,
+        "mask_rate_min": 0.15,
+        "replace_rate_max": 0.1,
+        "replace_rate_min": 0.02,
+        "pheromone_evap": 0.1,
+        "pheromone_eta": 0.5,
+        "taint_zeta": 0.3,
+        "taint_max": 5.0,
+        "taint_decay": 0.05,
+        "phi_max": 100.0,
+        "phi_init": 0.05,
+        "route_epsilon": 1e-6,
+        "route_lambda": 1.0,
+        "route_mu": 0.01,
+        "prune_min_score": -1.0,
+        "prune_max_age": 1000,
+        "leader_ema_gamma": 0.3,
+        "death_streak": 5,
+        "max_edits_per_step": 0.12,
+        "leader_fraction": 0.10,
+        "learning_rate": 0.001,
+        "weight_decay": 0.01,
+        "warmup_steps": 50
+      }
+      JSONEOF
+          ;;
+      esac
+
+      echo "Config:"
+      cat /workspace/erm-rust/data/train_config.json
+
+      echo ""
+      echo "=== Starting GPU training (Tier $TIER) at $(date -u +%H:%M:%S) ==="
+      echo ""
+
+      /workspace/erm-rust/bin/erm colony-train \
+        --data "$CORPUS" \
+        --steps 20000 \
+        --config /workspace/erm-rust/data/train_config.json \
+        --backend gpu \
+        --log-every 50 \
+        --checkpoint-dir "$CKPT_DIR" \
+        $WARMSTART_FLAG \
+        2>&1 | tee /workspace/erm-rust/data/colony-books-train-log.txt
+
+      EXIT_CODE=$?
+      echo ""
+      echo "=== Training finished (exit=$EXIT_CODE) at $(date -u +%H:%M:%S) ==="
+
+      # Save warmstart on clean exit
+      if [ $EXIT_CODE -eq 0 ]; then
+        mkdir -p "$WARMSTART_DIR"
+        cp "$CKPT_DIR/graph.json" "$WARMSTART_DIR/graph.json" 2>/dev/null || true
+        cp "$CKPT_DIR/ant_state.json" "$WARMSTART_DIR/ant_state.json" 2>/dev/null || true
+        cp /workspace/erm-rust/data/train_config.json "$WARMSTART_DIR/config.json" 2>/dev/null || true
+        echo "Warmstart saved to $WARMSTART_DIR"
+      fi
+
+      exit $EXIT_CODE
+    resources:
+      requests:
+        memory: "24Gi"
+        cpu: "4"
+        nvidia.com/gpu: "1"
+      limits:
+        memory: "32Gi"
+        cpu: "8"
+        nvidia.com/gpu: "1"
+    env:
+    - name: LD_LIBRARY_PATH
+      value: /usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu
+    - name: NVIDIA_DRIVER_CAPABILITIES
+      value: compute,utility
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: all
+    - name: CUDA_VISIBLE_DEVICES
+      value: "0"
+    - name: WGPU_BACKEND
+      value: vulkan
+    - name: RUST_BACKTRACE
+      value: "1"
+    - name: RAYON_NUM_THREADS
+      value: "4"
+    - name: ERM_TIER
+      value: "1"
+    volumeMounts:
+    - name: erm-rust
+      mountPath: /workspace/erm-rust
+    - name: rust-pcn
+      mountPath: /workspace/rust-pcn
+    - name: cuda-13-0
+      mountPath: /usr/local/cuda-13.0
+      readOnly: true
+    - name: cuda-13-1
+      mountPath: /usr/local/cuda
+      readOnly: true
+  volumes:
+  - name: erm-rust
+    hostPath:
+      path: /home/kadajett/dev/erm-rust
+      type: Directory
+  - name: rust-pcn
+    hostPath:
+      path: /home/kadajett/dev/rust-pcn
+      type: Directory
+  - name: cuda-13-0
+    hostPath:
+      path: /usr/local/cuda-13.0
+  - name: cuda-13-1
+    hostPath:
+      path: /usr/local/cuda-13.1

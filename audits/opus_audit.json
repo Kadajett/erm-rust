@@ -1,0 +1,181 @@
+{
+  "audit_date": "2026-03-02",
+  "auditor": "claude-opus-4-6",
+  "project": "ERM (Emergent Route Model)",
+  "sections": {
+    "A_mathematical_model": {
+      "title": "Mathematical Model Critique",
+      "findings": [
+        {
+          "id": "A1",
+          "severity": "medium",
+          "topic": "tanh(relu(Δ)) deposit rule saturates too fast",
+          "detail": "The deposit rule η·tanh(max(Δ,0)) saturates at η for any Δ≥3. With η=0.5 (default deposit_rate), all positive ants deposit nearly the same amount regardless of whether Δ=0.01 or Δ=100. This destroys the gradient signal that should differentiate great edits from mediocre ones. Better: η·tanh(Δ/σ) where σ is a running std-dev of positive deltas, or use log1p(max(Δ,0)).",
+          "impact": "Pheromone landscape converges to a near-uniform blob; route differentiation stalls."
+        },
+        {
+          "id": "A2",
+          "severity": "high",
+          "topic": "Leader utility EMA is always zero — never updates",
+          "detail": "Snapshot at step 100 shows utility=[0.0,...] for ALL edges. The update_leader_utility() method requires edge_weights with positive values at leader edges, but the training loop passes edge_weights computed from a zero hidden vector (hidden = vec![0.0; B*L*d]), so route_aggregate produces zero weights everywhere. Leader utility tracking is dead.",
+          "impact": "Leaders have no delayed-credit mechanism; the exploration reward R_leader from the architecture doc is inoperative."
+        },
+        {
+          "id": "A3",
+          "severity": "medium",
+          "topic": "Death/respawn is too aggressive with streak=4",
+          "detail": "At step 100, deaths=52 out of 16 ants × 4 batches = 64 total. 81% of all ants die every step. With death_streak defaulting to a low value and the epsilon threshold at 1e-6, any ant whose edits produce Δ≤1e-6 for a few consecutive steps dies. In early training when the scorer is random, nearly every ant triggers this. Death+taint creates a negative feedback spiral: edges get tainted → route_aggregate produces worse signals → more deaths → more taint.",
+          "impact": "Graph connectivity collapses early in training. The snapshot confirms: 114 valid edges out of 1024 slots, down from ~712 seeded edges."
+        },
+        {
+          "id": "A4",
+          "severity": "low",
+          "topic": "Asymmetric taint vs deposit bounding",
+          "detail": "Deposit is tanh-bounded (max ≈ η per step), but taint is unbounded per step: ζ·max(-Δ,0) can be arbitrarily large before clamping to τ_max. A single catastrophic ant can max-taint an edge in one step, but recovery requires many deposit steps. This asymmetry biases the graph toward sparsity over time.",
+          "impact": "Edges die faster than they can recover; combined with A3, this accelerates connectivity collapse."
+        },
+        {
+          "id": "A5",
+          "severity": "low",
+          "topic": "Energy/improvement metric uses only local CE delta",
+          "detail": "Δ is computed from per-position CE changes, which doesn't capture coherence improvements (e.g., fixing a token that helps decode adjacent positions). The metric is local and myopic, which is acceptable for v1 but limits the colony's ability to learn long-range dependencies."
+        }
+      ]
+    },
+    "B_code_review": {
+      "title": "Code Review: Suspicious Implementation Details",
+      "findings": [
+        {
+          "id": "B1",
+          "severity": "critical",
+          "topic": "Route aggregate uses zero hidden vector during training",
+          "detail": "In colony_training.rs, the route_aggregate call at line ~161 passes `hidden = vec![0.0; B*L*d]`. This means the route message r[b,i,:] = Σ w * 0 = 0 for all positions. The entire route graph has NO effect on colony decisions during training. The edge_weights are still computed (from phi/taint/age), but the route message itself is always zero. This also means leader utility (which depends on edge_weights from this call) gets zero weights.",
+          "fix": "Pass the actual hidden states from the scorer's penultimate layer. This requires exposing intermediate activations from BurnScorer::forward(). Alternatively, use the token embeddings as a proxy."
+        },
+        {
+          "id": "B2",
+          "severity": "high",
+          "topic": "phi_init contaminates empty slots in new_empty()",
+          "detail": "RouteGraph::new_empty() sets phi = vec![phi_init; total] for ALL slots including empty ones (nbr_idx=-1). The snapshot confirms: 228 empty slots have phi=0.05. While most code checks nbr_idx before reading phi, this is fragile. After remove_edge, the cleared slot gets phi=0.0 (correct), but fresh graphs start with nonzero phi on empty slots.",
+          "fix": "Change new_empty to: phi: vec![0.0; total]. Set phi=phi_init only in add_edge/add_edge_with_leader."
+        },
+        {
+          "id": "B3",
+          "severity": "high",
+          "topic": "All seeded edges lost — all 114 surviving edges are leader-introduced",
+          "detail": "The snapshot shows all 114 valid edges have leader_edge=true. The original ~178/batch seeded skip-connection edges (created by RouteGraph::new) were pruned because: (a) add_edge marks them leader_edge=false, but seeded edges get phi_init=0.05; (b) with evaporation_rate and no positive deposit (route agg is zero → colony decisions are random → deltas are near-zero), phi decays to near-zero; (c) pruning kills them. Meanwhile leaders insert new edges that also decay but get replaced cyclically.",
+          "fix": "This is a consequence of B1 (zero hidden). Fix B1 first. Also consider protecting seeded edges from pruning for the first N steps, or giving them higher initial phi."
+        },
+        {
+          "id": "B4",
+          "severity": "medium",
+          "topic": "Dead code in update_pheromones: first iteration loop over trace.entries",
+          "detail": "In pheromone.rs update_pheromones(), there's a dead first loop over trace.entries (lines ~132-145) that destructures but does nothing (the variables are suppressed). The actual work is done by a second 're-iterate cleanly' loop. The dead loop wastes cycles and is confusing.",
+          "fix": "Remove the dead first loop. Keep only the second clean iteration."
+        },
+        {
+          "id": "B5",
+          "severity": "medium",
+          "topic": "Ant deltas computed from only batch_idx=0",
+          "detail": "colony_training.rs computes ant_deltas using only the first batch element's logits (batch_idx_for_deltas=0). Ant IDs 0..num_ants are shared across batch items, so the delta for ant k should aggregate across all batch items where that ant proposed edits, not just batch 0.",
+          "fix": "Accumulate deltas across all batch items, or compute per-(batch,ant) deltas and aggregate."
+        },
+        {
+          "id": "B6",
+          "severity": "medium",
+          "topic": "Tensor clone before CPU transfer causes double VRAM peak",
+          "detail": "In colony_training.rs: `logits_tensor.clone()` is called to keep the tensor for loss computation while also transferring to CPU. This doubles the peak VRAM for the logits tensor ([B,L,V]). On a 2GB budget, this could be the bottleneck.",
+          "fix": "Transfer to CPU first, then reconstruct the tensor from the CPU vec for the loss computation. Or compute the loss before transferring."
+        },
+        {
+          "id": "B7",
+          "severity": "low",
+          "topic": "Edge trace weight not used in deposit",
+          "detail": "build_edge_traces records per-edge softmax weights, but update_pheromones ignores the weight when depositing — it applies the full deposit amount regardless of whether an edge contributed w=0.01 or w=0.99 to the ant's decision. This means lightly-used edges get the same reinforcement as heavily-used ones.",
+          "fix": "Scale deposit by the edge weight: graph.phi[flat] += deposit * weight;"
+        }
+      ]
+    },
+    "C_experiments": {
+      "title": "Validation Experiments",
+      "experiments": [
+        {
+          "id": "E1",
+          "validates": ["B1", "A2"],
+          "description": "Verify route message is always zero during training",
+          "command": "# Add a debug assertion in colony_training.rs after route_aggregate:\n# assert!(r.iter().all(|&v| v == 0.0), 'route message should NOT be zero — hidden is zero');\n# Then run: cd erm-rust && cargo test --package erm-train -- colony_training::tests --nocapture\n# If assertion fires (it will), B1 is confirmed.",
+          "expected": "Assertion fires, confirming route aggregate has zero effect."
+        },
+        {
+          "id": "E2",
+          "validates": ["A1"],
+          "description": "Profile tanh saturation in deposit",
+          "command": "cd erm-rust && python3 -c \"import math; deltas=[0.01,0.1,0.5,1.0,3.0,10.0]; print('Delta -> tanh deposit (eta=0.5):'); [print(f'  {d:.2f} -> {0.5*math.tanh(d):.4f}') for d in deltas]\"",
+          "expected": "Shows tanh(0.5)=0.2310, tanh(1.0)=0.3808, tanh(3.0)=0.4995, tanh(10.0)=0.5000 — nearly identical above Δ=3."
+        },
+        {
+          "id": "E3",
+          "validates": ["A3", "B3"],
+          "description": "Track edge survival over first 200 steps",
+          "command": "cd erm-rust && python3 -c \"\nimport json, glob\nfiles = sorted(glob.glob('data/colony-checkpoints/snapshots/step_*.json'))\nfor f in files[:5]:\n  with open(f) as fh:\n    d = json.load(fh)\n  g = d['graph']\n  valid = sum(1 for v in g['nbr_idx'] if v != -1)\n  leader = sum(1 for i,v in enumerate(g['nbr_idx']) if v != -1 and g['leader_edge'][i])\n  print(f'Step {d[\\\"step\\\"]:>5}: {valid:>4} edges ({leader} leader), deaths={d[\\\"deaths\\\"]}, phi_mean={d[\\\"mean_phi\\\"]:.4f}')\n\"",
+          "expected": "Edge count drops rapidly from ~712 seeded to <200 within 100 steps. All surviving edges are leader-introduced."
+        },
+        {
+          "id": "E4",
+          "validates": ["B5"],
+          "description": "Verify ant deltas only use batch 0",
+          "command": "# Add logging in colony_training.rs before compute_ant_deltas:\n#   eprintln!(\"Using batch_idx_for_deltas={}\", batch_idx_for_deltas);\n# Run 1 step and confirm it always prints 0.\ncd erm-rust && grep -n 'batch_idx_for_deltas' erm-train/src/colony_training.rs",
+          "expected": "Shows hardcoded batch_idx_for_deltas = 0."
+        },
+        {
+          "id": "E5",
+          "validates": ["B2"],
+          "description": "Check empty slot phi contamination",
+          "command": "cd erm-rust && python3 -c \"\nimport json\nwith open('data/colony-checkpoints/snapshots/step_00100.json') as f:\n  g = json.load(f)['graph']\nempty_nonzero = sum(1 for i in range(len(g['nbr_idx'])) if g['nbr_idx'][i] == -1 and g['phi'][i] != 0.0)\nprint(f'Empty slots with nonzero phi: {empty_nonzero}/{sum(1 for v in g[\\\"nbr_idx\\\"] if v==-1)}')\n\"",
+          "expected": "Nonzero count > 0, confirming phi_init contamination on empty slots."
+        }
+      ]
+    },
+    "D_priorities": {
+      "title": "Recommended Priorities",
+      "priorities": [
+        {
+          "priority": 1,
+          "ids": ["B1"],
+          "action": "Fix route_aggregate to use actual hidden states from the scorer, not zeros. This is the root cause of most other issues — the route graph currently has zero influence on training.",
+          "effort": "medium"
+        },
+        {
+          "priority": 2,
+          "ids": ["A3", "B3"],
+          "action": "Reduce death aggression: increase death_streak to 10-20, or disable death/respawn for first 500 steps. Protect seeded edges from pruning during warmup.",
+          "effort": "low"
+        },
+        {
+          "priority": 3,
+          "ids": ["B5"],
+          "action": "Fix ant delta computation to aggregate across all batch items, not just batch 0.",
+          "effort": "low"
+        },
+        {
+          "priority": 4,
+          "ids": ["B2", "B4"],
+          "action": "Clean up: fix phi_init on empty slots, remove dead code in update_pheromones.",
+          "effort": "low"
+        },
+        {
+          "priority": 5,
+          "ids": ["A1", "B7"],
+          "action": "Improve deposit signal: scale deposit by edge weight, normalize tanh argument by running sigma of positive deltas.",
+          "effort": "medium"
+        },
+        {
+          "priority": 6,
+          "ids": ["B6"],
+          "action": "Reduce VRAM peak by avoiding logits tensor clone. Restructure to compute loss before CPU transfer.",
+          "effort": "low"
+        }
+      ]
+    }
+  }
+}

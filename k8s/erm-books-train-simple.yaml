@@ -1,0 +1,80 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: erm-books-train-simple
+  namespace: pcn-train
+  labels:
+    app: erm-books-train
+    variant: books-aggressive-simple
+spec:
+  restartPolicy: Never
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/hostname
+            operator: In
+            values:
+            - theshire
+  containers:
+  - name: erm-books-train
+    image: ubuntu:24.04
+    command: ["/bin/bash","-c"]
+    args:
+    - |
+      set -e
+      echo "Concatenating books from host workspace and starting GPU training"
+      mkdir -p /workspace/erm-rust/data/text
+      cat /workspace/rust-pcn/data/books/*.txt > /workspace/erm-rust/data/text/corpus_books.txt || true
+      /workspace/erm-rust/bin/erm colony-train \
+        --data /workspace/erm-rust/data/text/corpus_books.txt \
+        --steps 20000 \
+        --config /workspace/erm-rust/data/books_aggressive_config.json \
+        --backend gpu \
+        --log-every 100 \
+        --checkpoint-dir /workspace/erm-rust/data/colony-checkpoints
+    resources:
+      requests:
+        memory: "12Gi"
+        cpu: "4"
+        nvidia.com/gpu: "1"
+      limits:
+        memory: "16Gi"
+        cpu: "8"
+        nvidia.com/gpu: "1"
+    env:
+    - name: LD_LIBRARY_PATH
+      value: /usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64
+    - name: NVIDIA_DRIVER_CAPABILITIES
+      value: compute,utility
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: all
+    - name: CUDA_VISIBLE_DEVICES
+      value: "0"
+    - name: WGPU_BACKEND
+      value: vulkan
+    - name: RUST_BACKTRACE
+      value: "1"
+    - name: RAYON_NUM_THREADS
+      value: "4"
+    volumeMounts:
+    - name: workspace
+      mountPath: /workspace
+    - name: cuda-13-0
+      mountPath: /usr/local/cuda-13.0
+      readOnly: true
+    - name: cuda-13-1
+      mountPath: /usr/local/cuda
+      readOnly: true
+  volumes:
+  - name: workspace
+    hostPath:
+      path: /home/kadajett/dev
+      type: Directory
+  - name: cuda-13-0
+    hostPath:
+      path: /usr/local/cuda-13.0
+  - name: cuda-13-1
+    hostPath:
+      path: /usr/local/cuda-13.1
