@@ -240,11 +240,11 @@ impl<B: AutodiffBackend> ColonyTrainer<B> {
                 rng,
             )?;
 
-            // Merge proposals for this batch item.
+            // Merge proposals for this batch item (move instead of clone).
             let mut batch_proposals =
                 Vec::with_capacity(follower_proposals.len() + leader_proposals.len());
-            batch_proposals.extend(follower_proposals.iter().cloned());
-            batch_proposals.extend(leader_proposals.iter().cloned());
+            batch_proposals.extend(follower_proposals);
+            batch_proposals.extend(leader_proposals);
 
             let y_new = merge_proposals(&batch_proposals, y_t_seq, &editable, l, max_edits)?;
             let edits = y_t_seq
