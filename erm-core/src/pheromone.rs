@@ -27,6 +27,67 @@ use crate::error::ErmResult;
 use crate::graph::{RouteGraph, EMPTY_SLOT};
 use crate::merge::SimpleEditProposal;
 
+/// Running standard deviation accumulator for pheromone deposit normalization.
+///
+/// Tracks a running mean and variance of positive deltas using Welford's
+/// online algorithm. The resulting `sigma()` is used to normalize the deposit:
+/// `eta * tanh(Delta / (sigma + eps))` instead of raw `eta * tanh(relu(Delta))`.
+///
+/// Falls back to the unnormalized formula when sigma is zero (cold start).
+#[derive(Debug, Clone)]
+pub struct RunningDeltaStats {
+    /// Number of positive deltas observed.
+    count: u64,
+    /// Running mean of positive deltas.
+    mean: f64,
+    /// Running M2 (sum of squared differences from the mean).
+    m2: f64,
+}
+
+impl Default for RunningDeltaStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RunningDeltaStats {
+    /// Create a new accumulator with no observations.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            count: 0,
+            mean: 0.0,
+            m2: 0.0,
+        }
+    }
+
+    /// Record a positive delta value.
+    pub fn push(&mut self, value: f32) {
+        let v = value as f64;
+        self.count += 1;
+        let delta = v - self.mean;
+        self.mean += delta / self.count as f64;
+        let delta2 = v - self.mean;
+        self.m2 += delta * delta2;
+    }
+
+    /// Current running standard deviation (population). Returns 0.0 if < 2 observations.
+    #[must_use]
+    pub fn sigma(&self) -> f32 {
+        if self.count < 2 {
+            0.0
+        } else {
+            (self.m2 / self.count as f64).sqrt() as f32
+        }
+    }
+
+    /// Number of observations.
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+}
+
 /// A single ant's edge trace through the route graph.
 ///
 /// Records which edges an ant used during its proposal step, along with
@@ -134,7 +195,8 @@ pub fn build_edge_traces(
 /// Applies the full pheromone update cycle in order:
 ///
 /// 1. **Evaporation**: `φ *= (1 - ρ)` for all valid edges
-/// 2. **Deposit**: `φ += η * tanh(max(Δ_k, 0.0))` for edges used by improving ants
+/// 2. **Deposit**: `φ += η * tanh(Δ / (σ + ε))` for edges used by improving ants
+///    (where σ is the running std of positive deltas; falls back to `η * tanh(Δ)` when σ ≈ 0)
 /// 3. **Taint**: `τ += ζ * max(-Δ_k, 0.0)` for edges used by harmful ants, clamped to `τ_max`
 /// 4. **Taint decay**: `τ *= (1 - ρ_τ)` for all valid edges
 /// 5. **Age increment**: `age += 1` for all valid edges
@@ -160,6 +222,27 @@ pub fn update_pheromones(
     ant_deltas: &[f32],
     config: &PheromoneConfig,
 ) -> ErmResult<PheromoneStats> {
+    update_pheromones_with_stats(graph, traces, ant_deltas, config, None)
+}
+
+/// Update pheromones with optional running delta normalization.
+///
+/// When `delta_stats` is `Some`, uses normalized deposit:
+/// `η * tanh(Δ / (σ + ε))` where σ = running std. Falls back to
+/// `η * tanh(Δ)` when σ ≈ 0 (cold start).
+///
+/// Positive deltas are also pushed into the running stats accumulator.
+///
+/// # Errors
+///
+/// Returns `ErmError` on dimension mismatches.
+pub fn update_pheromones_with_stats(
+    graph: &mut RouteGraph,
+    traces: &[EdgeTrace],
+    ant_deltas: &[f32],
+    config: &PheromoneConfig,
+    mut delta_stats: Option<&mut RunningDeltaStats>,
+) -> ErmResult<PheromoneStats> {
     let total = graph.total_elements();
     let rho = config.evaporation_rate;
     let eta = config.deposit_rate;
@@ -168,6 +251,10 @@ pub fn update_pheromones(
     let tau_max = config.taint_max;
     let phi_max = config.phi_max;
 
+    // Compute sigma from running stats (if provided).
+    let sigma = delta_stats.as_ref().map_or(0.0_f32, |s| s.sigma());
+    let norm_eps = 1e-6_f32;
+
     // Step 1: Evaporation — φ *= (1 - ρ) for all valid edges.
     for flat in 0..total {
         if graph.nbr_idx[flat] != EMPTY_SLOT {
@@ -175,7 +262,7 @@ pub fn update_pheromones(
         }
     }
 
-    // Step 2: Deposit — φ += η * tanh(max(Δ_k, 0.0)) for edges used by ant k.
+    // Step 2: Deposit — normalized tanh-bounded for edges used by ant k.
     // Step 3: Taint — τ += ζ * max(-Δ_k, 0.0) for edges used by ant k.
     for trace in traces {
         let ant_id = trace.ant_id;
@@ -188,25 +275,22 @@ pub fn update_pheromones(
         let positive_delta = delta.max(0.0);
         let negative_delta = (-delta).max(0.0);
 
-        // tanh-bounded deposit.
-        let deposit = eta * positive_delta.tanh();
-        let taint_deposit = zeta * negative_delta;
-
-        for &(_, _, edge_idx, weight) in &trace.entries {
-            // Use a flat index directly from the trace.
-            // The trace stores (batch, dest, edge_slot, weight).
-            // We need to convert to flat index.
-            let &(b, dst, e, _) = &(
-                trace.entries.iter().find(|x| x.2 == edge_idx).map(|x| x.0),
-                trace.entries.iter().find(|x| x.2 == edge_idx).map(|x| x.1),
-                edge_idx,
-                weight,
-            );
-            // Actually, let's just iterate directly over the entries.
-            let _ = (b, dst, e); // suppress unused
+        // Update running stats with positive deltas.
+        if positive_delta > 0.0 {
+            if let Some(ref mut stats) = delta_stats {
+                stats.push(positive_delta);
+            }
         }
 
-        // Re-iterate cleanly.
+        // Normalized deposit: η * tanh(Δ / (σ + ε)) when σ > 0, else η * tanh(Δ).
+        let deposit = if sigma > norm_eps {
+            eta * (positive_delta / (sigma + norm_eps)).tanh()
+        } else {
+            // Fallback: unnormalized (backward-compatible cold start).
+            eta * positive_delta.tanh()
+        };
+        let taint_deposit = zeta * negative_delta;
+
         for &(b, dst, e, _weight) in &trace.entries {
             if b >= graph.batch_size || dst >= graph.seq_len || e >= graph.emax {
                 continue;

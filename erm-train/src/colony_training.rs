@@ -33,7 +33,10 @@ use erm_core::corruption::corrupt;
 use erm_core::error::{ErmError, ErmResult};
 use erm_core::graph::RouteGraph;
 use erm_core::merge::{compute_ant_deltas, merge_proposals};
-use erm_core::pheromone::{build_edge_traces, prune_edges, update_pheromones, PheromoneStats};
+use erm_core::pheromone::{
+    build_edge_traces, prune_edges, update_pheromones_with_stats, PheromoneStats,
+    RunningDeltaStats,
+};
 
 use crate::bridge::{tensor2d_to_vec, tensor_to_vec, tokens_to_tensor};
 use crate::dataset::DataBatch;
@@ -74,6 +77,8 @@ pub struct ColonyTrainer<B: AutodiffBackend> {
     pub config: ErmConfig,
     /// Pheromone configuration.
     pub pheromone_config: PheromoneConfig,
+    /// Running delta statistics for normalized pheromone deposit.
+    pub delta_stats: RunningDeltaStats,
     /// Learning rate.
     lr: f64,
     /// Burn device.
@@ -106,6 +111,7 @@ impl<B: AutodiffBackend> ColonyTrainer<B> {
             ant_state,
             config: config.clone(),
             pheromone_config,
+            delta_stats: RunningDeltaStats::new(),
             lr: config.learning_rate,
             device,
         }
@@ -288,7 +294,7 @@ impl<B: AutodiffBackend> ColonyTrainer<B> {
             }
         }
 
-        // ── Step 6: Pheromone update on CPU ────────────────────────────
+        // ── Step 6: Pheromone update on CPU (with normalized deposit) ──
         let traces = build_edge_traces(
             &all_proposals_global,
             &edge_weights,
@@ -296,11 +302,12 @@ impl<B: AutodiffBackend> ColonyTrainer<B> {
             l,
             config.emax,
         );
-        let pheromone_stats = update_pheromones(
+        let pheromone_stats = update_pheromones_with_stats(
             &mut self.graph,
             &traces,
             &ant_deltas,
             &self.pheromone_config,
+            Some(&mut self.delta_stats),
         )?;
 
         // Insert leader-proposed edges.
