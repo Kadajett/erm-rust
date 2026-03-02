@@ -163,22 +163,7 @@ impl<B: AutodiffBackend> ColonyTrainer<B> {
         let logits_cpu = tensor_to_vec(logits_tensor.clone())?;
         let uncertainty_cpu = tensor2d_to_vec(uncertainty_tensor)?;
 
-        // ── Step 3: Colony on CPU (per batch element) ──────────────────
-        // Process the first batch element for colony operations.
-        // The colony logic operates on single sequences.
-        let batch_idx = 0;
-        let seq_logits = &logits_cpu[batch_idx * l * vocab_size..(batch_idx + 1) * l * vocab_size];
-        let seq_uncertainty = &uncertainty_cpu[batch_idx * l..(batch_idx + 1) * l];
-        let y_t_seq = &y_t_u32[batch_idx * l..(batch_idx + 1) * l];
-
-        // Build editable mask: corrupted positions are editable.
-        let editable: Vec<bool> = y_t_flat[batch_idx * l..(batch_idx + 1) * l]
-            .iter()
-            .zip(x_i32[batch_idx * l..(batch_idx + 1) * l].iter())
-            .map(|(y, x)| y != x)
-            .collect();
-
-        // Hidden state for route aggregate (zeros — Phase 1).
+        // ── Step 3: Colony on CPU (all batch elements) ─────────────────
         let d = config.hidden_dim;
         let hidden = vec![0.0_f32; config.batch_size * l * d];
         let (_, edge_weights) = self.graph.route_aggregate(
@@ -189,83 +174,110 @@ impl<B: AutodiffBackend> ColonyTrainer<B> {
             config.route_mu,
         )?;
 
-        // Follower proposals.
         let num_followers = config.num_followers();
         let first_follower_id = config.num_leaders();
         let follower_cfg = FollowerConfig::from_config(config);
-
-        let follower_proposals = AntColony::sample_follower_proposals(
-            seq_logits,
-            &self.graph,
-            batch_idx,
-            &follower_cfg,
-            &editable,
-            num_followers,
-            first_follower_id,
-            l,
-            vocab_size,
-            rng,
-        )?;
-
-        // Leader proposals.
         let num_leaders = config.num_leaders();
         let leader_cfg = LeaderConfig::from_config(config);
-
-        let (leader_proposals, edge_proposals) = AntColony::sample_leader_proposals(
-            seq_logits,
-            seq_uncertainty,
-            &self.graph,
-            batch_idx,
-            &leader_cfg,
-            &editable,
-            num_leaders,
-            0,
-            l,
-            vocab_size,
-            rng,
-        )?;
-
-        // Merge all proposals.
-        let mut all_proposals =
-            Vec::with_capacity(follower_proposals.len() + leader_proposals.len());
-        all_proposals.extend(follower_proposals.iter().cloned());
-        all_proposals.extend(leader_proposals.iter().cloned());
-
         let max_edits = config.max_edits();
-        let y_new = merge_proposals(&all_proposals, y_t_seq, &editable, l, max_edits)?;
-        let num_edits = y_t_seq
-            .iter()
-            .zip(y_new.iter())
-            .filter(|(a, b)| a != b)
-            .count();
+        let total_ants = config.num_ants;
+
+        // Accumulate across all batch items.
+        let mut all_proposals_global = Vec::new();
+        let mut all_edge_proposals = Vec::new();
+        let mut y_new_batch = Vec::with_capacity(b * l);
+        let mut total_edits: usize = 0;
+
+        for batch_idx in 0..b {
+            let seq_logits =
+                &logits_cpu[batch_idx * l * vocab_size..(batch_idx + 1) * l * vocab_size];
+            let seq_uncertainty = &uncertainty_cpu[batch_idx * l..(batch_idx + 1) * l];
+            let y_t_seq = &y_t_u32[batch_idx * l..(batch_idx + 1) * l];
+
+            // Build editable mask: corrupted positions are editable.
+            let editable: Vec<bool> = y_t_flat[batch_idx * l..(batch_idx + 1) * l]
+                .iter()
+                .zip(x_i32[batch_idx * l..(batch_idx + 1) * l].iter())
+                .map(|(y, x)| y != x)
+                .collect();
+
+            // Follower proposals.
+            let follower_proposals = AntColony::sample_follower_proposals(
+                seq_logits,
+                &self.graph,
+                batch_idx,
+                &follower_cfg,
+                &editable,
+                num_followers,
+                first_follower_id,
+                l,
+                vocab_size,
+                rng,
+            )?;
+
+            // Leader proposals.
+            let (leader_proposals, edge_proposals) = AntColony::sample_leader_proposals(
+                seq_logits,
+                seq_uncertainty,
+                &self.graph,
+                batch_idx,
+                &leader_cfg,
+                &editable,
+                num_leaders,
+                0,
+                l,
+                vocab_size,
+                rng,
+            )?;
+
+            // Merge proposals for this batch item.
+            let mut batch_proposals =
+                Vec::with_capacity(follower_proposals.len() + leader_proposals.len());
+            batch_proposals.extend(follower_proposals.iter().cloned());
+            batch_proposals.extend(leader_proposals.iter().cloned());
+
+            let y_new = merge_proposals(&batch_proposals, y_t_seq, &editable, l, max_edits)?;
+            let edits = y_t_seq
+                .iter()
+                .zip(y_new.iter())
+                .filter(|(a, b_val)| a != b_val)
+                .count();
+            total_edits += edits;
+
+            y_new_batch.extend_from_slice(&y_new);
+            all_proposals_global.extend(batch_proposals);
+            all_edge_proposals.extend(edge_proposals);
+        }
 
         // ── Step 4: Forward y_new on GPU for deltas ────────────────────
-        // Build a full-batch y_new tensor (replicate first seq across batch for simplicity).
-        let mut y_new_batch = Vec::with_capacity(b * l);
-        for _ in 0..b {
-            y_new_batch.extend_from_slice(&y_new);
-        }
         let y_new_tensor = tokens_to_tensor::<B>(&y_new_batch, b, l, &self.device)?;
         let (logits_new_tensor, _) = self.scorer.forward(y_new_tensor);
         let logits_new_cpu = tensor_to_vec(logits_new_tensor)?;
-        let logits_new_seq =
-            &logits_new_cpu[batch_idx * l * vocab_size..(batch_idx + 1) * l * vocab_size];
 
-        // ── Step 5: Compute ant deltas on CPU ──────────────────────────
-        let total_ants = config.num_ants;
+        // ── Step 5: Compute ant deltas on CPU (aggregate across batch) ─
+        // Use first batch item's logits for delta computation (ant IDs are
+        // per-batch-item but we aggregate the improvement signal).
+        let batch_idx_for_deltas = 0;
+        let seq_logits_0 = &logits_cpu
+            [batch_idx_for_deltas * l * vocab_size..(batch_idx_for_deltas + 1) * l * vocab_size];
+        let logits_new_seq_0 = &logits_new_cpu
+            [batch_idx_for_deltas * l * vocab_size..(batch_idx_for_deltas + 1) * l * vocab_size];
+        let y_t_seq_0 = &y_t_u32[batch_idx_for_deltas * l..(batch_idx_for_deltas + 1) * l];
+        let y_new_seq_0 = &y_new_batch[batch_idx_for_deltas * l..(batch_idx_for_deltas + 1) * l];
+
         let ant_deltas = compute_ant_deltas(
-            &all_proposals,
-            y_t_seq,
-            &y_new,
-            seq_logits,
-            logits_new_seq,
+            &all_proposals_global,
+            y_t_seq_0,
+            y_new_seq_0,
+            seq_logits_0,
+            logits_new_seq_0,
             vocab_size,
             total_ants,
         )?;
 
         // ── Step 6: Pheromone update on CPU ────────────────────────────
         let traces = build_edge_traces(
-            &all_proposals,
+            &all_proposals_global,
             &edge_weights,
             config.batch_size,
             l,
@@ -281,7 +293,7 @@ impl<B: AutodiffBackend> ColonyTrainer<B> {
         // Insert leader-proposed edges.
         let edges_inserted =
             self.graph
-                .propose_edges(&edge_proposals, config.phi_init, config.route_lambda);
+                .propose_edges(&all_edge_proposals, config.phi_init, config.route_lambda);
 
         // Prune weak edges.
         let edges_pruned = prune_edges(
@@ -299,6 +311,8 @@ impl<B: AutodiffBackend> ColonyTrainer<B> {
             DeathMode::Streak,
             rng,
         );
+
+        let num_edits = total_edits;
 
         // ── Step 7: Compute loss on GPU and backprop ───────────────────
         // Cross-entropy loss between scorer output on y_t and ground truth x.
