@@ -229,7 +229,7 @@ mod tests {
         let vocab = tokenizer.vocab_size();
         let erm_cfg = ErmConfig {
             vocab_size: vocab,
-            ..*cfg
+            ..cfg.clone()
         };
         let scorer = Scorer::new(&erm_cfg, vocab, 7);
         let ds = TextDataset::from_text(&text, &tokenizer, cfg.seq_len).unwrap();

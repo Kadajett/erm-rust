@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: erm-rust-builder
+  namespace: pcn-train
+spec:
+  restartPolicy: Never
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/hostname
+            operator: In
+            values:
+            - theshire
+  containers:
+  - name: builder
+    image: rust:1.82-slim
+    command: ["/bin/bash", "-c", "sleep 3600"]
+    volumeMounts:
+    - name: erm-rust
+      mountPath: /workspace/erm-rust
+    - name: books
+      mountPath: /workspace/rust-pcn/data/books
+    resources:
+      requests:
+        cpu: "1"
+        memory: "4Gi"
+      limits:
+        cpu: "4"
+        memory: "8Gi"
+  volumes:
+  - name: erm-rust-src
+    hostPath:
+      path: /home/kadajett/dev/openclaw/workspace/erm-rust
+  - name: erm-rust-deploy
+    hostPath:
+      path: /home/kadajett/dev/erm-rust
+  - name: books
+    hostPath:
+      path: /home/kadajett/dev/rust-pcn/data/books

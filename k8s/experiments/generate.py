@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""Generate K8s Job manifests for all ERM diffusion experiments."""
+
+EXPERIMENTS = [
+    # (id,   seq_len, hidden_dim, ants, emax, batch, T)
+    ("exp-a", 1024, 192,  64,  8,  1, 6),
+    ("exp-b",  768, 256,  96, 12,  1, 6),
+    ("exp-c",  512, 256, 128, 16,  2, 8),
+    ("exp-d",  512, 192, 192, 16,  2, 8),
+    ("exp-e",  384, 160, 256, 16,  4, 8),
+    ("exp-f",  256, 128, 384, 12,  4, 10),
+]
+
+TEMPLATE = """\
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: erm-diff-{exp_id}
+  namespace: pcn-train
+  labels:
+    app: erm-diffusion
+    exp: {exp_id}
+    variant: seq{seq_len}-h{hidden_dim}-a{ants}-e{emax}-b{batch}-T{diffusion_t}
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: erm-diffusion
+        exp: {exp_id}
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                - theshire
+      containers:
+      - name: erm-diff-{exp_id}
+        image: ubuntu:24.04
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -eo pipefail
+          EXP_ID="{exp_id}"
+          echo "=== ERM Diffusion Experiment: ${{EXP_ID}} ==="
+          echo "Host: $(hostname) | Start: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          apt-get update -qq 2>&1 | tail -1 || true
+          apt-get install -y -qq --no-install-recommends libvulkan1 mesa-vulkan-drivers ca-certificates 2>&1 | tail -3 || true
+          mkdir -p /etc/vulkan/icd.d
+          echo '{{"file_format_version":"1.0.0","ICD":{{"library_path":"libGLX_nvidia.so.0","api_version":"1.3"}}}}' > /etc/vulkan/icd.d/nvidia_icd.json || true
+
+          BOOK_DIR="/workspace/rust-pcn/data/books"
+          EXP_DIR="/workspace/erm-rust/data/experiments/${{EXP_ID}}"
+          mkdir -p "${{EXP_DIR}}"
+
+          echo "Book dir: ${{BOOK_DIR}} ($(ls ${{BOOK_DIR}} | wc -l) files)"
+
+          # OOM smoke test: 200 steps first
+          echo "=== Smoke test (200 steps) ==="
+          /workspace/erm-rust/bin/erm diffusion-train \\
+            --data "${{BOOK_DIR}}" \\
+            --steps 200 \\
+            --backend gpu \\
+            --exp-id "${{EXP_ID}}-smoke" \\
+            --seq-len {seq_len} \\
+            --hidden-dim {hidden_dim} \\
+            --num-ants {ants} \\
+            --batch {batch} \\
+            --diffusion-t {diffusion_t} \\
+            --checkpoint-dir "${{EXP_DIR}}/smoke" \\
+            --checkpoint-every 0 \\
+            --log-every 50 \\
+            2>&1 | tee "${{EXP_DIR}}/smoke.log"
+          SMOKE_EXIT=$?
+
+          if [ $SMOKE_EXIT -ne 0 ]; then
+            echo "Smoke test failed (likely OOM). Retrying with ants={ants_oom} batch={batch_oom}..."
+            /workspace/erm-rust/bin/erm diffusion-train \\
+              --data "${{BOOK_DIR}}" \\
+              --steps 200 \\
+              --backend gpu \\
+              --exp-id "${{EXP_ID}}-smoke-retry" \\
+              --seq-len {seq_len} \\
+              --hidden-dim {hidden_dim} \\
+              --num-ants {ants_oom} \\
+              --batch {batch_oom} \\
+              --diffusion-t {diffusion_t} \\
+              --checkpoint-dir "${{EXP_DIR}}/smoke-retry" \\
+              --checkpoint-every 0 \\
+              --log-every 50 \\
+              2>&1 | tee "${{EXP_DIR}}/smoke-retry.log"
+          fi
+
+          echo "=== Full training run (10000 steps) ==="
+          /workspace/erm-rust/bin/erm diffusion-train \\
+            --data "${{BOOK_DIR}}" \\
+            --steps 10000 \\
+            --backend gpu \\
+            --exp-id "${{EXP_ID}}" \\
+            --seq-len {seq_len} \\
+            --hidden-dim {hidden_dim} \\
+            --num-ants {ants} \\
+            --batch {batch} \\
+            --diffusion-t {diffusion_t} \\
+            --checkpoint-dir "${{EXP_DIR}}" \\
+            --checkpoint-every 500 \\
+            --log-every 50 \\
+            2>&1 | tee "${{EXP_DIR}}/train.log"
+
+          echo "=== ${{EXP_ID}} complete | $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+        resources:
+          requests:
+            cpu: "2"
+            memory: "{mem_req}Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "4"
+            memory: "{mem_lim}Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: erm-rust
+          mountPath: /workspace/erm-rust
+        - name: rust-pcn
+          mountPath: /workspace/rust-pcn
+      volumes:
+      - name: erm-rust
+        hostPath:
+          path: /home/kadajett/dev/erm-rust
+          type: Directory
+      - name: rust-pcn
+        hostPath:
+          path: /home/kadajett/dev/rust-pcn
+          type: Directory
+"""
+
+import os
+
+for exp_id, seq_len, hidden_dim, ants, emax, batch, diffusion_t in EXPERIMENTS:
+    # OOM fallback: halve ants and batch
+    ants_oom = max(ants // 2, 8)
+    batch_oom = max(batch // 2, 1)
+
+    # Memory estimation: rough heuristic
+    mem_req = max(6, batch * seq_len * hidden_dim // 50000)
+    mem_lim = mem_req + 2
+
+    manifest = TEMPLATE.format(
+        exp_id=exp_id,
+        seq_len=seq_len,
+        hidden_dim=hidden_dim,
+        ants=ants,
+        emax=emax,
+        batch=batch,
+        diffusion_t=diffusion_t,
+        ants_oom=ants_oom,
+        batch_oom=batch_oom,
+        mem_req=mem_req,
+        mem_lim=mem_lim,
+    )
+
+    out_path = os.path.join(os.path.dirname(__file__), f"{exp_id}.yaml")
+    with open(out_path, "w") as f:
+        f.write(manifest)
+    print(f"Written: {out_path}")
+
+print("Done.")

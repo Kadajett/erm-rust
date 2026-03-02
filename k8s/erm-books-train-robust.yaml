@@ -223,7 +223,6 @@ spec:
         --backend gpu \
         --log-every 50 \
         --checkpoint-dir "$CKPT_DIR" \
-        $WARMSTART_FLAG \
         2>&1 | tee /workspace/erm-rust/data/colony-books-train-log.txt
 
       EXIT_CODE=$?

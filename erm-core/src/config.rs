@@ -113,6 +113,36 @@ pub struct ErmConfig {
     pub weight_decay: f64,
     /// LR warmup steps.
     pub warmup_steps: usize,
+
+    // ── Diffusion schedule ─────────────────────────────────────────────
+    /// Number of diffusion denoising steps `T` per training iteration.
+    ///
+    /// At each step `t` (from T down to 1), a noisy candidate is built and
+    /// the colony proposes parallel edits (coarse at high t, fine at low t).
+    pub diffusion_steps: usize,
+    /// Noise schedule type for γ(t) weight in diffusion loss.
+    /// Options: "linear", "cosine", "sqrt".
+    pub noise_schedule: String,
+    /// Minimum γ(t) weight (at t=1, lightest noise).
+    pub gamma_min: f32,
+    /// Maximum γ(t) weight (at t=T, heaviest noise).
+    pub gamma_max: f32,
+
+    // ── Dataset / streaming ────────────────────────────────────────────
+    /// Use paragraph/sentence spans for book data (vs. sliding window).
+    pub use_paragraph_spans: bool,
+    /// Tokenizer type: "char" (legacy) or "bpe".
+    pub tokenizer_type: String,
+    /// BPE vocabulary size target (number of merge operations).
+    pub bpe_vocab_size: usize,
+    /// Path to pre-built BPE vocabulary file (empty = train from corpus).
+    pub bpe_vocab_path: String,
+
+    // ── Experiment identity ────────────────────────────────────────────
+    /// Experiment identifier (e.g., "exp-a"). Used in metrics.jsonl headers.
+    pub exp_id: String,
+    /// Path to write metrics JSONL file.
+    pub metrics_path: String,
 }
 
 impl Default for ErmConfig {
@@ -167,6 +197,19 @@ impl Default for ErmConfig {
             learning_rate: 1e-3,
             weight_decay: 0.01,
             warmup_steps: 1000,
+
+            diffusion_steps: 6,
+            noise_schedule: "cosine".to_string(),
+            gamma_min: 0.5,
+            gamma_max: 2.0,
+
+            use_paragraph_spans: true,
+            tokenizer_type: "bpe".to_string(),
+            bpe_vocab_size: 4096,
+            bpe_vocab_path: String::new(),
+
+            exp_id: String::new(),
+            metrics_path: String::new(),
         }
     }
 }
@@ -229,6 +272,36 @@ impl ErmConfig {
         }
         self.mask_rate_max
             + (self.mask_rate_min - self.mask_rate_max) * (big_t - t_f) / (big_t - 1.0)
+    }
+
+    /// Compute γ(t) — the loss weight at diffusion step t (1-indexed, 1=cleanest).
+    ///
+    /// Supports three schedules:
+    /// - `"linear"`: linear from γ_min (t=1) to γ_max (t=T).
+    /// - `"cosine"`: cosine schedule (smooth ramp).
+    /// - `"sqrt"`: square-root schedule.
+    ///
+    /// Used in the denoising loss: `L = E_t[ γ(t) * CE(x | z_t) ]`.
+    #[must_use]
+    pub fn gamma(&self, t: usize) -> f32 {
+        let big_t = self.diffusion_steps.max(1) as f32;
+        let t_f = (t as f32).clamp(1.0, big_t);
+        // Normalize s ∈ [0, 1]: s=0 at t=1, s=1 at t=T.
+        let s = (t_f - 1.0) / (big_t - 1.0).max(1.0);
+        match self.noise_schedule.as_str() {
+            "cosine" => {
+                // Cosine: 0.5 * (1 - cos(π * s)) rescaled to [γ_min, γ_max].
+                let cos_s = 0.5 * (1.0 - (std::f32::consts::PI * s).cos());
+                self.gamma_min + (self.gamma_max - self.gamma_min) * cos_s
+            }
+            "sqrt" => {
+                self.gamma_min + (self.gamma_max - self.gamma_min) * s.sqrt()
+            }
+            _ => {
+                // "linear" (default)
+                self.gamma_min + (self.gamma_max - self.gamma_min) * s
+            }
+        }
     }
 
     /// Compute the replace rate `β_t` for a given refinement step `t` (1-indexed).

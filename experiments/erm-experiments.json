@@ -1,0 +1,894 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "batch/v1",
+      "kind": "Job",
+      "metadata": {
+        "name": "erm-exp-a",
+        "namespace": "pcn-train",
+        "labels": {
+          "app": "erm-experiment",
+          "exp": "exp-a",
+          "variant": "seq512-h192-a64-e8-b2"
+        }
+      },
+      "spec": {
+        "backoffLimit": 1,
+        "ttlSecondsAfterFinished": 86400,
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "erm-experiment",
+              "exp": "exp-a"
+            }
+          },
+          "spec": {
+            "restartPolicy": "Never",
+            "runtimeClassName": "nvidia",
+            "affinity": {
+              "nodeAffinity": {
+                "requiredDuringSchedulingIgnoredDuringExecution": {
+                  "nodeSelectorTerms": [
+                    {
+                      "matchExpressions": [
+                        {
+                          "key": "kubernetes.io/hostname",
+                          "operator": "In",
+                          "values": [
+                            "theshire"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "containers": [
+              {
+                "name": "erm-train",
+                "image": "ubuntu:24.04",
+                "command": [
+                  "/bin/bash",
+                  "-c"
+                ],
+                "args": [
+                  "set -eo pipefail\nEXP_ID=\"exp-a\"\necho \"=== ERM Experiment: ${EXP_ID} ===\"\necho \"Host: $(hostname) | Start: $(date -u +%Y-%m-%dT%H:%M:%SZ)\"\n\napt-get update -qq 2>&1 | tail -1 || true\napt-get install -y -qq --no-install-recommends libvulkan1 mesa-vulkan-drivers ca-certificates 2>&1 | tail -3 || true\nmkdir -p /etc/vulkan/icd.d\necho '{\"file_format_version\":\"1.0.0\",\"ICD\":{\"library_path\":\"libGLX_nvidia.so.0\",\"api_version\":\"1.3\"}}' > /etc/vulkan/icd.d/nvidia_icd.json || true\n\nBOOK_DIR=\"/workspace/rust-pcn/data/books\"\nCORPUS=\"/workspace/erm-rust/data/text/corpus_books.txt\"\nmkdir -p /workspace/erm-rust/data/text\nif [ ! -f \"${CORPUS}\" ] || [ $(wc -c < \"${CORPUS}\" 2>/dev/null || echo 0) -lt 1000 ]; then\n  ls \"${BOOK_DIR}\"/*.txt | head -80 | xargs cat > \"${CORPUS}\" 2>/dev/null || true\nfi\n\nEXP_DIR=\"/workspace/erm-rust/data/experiments/${EXP_ID}\"\nCKPT_DIR=\"${EXP_DIR}/checkpoints\"\nLOG_DIR=\"${EXP_DIR}/logs\"\nmkdir -p \"${CKPT_DIR}\" \"${LOG_DIR}\"\n\ncat > \"${EXP_DIR}/config.json\" <<'JSONEOF'\n{\n  \"vocab_size\": 0,\n  \"num_blocks\": 3,\n  \"mlp_expansion\": 4,\n  \"dropout\": 0.0,\n  \"topk\": 6,\n  \"pmax\": 6,\n  \"refinement_steps\": 4,\n  \"mask_rate_max\": 0.8,\n  \"mask_rate_min\": 0.15,\n  \"replace_rate_max\": 0.1,\n  \"replace_rate_min\": 0.02,\n  \"pheromone_evap\": 0.1,\n  \"pheromone_eta\": 0.7,\n  \"taint_zeta\": 0.3,\n  \"taint_max\": 5.0,\n  \"taint_decay\": 0.05,\n  \"phi_max\": 100.0,\n  \"phi_init\": 0.05,\n  \"route_epsilon\": 1e-06,\n  \"route_lambda\": 1.0,\n  \"route_mu\": 0.01,\n  \"prune_min_score\": -1.0,\n  \"prune_max_age\": 1000,\n  \"leader_ema_gamma\": 0.3,\n  \"death_streak\": 5,\n  \"max_edits_per_step\": 0.18,\n  \"leader_fraction\": 0.12,\n  \"learning_rate\": 0.0005,\n  \"weight_decay\": 0.01,\n  \"warmup_steps\": 100,\n  \"seq_len\": 512,\n  \"hidden_dim\": 192,\n  \"num_heads\": 6,\n  \"num_ants\": 64,\n  \"emax\": 8,\n  \"batch_size\": 2\n}\nJSONEOF\n\necho \"Config:\"\ncat \"${EXP_DIR}/config.json\"\necho \"\"\necho \"=== Starting ${EXP_ID} training at $(date -u +%H:%M:%S) ===\"\necho \"\"\n\n/workspace/erm-rust/bin/erm colony-train \\\n  --data \"${CORPUS}\" \\\n  --steps 10000 \\\n  --config \"${EXP_DIR}/config.json\" \\\n  --backend gpu \\\n  --log-every 50 \\\n  --checkpoint-dir \"${CKPT_DIR}\" \\\n  2>&1 | tee \"${LOG_DIR}/colony-train.log\"\n\nEXIT_CODE=${PIPESTATUS[0]}\necho \"\"\necho \"=== ${EXP_ID} finished (exit=${EXIT_CODE}) at $(date -u +%H:%M:%S) ===\"\n\nif [ ${EXIT_CODE} -eq 0 ]; then\n  WS=\"${EXP_DIR}/warmstart\"\n  mkdir -p \"${WS}\"\n  cp \"${CKPT_DIR}/graph.json\" \"${WS}/\" 2>/dev/null || true\n  cp \"${CKPT_DIR}/ant_state.json\" \"${WS}/\" 2>/dev/null || true\n  cp \"${EXP_DIR}/config.json\" \"${WS}/\" 2>/dev/null || true\n  echo \"Warmstart saved to ${WS}\"\nfi\nexit ${EXIT_CODE}\n"
+                ],
+                "env": [
+                  {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "/usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
+                  },
+                  {
+                    "name": "NVIDIA_DRIVER_CAPABILITIES",
+                    "value": "compute,utility"
+                  },
+                  {
+                    "name": "NVIDIA_VISIBLE_DEVICES",
+                    "value": "all"
+                  },
+                  {
+                    "name": "WGPU_BACKEND",
+                    "value": "vulkan"
+                  },
+                  {
+                    "name": "RUST_BACKTRACE",
+                    "value": "1"
+                  },
+                  {
+                    "name": "RAYON_NUM_THREADS",
+                    "value": "2"
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "1",
+                    "memory": "1Gi",
+                    "nvidia.com/gpu": "1"
+                  },
+                  "limits": {
+                    "cpu": "4",
+                    "memory": "20Gi",
+                    "nvidia.com/gpu": "1"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "erm-rust",
+                    "mountPath": "/workspace/erm-rust"
+                  },
+                  {
+                    "name": "rust-pcn",
+                    "mountPath": "/workspace/rust-pcn",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "cuda-13-0",
+                    "mountPath": "/usr/local/cuda-13.0",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "cuda-13-1",
+                    "mountPath": "/usr/local/cuda",
+                    "readOnly": true
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "erm-rust",
+                "hostPath": {
+                  "path": "/home/kadajett/dev/erm-rust",
+                  "type": "Directory"
+                }
+              },
+              {
+                "name": "rust-pcn",
+                "hostPath": {
+                  "path": "/home/kadajett/dev/rust-pcn",
+                  "type": "Directory"
+                }
+              },
+              {
+                "name": "cuda-13-0",
+                "hostPath": {
+                  "path": "/usr/local/cuda-13.0"
+                }
+              },
+              {
+                "name": "cuda-13-1",
+                "hostPath": {
+                  "path": "/usr/local/cuda-13.1"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "batch/v1",
+      "kind": "Job",
+      "metadata": {
+        "name": "erm-exp-b",
+        "namespace": "pcn-train",
+        "labels": {
+          "app": "erm-experiment",
+          "exp": "exp-b",
+          "variant": "seq384-h256-a128-e16-b2"
+        }
+      },
+      "spec": {
+        "backoffLimit": 1,
+        "ttlSecondsAfterFinished": 86400,
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "erm-experiment",
+              "exp": "exp-b"
+            }
+          },
+          "spec": {
+            "restartPolicy": "Never",
+            "runtimeClassName": "nvidia",
+            "affinity": {
+              "nodeAffinity": {
+                "requiredDuringSchedulingIgnoredDuringExecution": {
+                  "nodeSelectorTerms": [
+                    {
+                      "matchExpressions": [
+                        {
+                          "key": "kubernetes.io/hostname",
+                          "operator": "In",
+                          "values": [
+                            "theshire"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "containers": [
+              {
+                "name": "erm-train",
+                "image": "ubuntu:24.04",
+                "command": [
+                  "/bin/bash",
+                  "-c"
+                ],
+                "args": [
+                  "set -eo pipefail\nEXP_ID=\"exp-b\"\necho \"=== ERM Experiment: ${EXP_ID} ===\"\necho \"Host: $(hostname) | Start: $(date -u +%Y-%m-%dT%H:%M:%SZ)\"\n\napt-get update -qq 2>&1 | tail -1 || true\napt-get install -y -qq --no-install-recommends libvulkan1 mesa-vulkan-drivers ca-certificates 2>&1 | tail -3 || true\nmkdir -p /etc/vulkan/icd.d\necho '{\"file_format_version\":\"1.0.0\",\"ICD\":{\"library_path\":\"libGLX_nvidia.so.0\",\"api_version\":\"1.3\"}}' > /etc/vulkan/icd.d/nvidia_icd.json || true\n\nBOOK_DIR=\"/workspace/rust-pcn/data/books\"\nCORPUS=\"/workspace/erm-rust/data/text/corpus_books.txt\"\nmkdir -p /workspace/erm-rust/data/text\nif [ ! -f \"${CORPUS}\" ] || [ $(wc -c < \"${CORPUS}\" 2>/dev/null || echo 0) -lt 1000 ]; then\n  ls \"${BOOK_DIR}\"/*.txt | head -80 | xargs cat > \"${CORPUS}\" 2>/dev/null || true\nfi\n\nEXP_DIR=\"/workspace/erm-rust/data/experiments/${EXP_ID}\"\nCKPT_DIR=\"${EXP_DIR}/checkpoints\"\nLOG_DIR=\"${EXP_DIR}/logs\"\nmkdir -p \"${CKPT_DIR}\" \"${LOG_DIR}\"\n\ncat > \"${EXP_DIR}/config.json\" <<'JSONEOF'\n{\n  \"vocab_size\": 0,\n  \"num_blocks\": 3,\n  \"mlp_expansion\": 4,\n  \"dropout\": 0.0,\n  \"topk\": 6,\n  \"pmax\": 6,\n  \"refinement_steps\": 4,\n  \"mask_rate_max\": 0.8,\n  \"mask_rate_min\": 0.15,\n  \"replace_rate_max\": 0.1,\n  \"replace_rate_min\": 0.02,\n  \"pheromone_evap\": 0.1,\n  \"pheromone_eta\": 0.7,\n  \"taint_zeta\": 0.3,\n  \"taint_max\": 5.0,\n  \"taint_decay\": 0.05,\n  \"phi_max\": 100.0,\n  \"phi_init\": 0.05,\n  \"route_epsilon\": 1e-06,\n  \"route_lambda\": 1.0,\n  \"route_mu\": 0.01,\n  \"prune_min_score\": -1.0,\n  \"prune_max_age\": 1000,\n  \"leader_ema_gamma\": 0.3,\n  \"death_streak\": 5,\n  \"max_edits_per_step\": 0.18,\n  \"leader_fraction\": 0.12,\n  \"learning_rate\": 0.0005,\n  \"weight_decay\": 0.01,\n  \"warmup_steps\": 100,\n  \"seq_len\": 384,\n  \"hidden_dim\": 256,\n  \"num_heads\": 8,\n  \"num_ants\": 128,\n  \"emax\": 16,\n  \"batch_size\": 2\n}\nJSONEOF\n\necho \"Config:\"\ncat \"${EXP_DIR}/config.json\"\necho \"\"\necho \"=== Starting ${EXP_ID} training at $(date -u +%H:%M:%S) ===\"\necho \"\"\n\n/workspace/erm-rust/bin/erm colony-train \\\n  --data \"${CORPUS}\" \\\n  --steps 10000 \\\n  --config \"${EXP_DIR}/config.json\" \\\n  --backend gpu \\\n  --log-every 50 \\\n  --checkpoint-dir \"${CKPT_DIR}\" \\\n  2>&1 | tee \"${LOG_DIR}/colony-train.log\"\n\nEXIT_CODE=${PIPESTATUS[0]}\necho \"\"\necho \"=== ${EXP_ID} finished (exit=${EXIT_CODE}) at $(date -u +%H:%M:%S) ===\"\n\nif [ ${EXIT_CODE} -eq 0 ]; then\n  WS=\"${EXP_DIR}/warmstart\"\n  mkdir -p \"${WS}\"\n  cp \"${CKPT_DIR}/graph.json\" \"${WS}/\" 2>/dev/null || true\n  cp \"${CKPT_DIR}/ant_state.json\" \"${WS}/\" 2>/dev/null || true\n  cp \"${EXP_DIR}/config.json\" \"${WS}/\" 2>/dev/null || true\n  echo \"Warmstart saved to ${WS}\"\nfi\nexit ${EXIT_CODE}\n"
+                ],
+                "env": [
+                  {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "/usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
+                  },
+                  {
+                    "name": "NVIDIA_DRIVER_CAPABILITIES",
+                    "value": "compute,utility"
+                  },
+                  {
+                    "name": "NVIDIA_VISIBLE_DEVICES",
+                    "value": "all"
+                  },
+                  {
+                    "name": "WGPU_BACKEND",
+                    "value": "vulkan"
+                  },
+                  {
+                    "name": "RUST_BACKTRACE",
+                    "value": "1"
+                  },
+                  {
+                    "name": "RAYON_NUM_THREADS",
+                    "value": "2"
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "1",
+                    "memory": "1Gi",
+                    "nvidia.com/gpu": "1"
+                  },
+                  "limits": {
+                    "cpu": "4",
+                    "memory": "20Gi",
+                    "nvidia.com/gpu": "1"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "erm-rust",
+                    "mountPath": "/workspace/erm-rust"
+                  },
+                  {
+                    "name": "rust-pcn",
+                    "mountPath": "/workspace/rust-pcn",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "cuda-13-0",
+                    "mountPath": "/usr/local/cuda-13.0",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "cuda-13-1",
+                    "mountPath": "/usr/local/cuda",
+                    "readOnly": true
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "erm-rust",
+                "hostPath": {
+                  "path": "/home/kadajett/dev/erm-rust",
+                  "type": "Directory"
+                }
+              },
+              {
+                "name": "rust-pcn",
+                "hostPath": {
+                  "path": "/home/kadajett/dev/rust-pcn",
+                  "type": "Directory"
+                }
+              },
+              {
+                "name": "cuda-13-0",
+                "hostPath": {
+                  "path": "/usr/local/cuda-13.0"
+                }
+              },
+              {
+                "name": "cuda-13-1",
+                "hostPath": {
+                  "path": "/usr/local/cuda-13.1"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "batch/v1",
+      "kind": "Job",
+      "metadata": {
+        "name": "erm-exp-c",
+        "namespace": "pcn-train",
+        "labels": {
+          "app": "erm-experiment",
+          "exp": "exp-c",
+          "variant": "seq256-h256-a256-e16-b1"
+        }
+      },
+      "spec": {
+        "backoffLimit": 1,
+        "ttlSecondsAfterFinished": 86400,
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "erm-experiment",
+              "exp": "exp-c"
+            }
+          },
+          "spec": {
+            "restartPolicy": "Never",
+            "runtimeClassName": "nvidia",
+            "affinity": {
+              "nodeAffinity": {
+                "requiredDuringSchedulingIgnoredDuringExecution": {
+                  "nodeSelectorTerms": [
+                    {
+                      "matchExpressions": [
+                        {
+                          "key": "kubernetes.io/hostname",
+                          "operator": "In",
+                          "values": [
+                            "theshire"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "containers": [
+              {
+                "name": "erm-train",
+                "image": "ubuntu:24.04",
+                "command": [
+                  "/bin/bash",
+                  "-c"
+                ],
+                "args": [
+                  "set -eo pipefail\nEXP_ID=\"exp-c\"\necho \"=== ERM Experiment: ${EXP_ID} ===\"\necho \"Host: $(hostname) | Start: $(date -u +%Y-%m-%dT%H:%M:%SZ)\"\n\napt-get update -qq 2>&1 | tail -1 || true\napt-get install -y -qq --no-install-recommends libvulkan1 mesa-vulkan-drivers ca-certificates 2>&1 | tail -3 || true\nmkdir -p /etc/vulkan/icd.d\necho '{\"file_format_version\":\"1.0.0\",\"ICD\":{\"library_path\":\"libGLX_nvidia.so.0\",\"api_version\":\"1.3\"}}' > /etc/vulkan/icd.d/nvidia_icd.json || true\n\nBOOK_DIR=\"/workspace/rust-pcn/data/books\"\nCORPUS=\"/workspace/erm-rust/data/text/corpus_books.txt\"\nmkdir -p /workspace/erm-rust/data/text\nif [ ! -f \"${CORPUS}\" ] || [ $(wc -c < \"${CORPUS}\" 2>/dev/null || echo 0) -lt 1000 ]; then\n  ls \"${BOOK_DIR}\"/*.txt | head -80 | xargs cat > \"${CORPUS}\" 2>/dev/null || true\nfi\n\nEXP_DIR=\"/workspace/erm-rust/data/experiments/${EXP_ID}\"\nCKPT_DIR=\"${EXP_DIR}/checkpoints\"\nLOG_DIR=\"${EXP_DIR}/logs\"\nmkdir -p \"${CKPT_DIR}\" \"${LOG_DIR}\"\n\ncat > \"${EXP_DIR}/config.json\" <<'JSONEOF'\n{\n  \"vocab_size\": 0,\n  \"num_blocks\": 3,\n  \"mlp_expansion\": 4,\n  \"dropout\": 0.0,\n  \"topk\": 6,\n  \"pmax\": 6,\n  \"refinement_steps\": 4,\n  \"mask_rate_max\": 0.8,\n  \"mask_rate_min\": 0.15,\n  \"replace_rate_max\": 0.1,\n  \"replace_rate_min\": 0.02,\n  \"pheromone_evap\": 0.1,\n  \"pheromone_eta\": 0.7,\n  \"taint_zeta\": 0.3,\n  \"taint_max\": 5.0,\n  \"taint_decay\": 0.05,\n  \"phi_max\": 100.0,\n  \"phi_init\": 0.05,\n  \"route_epsilon\": 1e-06,\n  \"route_lambda\": 1.0,\n  \"route_mu\": 0.01,\n  \"prune_min_score\": -1.0,\n  \"prune_max_age\": 1000,\n  \"leader_ema_gamma\": 0.3,\n  \"death_streak\": 5,\n  \"max_edits_per_step\": 0.18,\n  \"leader_fraction\": 0.12,\n  \"learning_rate\": 0.0005,\n  \"weight_decay\": 0.01,\n  \"warmup_steps\": 100,\n  \"seq_len\": 256,\n  \"hidden_dim\": 256,\n  \"num_heads\": 8,\n  \"num_ants\": 256,\n  \"emax\": 16,\n  \"batch_size\": 1\n}\nJSONEOF\n\necho \"Config:\"\ncat \"${EXP_DIR}/config.json\"\necho \"\"\necho \"=== Starting ${EXP_ID} training at $(date -u +%H:%M:%S) ===\"\necho \"\"\n\n/workspace/erm-rust/bin/erm colony-train \\\n  --data \"${CORPUS}\" \\\n  --steps 10000 \\\n  --config \"${EXP_DIR}/config.json\" \\\n  --backend gpu \\\n  --log-every 50 \\\n  --checkpoint-dir \"${CKPT_DIR}\" \\\n  2>&1 | tee \"${LOG_DIR}/colony-train.log\"\n\nEXIT_CODE=${PIPESTATUS[0]}\necho \"\"\necho \"=== ${EXP_ID} finished (exit=${EXIT_CODE}) at $(date -u +%H:%M:%S) ===\"\n\nif [ ${EXIT_CODE} -eq 0 ]; then\n  WS=\"${EXP_DIR}/warmstart\"\n  mkdir -p \"${WS}\"\n  cp \"${CKPT_DIR}/graph.json\" \"${WS}/\" 2>/dev/null || true\n  cp \"${CKPT_DIR}/ant_state.json\" \"${WS}/\" 2>/dev/null || true\n  cp \"${EXP_DIR}/config.json\" \"${WS}/\" 2>/dev/null || true\n  echo \"Warmstart saved to ${WS}\"\nfi\nexit ${EXIT_CODE}\n"
+                ],
+                "env": [
+                  {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "/usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
+                  },
+                  {
+                    "name": "NVIDIA_DRIVER_CAPABILITIES",
+                    "value": "compute,utility"
+                  },
+                  {
+                    "name": "NVIDIA_VISIBLE_DEVICES",
+                    "value": "all"
+                  },
+                  {
+                    "name": "WGPU_BACKEND",
+                    "value": "vulkan"
+                  },
+                  {
+                    "name": "RUST_BACKTRACE",
+                    "value": "1"
+                  },
+                  {
+                    "name": "RAYON_NUM_THREADS",
+                    "value": "2"
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "1",
+                    "memory": "1Gi",
+                    "nvidia.com/gpu": "1"
+                  },
+                  "limits": {
+                    "cpu": "4",
+                    "memory": "20Gi",
+                    "nvidia.com/gpu": "1"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "erm-rust",
+                    "mountPath": "/workspace/erm-rust"
+                  },
+                  {
+                    "name": "rust-pcn",
+                    "mountPath": "/workspace/rust-pcn",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "cuda-13-0",
+                    "mountPath": "/usr/local/cuda-13.0",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "cuda-13-1",
+                    "mountPath": "/usr/local/cuda",
+                    "readOnly": true
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "erm-rust",
+                "hostPath": {
+                  "path": "/home/kadajett/dev/erm-rust",
+                  "type": "Directory"
+                }
+              },
+              {
+                "name": "rust-pcn",
+                "hostPath": {
+                  "path": "/home/kadajett/dev/rust-pcn",
+                  "type": "Directory"
+                }
+              },
+              {
+                "name": "cuda-13-0",
+                "hostPath": {
+                  "path": "/usr/local/cuda-13.0"
+                }
+              },
+              {
+                "name": "cuda-13-1",
+                "hostPath": {
+                  "path": "/usr/local/cuda-13.1"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "batch/v1",
+      "kind": "Job",
+      "metadata": {
+        "name": "erm-exp-d",
+        "namespace": "pcn-train",
+        "labels": {
+          "app": "erm-experiment",
+          "exp": "exp-d",
+          "variant": "seq512-h160-a96-e12-b2"
+        }
+      },
+      "spec": {
+        "backoffLimit": 1,
+        "ttlSecondsAfterFinished": 86400,
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "erm-experiment",
+              "exp": "exp-d"
+            }
+          },
+          "spec": {
+            "restartPolicy": "Never",
+            "runtimeClassName": "nvidia",
+            "affinity": {
+              "nodeAffinity": {
+                "requiredDuringSchedulingIgnoredDuringExecution": {
+                  "nodeSelectorTerms": [
+                    {
+                      "matchExpressions": [
+                        {
+                          "key": "kubernetes.io/hostname",
+                          "operator": "In",
+                          "values": [
+                            "theshire"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "containers": [
+              {
+                "name": "erm-train",
+                "image": "ubuntu:24.04",
+                "command": [
+                  "/bin/bash",
+                  "-c"
+                ],
+                "args": [
+                  "set -eo pipefail\nEXP_ID=\"exp-d\"\necho \"=== ERM Experiment: ${EXP_ID} ===\"\necho \"Host: $(hostname) | Start: $(date -u +%Y-%m-%dT%H:%M:%SZ)\"\n\napt-get update -qq 2>&1 | tail -1 || true\napt-get install -y -qq --no-install-recommends libvulkan1 mesa-vulkan-drivers ca-certificates 2>&1 | tail -3 || true\nmkdir -p /etc/vulkan/icd.d\necho '{\"file_format_version\":\"1.0.0\",\"ICD\":{\"library_path\":\"libGLX_nvidia.so.0\",\"api_version\":\"1.3\"}}' > /etc/vulkan/icd.d/nvidia_icd.json || true\n\nBOOK_DIR=\"/workspace/rust-pcn/data/books\"\nCORPUS=\"/workspace/erm-rust/data/text/corpus_books.txt\"\nmkdir -p /workspace/erm-rust/data/text\nif [ ! -f \"${CORPUS}\" ] || [ $(wc -c < \"${CORPUS}\" 2>/dev/null || echo 0) -lt 1000 ]; then\n  ls \"${BOOK_DIR}\"/*.txt | head -80 | xargs cat > \"${CORPUS}\" 2>/dev/null || true\nfi\n\nEXP_DIR=\"/workspace/erm-rust/data/experiments/${EXP_ID}\"\nCKPT_DIR=\"${EXP_DIR}/checkpoints\"\nLOG_DIR=\"${EXP_DIR}/logs\"\nmkdir -p \"${CKPT_DIR}\" \"${LOG_DIR}\"\n\ncat > \"${EXP_DIR}/config.json\" <<'JSONEOF'\n{\n  \"vocab_size\": 0,\n  \"num_blocks\": 3,\n  \"mlp_expansion\": 4,\n  \"dropout\": 0.0,\n  \"topk\": 6,\n  \"pmax\": 6,\n  \"refinement_steps\": 4,\n  \"mask_rate_max\": 0.8,\n  \"mask_rate_min\": 0.15,\n  \"replace_rate_max\": 0.1,\n  \"replace_rate_min\": 0.02,\n  \"pheromone_evap\": 0.1,\n  \"pheromone_eta\": 0.7,\n  \"taint_zeta\": 0.3,\n  \"taint_max\": 5.0,\n  \"taint_decay\": 0.05,\n  \"phi_max\": 100.0,\n  \"phi_init\": 0.05,\n  \"route_epsilon\": 1e-06,\n  \"route_lambda\": 1.0,\n  \"route_mu\": 0.01,\n  \"prune_min_score\": -1.0,\n  \"prune_max_age\": 1000,\n  \"leader_ema_gamma\": 0.3,\n  \"death_streak\": 5,\n  \"max_edits_per_step\": 0.18,\n  \"leader_fraction\": 0.12,\n  \"learning_rate\": 0.0005,\n  \"weight_decay\": 0.01,\n  \"warmup_steps\": 100,\n  \"seq_len\": 512,\n  \"hidden_dim\": 160,\n  \"num_heads\": 5,\n  \"num_ants\": 96,\n  \"emax\": 12,\n  \"batch_size\": 2\n}\nJSONEOF\n\necho \"Config:\"\ncat \"${EXP_DIR}/config.json\"\necho \"\"\necho \"=== Starting ${EXP_ID} training at $(date -u +%H:%M:%S) ===\"\necho \"\"\n\n/workspace/erm-rust/bin/erm colony-train \\\n  --data \"${CORPUS}\" \\\n  --steps 10000 \\\n  --config \"${EXP_DIR}/config.json\" \\\n  --backend gpu \\\n  --log-every 50 \\\n  --checkpoint-dir \"${CKPT_DIR}\" \\\n  2>&1 | tee \"${LOG_DIR}/colony-train.log\"\n\nEXIT_CODE=${PIPESTATUS[0]}\necho \"\"\necho \"=== ${EXP_ID} finished (exit=${EXIT_CODE}) at $(date -u +%H:%M:%S) ===\"\n\nif [ ${EXIT_CODE} -eq 0 ]; then\n  WS=\"${EXP_DIR}/warmstart\"\n  mkdir -p \"${WS}\"\n  cp \"${CKPT_DIR}/graph.json\" \"${WS}/\" 2>/dev/null || true\n  cp \"${CKPT_DIR}/ant_state.json\" \"${WS}/\" 2>/dev/null || true\n  cp \"${EXP_DIR}/config.json\" \"${WS}/\" 2>/dev/null || true\n  echo \"Warmstart saved to ${WS}\"\nfi\nexit ${EXIT_CODE}\n"
+                ],
+                "env": [
+                  {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "/usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
+                  },
+                  {
+                    "name": "NVIDIA_DRIVER_CAPABILITIES",
+                    "value": "compute,utility"
+                  },
+                  {
+                    "name": "NVIDIA_VISIBLE_DEVICES",
+                    "value": "all"
+                  },
+                  {
+                    "name": "WGPU_BACKEND",
+                    "value": "vulkan"
+                  },
+                  {
+                    "name": "RUST_BACKTRACE",
+                    "value": "1"
+                  },
+                  {
+                    "name": "RAYON_NUM_THREADS",
+                    "value": "2"
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "1",
+                    "memory": "1Gi",
+                    "nvidia.com/gpu": "1"
+                  },
+                  "limits": {
+                    "cpu": "4",
+                    "memory": "20Gi",
+                    "nvidia.com/gpu": "1"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "erm-rust",
+                    "mountPath": "/workspace/erm-rust"
+                  },
+                  {
+                    "name": "rust-pcn",
+                    "mountPath": "/workspace/rust-pcn",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "cuda-13-0",
+                    "mountPath": "/usr/local/cuda-13.0",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "cuda-13-1",
+                    "mountPath": "/usr/local/cuda",
+                    "readOnly": true
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "erm-rust",
+                "hostPath": {
+                  "path": "/home/kadajett/dev/erm-rust",
+                  "type": "Directory"
+                }
+              },
+              {
+                "name": "rust-pcn",
+                "hostPath": {
+                  "path": "/home/kadajett/dev/rust-pcn",
+                  "type": "Directory"
+                }
+              },
+              {
+                "name": "cuda-13-0",
+                "hostPath": {
+                  "path": "/usr/local/cuda-13.0"
+                }
+              },
+              {
+                "name": "cuda-13-1",
+                "hostPath": {
+                  "path": "/usr/local/cuda-13.1"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "batch/v1",
+      "kind": "Job",
+      "metadata": {
+        "name": "erm-exp-e",
+        "namespace": "pcn-train",
+        "labels": {
+          "app": "erm-experiment",
+          "exp": "exp-e",
+          "variant": "seq384-h192-a64-e16-b4"
+        }
+      },
+      "spec": {
+        "backoffLimit": 1,
+        "ttlSecondsAfterFinished": 86400,
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "erm-experiment",
+              "exp": "exp-e"
+            }
+          },
+          "spec": {
+            "restartPolicy": "Never",
+            "runtimeClassName": "nvidia",
+            "affinity": {
+              "nodeAffinity": {
+                "requiredDuringSchedulingIgnoredDuringExecution": {
+                  "nodeSelectorTerms": [
+                    {
+                      "matchExpressions": [
+                        {
+                          "key": "kubernetes.io/hostname",
+                          "operator": "In",
+                          "values": [
+                            "theshire"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "containers": [
+              {
+                "name": "erm-train",
+                "image": "ubuntu:24.04",
+                "command": [
+                  "/bin/bash",
+                  "-c"
+                ],
+                "args": [
+                  "set -eo pipefail\nEXP_ID=\"exp-e\"\necho \"=== ERM Experiment: ${EXP_ID} ===\"\necho \"Host: $(hostname) | Start: $(date -u +%Y-%m-%dT%H:%M:%SZ)\"\n\napt-get update -qq 2>&1 | tail -1 || true\napt-get install -y -qq --no-install-recommends libvulkan1 mesa-vulkan-drivers ca-certificates 2>&1 | tail -3 || true\nmkdir -p /etc/vulkan/icd.d\necho '{\"file_format_version\":\"1.0.0\",\"ICD\":{\"library_path\":\"libGLX_nvidia.so.0\",\"api_version\":\"1.3\"}}' > /etc/vulkan/icd.d/nvidia_icd.json || true\n\nBOOK_DIR=\"/workspace/rust-pcn/data/books\"\nCORPUS=\"/workspace/erm-rust/data/text/corpus_books.txt\"\nmkdir -p /workspace/erm-rust/data/text\nif [ ! -f \"${CORPUS}\" ] || [ $(wc -c < \"${CORPUS}\" 2>/dev/null || echo 0) -lt 1000 ]; then\n  ls \"${BOOK_DIR}\"/*.txt | head -80 | xargs cat > \"${CORPUS}\" 2>/dev/null || true\nfi\n\nEXP_DIR=\"/workspace/erm-rust/data/experiments/${EXP_ID}\"\nCKPT_DIR=\"${EXP_DIR}/checkpoints\"\nLOG_DIR=\"${EXP_DIR}/logs\"\nmkdir -p \"${CKPT_DIR}\" \"${LOG_DIR}\"\n\ncat > \"${EXP_DIR}/config.json\" <<'JSONEOF'\n{\n  \"vocab_size\": 0,\n  \"num_blocks\": 3,\n  \"mlp_expansion\": 4,\n  \"dropout\": 0.0,\n  \"topk\": 6,\n  \"pmax\": 6,\n  \"refinement_steps\": 4,\n  \"mask_rate_max\": 0.8,\n  \"mask_rate_min\": 0.15,\n  \"replace_rate_max\": 0.1,\n  \"replace_rate_min\": 0.02,\n  \"pheromone_evap\": 0.1,\n  \"pheromone_eta\": 0.7,\n  \"taint_zeta\": 0.3,\n  \"taint_max\": 5.0,\n  \"taint_decay\": 0.05,\n  \"phi_max\": 100.0,\n  \"phi_init\": 0.05,\n  \"route_epsilon\": 1e-06,\n  \"route_lambda\": 1.0,\n  \"route_mu\": 0.01,\n  \"prune_min_score\": -1.0,\n  \"prune_max_age\": 1000,\n  \"leader_ema_gamma\": 0.3,\n  \"death_streak\": 5,\n  \"max_edits_per_step\": 0.18,\n  \"leader_fraction\": 0.12,\n  \"learning_rate\": 0.0005,\n  \"weight_decay\": 0.01,\n  \"warmup_steps\": 100,\n  \"seq_len\": 384,\n  \"hidden_dim\": 192,\n  \"num_heads\": 6,\n  \"num_ants\": 64,\n  \"emax\": 16,\n  \"batch_size\": 4\n}\nJSONEOF\n\necho \"Config:\"\ncat \"${EXP_DIR}/config.json\"\necho \"\"\necho \"=== Starting ${EXP_ID} training at $(date -u +%H:%M:%S) ===\"\necho \"\"\n\n/workspace/erm-rust/bin/erm colony-train \\\n  --data \"${CORPUS}\" \\\n  --steps 10000 \\\n  --config \"${EXP_DIR}/config.json\" \\\n  --backend gpu \\\n  --log-every 50 \\\n  --checkpoint-dir \"${CKPT_DIR}\" \\\n  2>&1 | tee \"${LOG_DIR}/colony-train.log\"\n\nEXIT_CODE=${PIPESTATUS[0]}\necho \"\"\necho \"=== ${EXP_ID} finished (exit=${EXIT_CODE}) at $(date -u +%H:%M:%S) ===\"\n\nif [ ${EXIT_CODE} -eq 0 ]; then\n  WS=\"${EXP_DIR}/warmstart\"\n  mkdir -p \"${WS}\"\n  cp \"${CKPT_DIR}/graph.json\" \"${WS}/\" 2>/dev/null || true\n  cp \"${CKPT_DIR}/ant_state.json\" \"${WS}/\" 2>/dev/null || true\n  cp \"${EXP_DIR}/config.json\" \"${WS}/\" 2>/dev/null || true\n  echo \"Warmstart saved to ${WS}\"\nfi\nexit ${EXIT_CODE}\n"
+                ],
+                "env": [
+                  {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "/usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
+                  },
+                  {
+                    "name": "NVIDIA_DRIVER_CAPABILITIES",
+                    "value": "compute,utility"
+                  },
+                  {
+                    "name": "NVIDIA_VISIBLE_DEVICES",
+                    "value": "all"
+                  },
+                  {
+                    "name": "WGPU_BACKEND",
+                    "value": "vulkan"
+                  },
+                  {
+                    "name": "RUST_BACKTRACE",
+                    "value": "1"
+                  },
+                  {
+                    "name": "RAYON_NUM_THREADS",
+                    "value": "2"
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "1",
+                    "memory": "1Gi",
+                    "nvidia.com/gpu": "1"
+                  },
+                  "limits": {
+                    "cpu": "4",
+                    "memory": "20Gi",
+                    "nvidia.com/gpu": "1"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "erm-rust",
+                    "mountPath": "/workspace/erm-rust"
+                  },
+                  {
+                    "name": "rust-pcn",
+                    "mountPath": "/workspace/rust-pcn",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "cuda-13-0",
+                    "mountPath": "/usr/local/cuda-13.0",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "cuda-13-1",
+                    "mountPath": "/usr/local/cuda",
+                    "readOnly": true
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "erm-rust",
+                "hostPath": {
+                  "path": "/home/kadajett/dev/erm-rust",
+                  "type": "Directory"
+                }
+              },
+              {
+                "name": "rust-pcn",
+                "hostPath": {
+                  "path": "/home/kadajett/dev/rust-pcn",
+                  "type": "Directory"
+                }
+              },
+              {
+                "name": "cuda-13-0",
+                "hostPath": {
+                  "path": "/usr/local/cuda-13.0"
+                }
+              },
+              {
+                "name": "cuda-13-1",
+                "hostPath": {
+                  "path": "/usr/local/cuda-13.1"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "batch/v1",
+      "kind": "Job",
+      "metadata": {
+        "name": "erm-exp-f",
+        "namespace": "pcn-train",
+        "labels": {
+          "app": "erm-experiment",
+          "exp": "exp-f",
+          "variant": "seq256-h128-a128-e8-b4"
+        }
+      },
+      "spec": {
+        "backoffLimit": 1,
+        "ttlSecondsAfterFinished": 86400,
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "erm-experiment",
+              "exp": "exp-f"
+            }
+          },
+          "spec": {
+            "restartPolicy": "Never",
+            "runtimeClassName": "nvidia",
+            "affinity": {
+              "nodeAffinity": {
+                "requiredDuringSchedulingIgnoredDuringExecution": {
+                  "nodeSelectorTerms": [
+                    {
+                      "matchExpressions": [
+                        {
+                          "key": "kubernetes.io/hostname",
+                          "operator": "In",
+                          "values": [
+                            "theshire"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "containers": [
+              {
+                "name": "erm-train",
+                "image": "ubuntu:24.04",
+                "command": [
+                  "/bin/bash",
+                  "-c"
+                ],
+                "args": [
+                  "set -eo pipefail\nEXP_ID=\"exp-f\"\necho \"=== ERM Experiment: ${EXP_ID} ===\"\necho \"Host: $(hostname) | Start: $(date -u +%Y-%m-%dT%H:%M:%SZ)\"\n\napt-get update -qq 2>&1 | tail -1 || true\napt-get install -y -qq --no-install-recommends libvulkan1 mesa-vulkan-drivers ca-certificates 2>&1 | tail -3 || true\nmkdir -p /etc/vulkan/icd.d\necho '{\"file_format_version\":\"1.0.0\",\"ICD\":{\"library_path\":\"libGLX_nvidia.so.0\",\"api_version\":\"1.3\"}}' > /etc/vulkan/icd.d/nvidia_icd.json || true\n\nBOOK_DIR=\"/workspace/rust-pcn/data/books\"\nCORPUS=\"/workspace/erm-rust/data/text/corpus_books.txt\"\nmkdir -p /workspace/erm-rust/data/text\nif [ ! -f \"${CORPUS}\" ] || [ $(wc -c < \"${CORPUS}\" 2>/dev/null || echo 0) -lt 1000 ]; then\n  ls \"${BOOK_DIR}\"/*.txt | head -80 | xargs cat > \"${CORPUS}\" 2>/dev/null || true\nfi\n\nEXP_DIR=\"/workspace/erm-rust/data/experiments/${EXP_ID}\"\nCKPT_DIR=\"${EXP_DIR}/checkpoints\"\nLOG_DIR=\"${EXP_DIR}/logs\"\nmkdir -p \"${CKPT_DIR}\" \"${LOG_DIR}\"\n\ncat > \"${EXP_DIR}/config.json\" <<'JSONEOF'\n{\n  \"vocab_size\": 0,\n  \"num_blocks\": 3,\n  \"mlp_expansion\": 4,\n  \"dropout\": 0.0,\n  \"topk\": 6,\n  \"pmax\": 6,\n  \"refinement_steps\": 4,\n  \"mask_rate_max\": 0.8,\n  \"mask_rate_min\": 0.15,\n  \"replace_rate_max\": 0.1,\n  \"replace_rate_min\": 0.02,\n  \"pheromone_evap\": 0.1,\n  \"pheromone_eta\": 0.7,\n  \"taint_zeta\": 0.3,\n  \"taint_max\": 5.0,\n  \"taint_decay\": 0.05,\n  \"phi_max\": 100.0,\n  \"phi_init\": 0.05,\n  \"route_epsilon\": 1e-06,\n  \"route_lambda\": 1.0,\n  \"route_mu\": 0.01,\n  \"prune_min_score\": -1.0,\n  \"prune_max_age\": 1000,\n  \"leader_ema_gamma\": 0.3,\n  \"death_streak\": 5,\n  \"max_edits_per_step\": 0.18,\n  \"leader_fraction\": 0.12,\n  \"learning_rate\": 0.0005,\n  \"weight_decay\": 0.01,\n  \"warmup_steps\": 100,\n  \"seq_len\": 256,\n  \"hidden_dim\": 128,\n  \"num_heads\": 4,\n  \"num_ants\": 128,\n  \"emax\": 8,\n  \"batch_size\": 4\n}\nJSONEOF\n\necho \"Config:\"\ncat \"${EXP_DIR}/config.json\"\necho \"\"\necho \"=== Starting ${EXP_ID} training at $(date -u +%H:%M:%S) ===\"\necho \"\"\n\n/workspace/erm-rust/bin/erm colony-train \\\n  --data \"${CORPUS}\" \\\n  --steps 10000 \\\n  --config \"${EXP_DIR}/config.json\" \\\n  --backend gpu \\\n  --log-every 50 \\\n  --checkpoint-dir \"${CKPT_DIR}\" \\\n  2>&1 | tee \"${LOG_DIR}/colony-train.log\"\n\nEXIT_CODE=${PIPESTATUS[0]}\necho \"\"\necho \"=== ${EXP_ID} finished (exit=${EXIT_CODE}) at $(date -u +%H:%M:%S) ===\"\n\nif [ ${EXIT_CODE} -eq 0 ]; then\n  WS=\"${EXP_DIR}/warmstart\"\n  mkdir -p \"${WS}\"\n  cp \"${CKPT_DIR}/graph.json\" \"${WS}/\" 2>/dev/null || true\n  cp \"${CKPT_DIR}/ant_state.json\" \"${WS}/\" 2>/dev/null || true\n  cp \"${EXP_DIR}/config.json\" \"${WS}/\" 2>/dev/null || true\n  echo \"Warmstart saved to ${WS}\"\nfi\nexit ${EXIT_CODE}\n"
+                ],
+                "env": [
+                  {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "/usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu"
+                  },
+                  {
+                    "name": "NVIDIA_DRIVER_CAPABILITIES",
+                    "value": "compute,utility"
+                  },
+                  {
+                    "name": "NVIDIA_VISIBLE_DEVICES",
+                    "value": "all"
+                  },
+                  {
+                    "name": "WGPU_BACKEND",
+                    "value": "vulkan"
+                  },
+                  {
+                    "name": "RUST_BACKTRACE",
+                    "value": "1"
+                  },
+                  {
+                    "name": "RAYON_NUM_THREADS",
+                    "value": "2"
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "1",
+                    "memory": "1Gi",
+                    "nvidia.com/gpu": "1"
+                  },
+                  "limits": {
+                    "cpu": "4",
+                    "memory": "20Gi",
+                    "nvidia.com/gpu": "1"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "erm-rust",
+                    "mountPath": "/workspace/erm-rust"
+                  },
+                  {
+                    "name": "rust-pcn",
+                    "mountPath": "/workspace/rust-pcn",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "cuda-13-0",
+                    "mountPath": "/usr/local/cuda-13.0",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "cuda-13-1",
+                    "mountPath": "/usr/local/cuda",
+                    "readOnly": true
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "erm-rust",
+                "hostPath": {
+                  "path": "/home/kadajett/dev/erm-rust",
+                  "type": "Directory"
+                }
+              },
+              {
+                "name": "rust-pcn",
+                "hostPath": {
+                  "path": "/home/kadajett/dev/rust-pcn",
+                  "type": "Directory"
+                }
+              },
+              {
+                "name": "cuda-13-0",
+                "hostPath": {
+                  "path": "/usr/local/cuda-13.0"
+                }
+              },
+              {
+                "name": "cuda-13-1",
+                "hostPath": {
+                  "path": "/usr/local/cuda-13.1"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

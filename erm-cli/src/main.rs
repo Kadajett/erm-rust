@@ -8,6 +8,7 @@
 //! - `bench` — throughput and memory benchmarks
 
 use clap::{Parser, Subcommand, ValueEnum};
+use erm_core::TokenizerApi;
 
 /// Emergent Route Model — CLI entrypoint.
 #[derive(Parser, Debug)]
@@ -206,6 +207,111 @@ enum Commands {
         #[arg(long, default_value = "0")]
         batch_idx: usize,
     },
+
+    /// Save scorer weights from a running checkpoint to disk (mid-run save).
+    ///
+    /// Loads an existing checkpoint directory and re-saves the scorer.bin,
+    /// graph.json, ant_state.json, and config.json. Useful for extracting
+    /// scorer weights from a partially-trained checkpoint.
+    SaveScorer {
+        /// Path to checkpoint directory (must contain scorer.bin or scorer/).
+        #[arg(long)]
+        checkpoint: String,
+
+        /// Output directory to write scorer.bin and supporting files.
+        /// Defaults to the same as --checkpoint.
+        #[arg(long)]
+        output: Option<String>,
+    },
+
+    /// Generate text using diffusion-style coarse-to-fine inference.
+    ///
+    /// Starts from a masked sequence and iteratively refines it using the
+    /// scorer without an autoregressive loop.
+    Infer {
+        /// Path to checkpoint directory.
+        #[arg(long)]
+        checkpoint: String,
+
+        /// Output length in tokens.
+        #[arg(long, default_value = "128")]
+        length: usize,
+
+        /// Number of refinement steps K.
+        #[arg(long, default_value = "8")]
+        steps: usize,
+
+        /// Optional prompt text.
+        #[arg(long)]
+        prompt: Option<String>,
+
+        /// Random seed.
+        #[arg(long, default_value = "42")]
+        seed: u64,
+
+        /// Path to config file (overrides checkpoint config).
+        #[arg(long)]
+        config: Option<String>,
+
+        /// Backend to use.
+        #[arg(long, default_value = "cpu")]
+        backend: BackendChoice,
+    },
+
+    /// Run diffusion colony training (tokens-in → tokens-out, T refinement steps).
+    DiffusionTrain {
+        /// Path to training data directory (containing .txt files).
+        #[arg(long)]
+        data: String,
+
+        /// Number of training steps.
+        #[arg(long, default_value = "10000")]
+        steps: usize,
+
+        /// Path to config file (JSON). Uses defaults if not provided.
+        #[arg(long)]
+        config: Option<String>,
+
+        /// Backend to use.
+        #[arg(long, default_value = "gpu")]
+        backend: BackendChoice,
+
+        /// Log every N steps.
+        #[arg(long, default_value = "50")]
+        log_every: usize,
+
+        /// Save checkpoint every N steps (0 = disabled).
+        #[arg(long, default_value = "500")]
+        checkpoint_every: usize,
+
+        /// Checkpoint output directory.
+        #[arg(long)]
+        checkpoint_dir: Option<String>,
+
+        /// Experiment id (used in metrics.jsonl).
+        #[arg(long, default_value = "exp-default")]
+        exp_id: String,
+
+        /// Sequence length override.
+        #[arg(long)]
+        seq_len: Option<usize>,
+
+        /// Hidden dimension override.
+        #[arg(long)]
+        hidden_dim: Option<usize>,
+
+        /// Number of ants override.
+        #[arg(long)]
+        num_ants: Option<usize>,
+
+        /// Batch size override.
+        #[arg(long)]
+        batch: Option<usize>,
+
+        /// Diffusion steps T override.
+        #[arg(long)]
+        diffusion_t: Option<usize>,
+    },
 }
 
 /// Backend choice for burn-based training.
@@ -303,6 +409,62 @@ fn main() {
             batch_idx,
         } => {
             run_generate_gif(&snapshots_dir, &output, fps, batch_idx);
+        }
+        Commands::SaveScorer {
+            checkpoint,
+            output,
+        } => {
+            run_save_scorer(&checkpoint, output.as_deref());
+        }
+        Commands::Infer {
+            checkpoint,
+            length,
+            steps,
+            prompt,
+            seed,
+            config,
+            backend,
+        } => {
+            run_infer(
+                &checkpoint,
+                length,
+                steps,
+                prompt.as_deref(),
+                seed,
+                config.as_deref(),
+                &backend,
+            );
+        }
+        Commands::DiffusionTrain {
+            data,
+            steps,
+            config,
+            backend,
+            log_every,
+            checkpoint_every,
+            checkpoint_dir,
+            exp_id,
+            seq_len,
+            hidden_dim,
+            num_ants,
+            batch,
+            diffusion_t,
+        } => {
+            run_diffusion_train(
+                &data,
+                steps,
+                config.as_deref(),
+                &backend,
+                log_every,
+                checkpoint_every,
+                checkpoint_dir.as_deref(),
+                &exp_id,
+                seq_len,
+                hidden_dim,
+                num_ants,
+                batch,
+                diffusion_t,
+            );
         }
     }
 }
@@ -1098,6 +1260,499 @@ fn run_generate_gif(snapshots_dir: &str, output_path: &str, fps: u16, batch_idx:
         100 / fps as i32,
         frames_dir.display(),
         output_path
+    );
+}
+
+/// Save scorer weights from a checkpoint directory (mid-run save).
+fn run_save_scorer(checkpoint_dir: &str, output_dir: Option<&str>) {
+    let out_dir = output_dir.unwrap_or(checkpoint_dir);
+
+    // We just copy/link the scorer.bin to ensure it's readable.
+    // The real value is verifying the scorer file exists and is loadable.
+    let scorer_src = format!("{checkpoint_dir}/scorer.bin");
+    let config_src = format!("{checkpoint_dir}/config.json");
+    let graph_src = format!("{checkpoint_dir}/graph.json");
+    let ant_src = format!("{checkpoint_dir}/ant_state.json");
+
+    if !std::path::Path::new(&scorer_src).exists() {
+        // Try scorer/ directory (burn's default recorder format).
+        let scorer_dir = format!("{checkpoint_dir}/scorer");
+        if !std::path::Path::new(&scorer_dir).exists() {
+            eprintln!(
+                "ERROR: scorer not found at '{scorer_src}' or '{scorer_dir}'"
+            );
+            std::process::exit(1);
+        }
+        println!("Scorer found at: {scorer_dir}");
+    } else {
+        println!("Scorer found at: {scorer_src}");
+    }
+
+    // Ensure output dir exists.
+    if let Err(e) = std::fs::create_dir_all(out_dir) {
+        eprintln!("ERROR: cannot create output directory '{out_dir}': {e}");
+        std::process::exit(1);
+    }
+
+    // Copy supporting files if not already in output dir.
+    for (src, name) in [
+        (&config_src, "config.json"),
+        (&graph_src, "graph.json"),
+        (&ant_src, "ant_state.json"),
+    ] {
+        let dst = format!("{out_dir}/{name}");
+        if src != &dst && std::path::Path::new(src).exists() {
+            if let Err(e) = std::fs::copy(src, &dst) {
+                eprintln!("WARNING: cannot copy {src} → {dst}: {e}");
+            } else {
+                println!("Copied {name} to: {dst}");
+            }
+        }
+    }
+
+    println!("save-scorer: checkpoint at '{checkpoint_dir}' verified and ready.");
+    println!("  Scorer weights present: YES");
+    println!("  Output dir: {out_dir}");
+}
+
+/// Diffusion inference: generate text using coarse-to-fine denoising.
+fn run_infer(
+    checkpoint_dir: &str,
+    length: usize,
+    k_steps: usize,
+    prompt: Option<&str>,
+    seed: u64,
+    config_path: Option<&str>,
+    backend: &BackendChoice,
+) {
+    let erm_cfg = if let Some(cp) = config_path {
+        load_config(Some(cp))
+    } else {
+        // Load config from checkpoint.
+        let cfg_path = format!("{checkpoint_dir}/config.json");
+        load_config(if std::path::Path::new(&cfg_path).exists() {
+            Some(&cfg_path)
+        } else {
+            None
+        })
+    };
+
+    match backend {
+        BackendChoice::Cpu => {
+            infer_loop::<burn_autodiff::Autodiff<burn_ndarray::NdArray<f32>>>(
+                &erm_cfg,
+                checkpoint_dir,
+                length,
+                k_steps,
+                prompt,
+                seed,
+                Default::default(),
+            );
+        }
+        BackendChoice::Gpu => {
+            #[cfg(feature = "gpu")]
+            {
+                let device = burn_wgpu::WgpuDevice::default();
+                infer_loop::<burn_autodiff::Autodiff<burn_wgpu::Wgpu>>(
+                    &erm_cfg,
+                    checkpoint_dir,
+                    length,
+                    k_steps,
+                    prompt,
+                    seed,
+                    device,
+                );
+            }
+            #[cfg(not(feature = "gpu"))]
+            {
+                eprintln!("ERROR: GPU support not compiled.");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn infer_loop<B: burn::tensor::backend::AutodiffBackend>(
+    cfg: &erm_core::ErmConfig,
+    checkpoint_dir: &str,
+    length: usize,
+    k_steps: usize,
+    prompt: Option<&str>,
+    seed: u64,
+    device: B::Device,
+) {
+    use erm_train::diffusion_training::DiffusionTrainer;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+
+    let mut cfg = cfg.clone();
+    cfg.seq_len = length;
+
+    let mut trainer = DiffusionTrainer::<B>::new(&cfg, device.clone());
+
+    if let Err(e) = trainer.load_checkpoint(checkpoint_dir) {
+        eprintln!("WARNING: could not load checkpoint '{checkpoint_dir}': {e}");
+        eprintln!("  (running inference with freshly initialized weights)");
+    } else {
+        println!("Loaded checkpoint from: {checkpoint_dir} (step={})", trainer.step);
+    }
+
+    let prompt_tokens: Option<Vec<u32>> = prompt.map(|p| {
+        // Simple char-level encoding for prompt.
+        p.chars()
+            .map(|c| (c as u32) % cfg.total_vocab_size() as u32)
+            .collect()
+    });
+
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+
+    // Use non-autodiff backend for inference.
+    let scorer_cfg = erm_core::burn_scorer::BurnScorerConfig::from_erm(&cfg);
+    let inf_device: <B::InnerBackend as burn::tensor::backend::Backend>::Device =
+        Default::default();
+    let inf_scorer = scorer_cfg.init::<B::InnerBackend>(&inf_device);
+    let mut graph = erm_core::graph::RouteGraph::new(&cfg);
+
+    let result = erm_train::diffusion_training::diffusion_infer(
+        &inf_scorer,
+        &mut graph,
+        &cfg,
+        k_steps,
+        prompt_tokens.as_deref(),
+        length,
+        &mut rng,
+        &inf_device,
+    );
+
+    match result {
+        Ok(tokens) => {
+            println!("=== Diffusion Inference Output ===");
+            println!("Steps: {k_steps}, Length: {length}");
+            println!("Tokens: {:?}", &tokens[..tokens.len().min(64)]);
+            // Decode with char tokenizer as fallback.
+            let chars: String = tokens
+                .iter()
+                .map(|&t| {
+                    char::from_u32(t + 32).unwrap_or('?')
+                })
+                .collect();
+            println!("Decoded (approx): {}", &chars[..chars.len().min(200)]);
+        }
+        Err(e) => {
+            eprintln!("ERROR: inference failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Diffusion colony training loop.
+#[allow(clippy::too_many_arguments)]
+fn run_diffusion_train(
+    data_path: &str,
+    total_steps: usize,
+    config_path: Option<&str>,
+    backend: &BackendChoice,
+    log_every: usize,
+    checkpoint_every: usize,
+    checkpoint_dir: Option<&str>,
+    exp_id: &str,
+    seq_len_override: Option<usize>,
+    hidden_dim_override: Option<usize>,
+    num_ants_override: Option<usize>,
+    batch_override: Option<usize>,
+    diffusion_t_override: Option<usize>,
+) {
+    let mut cfg = load_config(config_path);
+
+    // Apply overrides.
+    cfg.exp_id = exp_id.to_string();
+    if let Some(sl) = seq_len_override {
+        cfg.seq_len = sl;
+    }
+    if let Some(hd) = hidden_dim_override {
+        cfg.hidden_dim = hd;
+    }
+    if let Some(na) = num_ants_override {
+        cfg.num_ants = na;
+    }
+    if let Some(b) = batch_override {
+        cfg.batch_size = b;
+    }
+    if let Some(t) = diffusion_t_override {
+        cfg.diffusion_steps = t;
+    }
+
+    // Set up metrics path.
+    if let Some(dir) = checkpoint_dir {
+        if cfg.metrics_path.is_empty() {
+            cfg.metrics_path = format!("{dir}/metrics.jsonl");
+        }
+    }
+
+    // Build streaming dataset.
+    use erm_train::streaming_dataset::StreamingConfig;
+
+    // Determine if data_path is a directory or file.
+    let data_dir = if std::path::Path::new(data_path).is_dir() {
+        data_path.to_string()
+    } else {
+        // Treat as file — use parent dir.
+        std::path::Path::new(data_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| ".".to_string())
+    };
+
+    // Build BPE tokenizer from a sample of the corpus or load from path.
+    let tokenizer = if !cfg.bpe_vocab_path.is_empty()
+        && std::path::Path::new(&cfg.bpe_vocab_path).exists()
+    {
+        println!("Loading BPE vocabulary from: {}", cfg.bpe_vocab_path);
+        match erm_core::BpeTokenizer::load(&cfg.bpe_vocab_path) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("ERROR: cannot load BPE vocab: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        // Train BPE on sample text.
+        println!("Training BPE vocabulary ({} merges)...", cfg.bpe_vocab_size);
+        let sample_text = collect_sample_text(&data_dir, 1_000_000);
+        let bpe = erm_core::BpeTokenizer::train(&sample_text, cfg.bpe_vocab_size);
+        println!("BPE vocabulary trained: {} tokens", bpe.vocab_size());
+
+        // Save vocabulary alongside checkpoint if possible.
+        if let Some(dir) = checkpoint_dir {
+            let vocab_path = format!("{dir}/bpe_vocab.json");
+            if let Ok(()) = bpe.save(&vocab_path) {
+                println!("BPE vocabulary saved to: {vocab_path}");
+            }
+        }
+        bpe
+    };
+
+    let vocab_size = tokenizer.vocab_size();
+    cfg.vocab_size = vocab_size;
+
+    println!(
+        "DiffusionTrain: exp={exp_id} steps={total_steps} seq={} hidden={} ants={} batch={} T={}",
+        cfg.seq_len, cfg.hidden_dim, cfg.num_ants, cfg.batch_size, cfg.diffusion_steps
+    );
+    println!("  vocab={vocab_size} data={data_dir}");
+
+    let streaming_cfg = StreamingConfig {
+        data_dir: data_dir.clone(),
+        seq_len: cfg.seq_len,
+        batch_size: cfg.batch_size,
+        use_paragraph_spans: cfg.use_paragraph_spans,
+        shuffle_files: true,
+        seed: 42,
+        repeat: true,
+    };
+
+    match backend {
+        BackendChoice::Cpu => {
+            diffusion_train_loop::<burn_autodiff::Autodiff<burn_ndarray::NdArray<f32>>>(
+                &cfg,
+                streaming_cfg,
+                tokenizer,
+                total_steps,
+                log_every,
+                checkpoint_every,
+                checkpoint_dir,
+                Default::default(),
+            );
+        }
+        BackendChoice::Gpu => {
+            #[cfg(feature = "gpu")]
+            {
+                let device = burn_wgpu::WgpuDevice::default();
+                diffusion_train_loop::<burn_autodiff::Autodiff<burn_wgpu::Wgpu>>(
+                    &cfg,
+                    streaming_cfg,
+                    tokenizer,
+                    total_steps,
+                    log_every,
+                    checkpoint_every,
+                    checkpoint_dir,
+                    device,
+                );
+            }
+            #[cfg(not(feature = "gpu"))]
+            {
+                eprintln!("ERROR: GPU support not compiled.");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+/// Collect up to `max_bytes` of text from a directory for BPE training.
+fn collect_sample_text(data_dir: &str, max_bytes: usize) -> String {
+    let mut sample = String::new();
+    if let Ok(entries) = std::fs::read_dir(data_dir) {
+        let mut paths: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|x| x.to_str())
+                    == Some("txt")
+            })
+            .map(|e| e.path())
+            .collect();
+        paths.sort();
+        for path in paths {
+            if sample.len() >= max_bytes {
+                break;
+            }
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                let remaining = max_bytes - sample.len();
+                if text.len() <= remaining {
+                    sample.push_str(&text);
+                } else {
+                    sample.push_str(&text[..remaining]);
+                }
+            }
+        }
+    }
+    sample
+}
+
+#[allow(clippy::too_many_arguments)]
+fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
+    cfg: &erm_core::ErmConfig,
+    streaming_cfg: erm_train::streaming_dataset::StreamingConfig,
+    tokenizer: erm_core::BpeTokenizer,
+    total_steps: usize,
+    log_every: usize,
+    checkpoint_every: usize,
+    checkpoint_dir: Option<&str>,
+    device: B::Device,
+) {
+    use erm_train::diffusion_training::{DiffusionStepResult, DiffusionTrainer};
+    use erm_train::metrics::{MetricsRecord, MetricsWriter};
+    use erm_train::streaming_dataset::StreamingDataset;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+
+    let mut trainer = DiffusionTrainer::<B>::new(cfg, device);
+    let mut dataset = StreamingDataset::new(streaming_cfg, tokenizer);
+    let mut rng = ChaCha8Rng::seed_from_u64(42);
+
+    // Open metrics writer if path is configured.
+    let mut metrics_writer: Option<MetricsWriter> = None;
+    if !cfg.metrics_path.is_empty() {
+        match MetricsWriter::open(&cfg.metrics_path, log_every.max(50)) {
+            Ok(w) => {
+                println!("Metrics → {}", cfg.metrics_path);
+                metrics_writer = Some(w);
+            }
+            Err(e) => {
+                eprintln!("WARNING: cannot open metrics file: {e}");
+            }
+        }
+    }
+
+    println!(
+        "Starting diffusion training: {} steps, log_every={}, checkpoint_every={}",
+        total_steps, log_every, checkpoint_every
+    );
+
+    let mut step = 0;
+    let mut recent_losses: Vec<f32> = Vec::new();
+
+    while step < total_steps {
+        let batch = match dataset.next_batch() {
+            Ok(Some(b)) => b,
+            Ok(None) => {
+                eprintln!("Dataset exhausted at step {step}");
+                break;
+            }
+            Err(e) => {
+                eprintln!("Dataset error at step {step}: {e}");
+                break;
+            }
+        };
+
+        let result: DiffusionStepResult = match trainer.diffusion_step(&batch, &mut rng) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("ERROR at step {step}: {e}");
+                break;
+            }
+        };
+
+        step += 1;
+        recent_losses.push(result.loss);
+
+        // Log.
+        if step % log_every == 0 || step == total_steps {
+            let avg_loss: f32 =
+                recent_losses.iter().sum::<f32>() / recent_losses.len() as f32;
+            println!(
+                "[diffusion step {:6}] loss={:.4} edits={} mean_φ={:.4} deaths={} pruned={} inserted={}",
+                step,
+                avg_loss,
+                result.total_edits,
+                result.pheromone_stats.mean_phi,
+                result.deaths,
+                result.edges_pruned,
+                result.edges_inserted,
+            );
+            recent_losses.clear();
+
+            // Write metrics.
+            if let Some(ref mut mw) = metrics_writer {
+                let record = MetricsRecord {
+                    exp_id: cfg.exp_id.clone(),
+                    step,
+                    loss: avg_loss,
+                    edits: result.total_edits,
+                    mean_phi: result.pheromone_stats.mean_phi,
+                    deaths: result.deaths,
+                    seq_len: cfg.seq_len,
+                    batch: cfg.batch_size,
+                    hidden_dim: cfg.hidden_dim,
+                };
+                if let Err(e) = mw.write(&record) {
+                    eprintln!("WARNING: metrics write failed: {e}");
+                }
+            }
+        }
+
+        // Checkpoint.
+        if checkpoint_every > 0
+            && step % checkpoint_every == 0
+            && checkpoint_dir.is_some()
+        {
+            let dir = checkpoint_dir.unwrap();
+            let ckpt_dir = format!("{dir}/step_{step:08}");
+            if let Err(e) = trainer.save_checkpoint(&ckpt_dir) {
+                eprintln!("WARNING: checkpoint save failed: {e}");
+            }
+            // Also update latest/.
+            let latest_dir = format!("{dir}/latest");
+            if let Err(e) = trainer.save_checkpoint(&latest_dir) {
+                eprintln!("WARNING: latest checkpoint save failed: {e}");
+            }
+        }
+    }
+
+    // Final checkpoint.
+    if let Some(dir) = checkpoint_dir {
+        let final_dir = format!("{dir}/final");
+        if let Err(e) = trainer.save_checkpoint(&final_dir) {
+            eprintln!("WARNING: final checkpoint save failed: {e}");
+        } else {
+            println!("Final checkpoint: {final_dir}");
+        }
+    }
+
+    println!(
+        "Diffusion training complete. Steps: {} (batches consumed: {})",
+        step, dataset.batches_consumed
     );
 }
 

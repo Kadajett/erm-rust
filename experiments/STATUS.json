@@ -1,0 +1,78 @@
+{
+  "timestamp": "2026-03-02T16:34:02Z",
+  "target_steps": 10000,
+  "summary": {
+    "running": 3,
+    "pending": 3,
+    "completed": 0,
+    "failed": 0
+  },
+  "experiments": [
+    {
+      "exp": "exp-a",
+      "pod": "erm-exp-a-qgtdq",
+      "status": "Running",
+      "step": 349,
+      "loss": 3.8398,
+      "edits": 115,
+      "mean_phi": 0.4056,
+      "rate_steps_sec": 2.09,
+      "eta_minutes": 77.0
+    },
+    {
+      "exp": "exp-b",
+      "pod": "erm-exp-b-nxfdj",
+      "status": "Running",
+      "step": 299,
+      "loss": 4.0236,
+      "edits": 140,
+      "mean_phi": 0.0896,
+      "rate_steps_sec": 1.81,
+      "eta_minutes": 89.4
+    },
+    {
+      "exp": "exp-c",
+      "pod": "erm-exp-c-t4sbp",
+      "status": "Running",
+      "step": 899,
+      "loss": 3.6598,
+      "edits": 44,
+      "mean_phi": 1.8006,
+      "rate_steps_sec": 5.4,
+      "eta_minutes": 28.1
+    },
+    {
+      "exp": "exp-d",
+      "pod": "erm-exp-d-szfbf",
+      "status": "Pending",
+      "step": 0,
+      "loss": null,
+      "edits": null,
+      "mean_phi": null,
+      "rate_steps_sec": null,
+      "eta_minutes": null
+    },
+    {
+      "exp": "exp-e",
+      "pod": "erm-exp-e-hnrsf",
+      "status": "Pending",
+      "step": 0,
+      "loss": null,
+      "edits": null,
+      "mean_phi": null,
+      "rate_steps_sec": null,
+      "eta_minutes": null
+    },
+    {
+      "exp": "exp-f",
+      "pod": "erm-exp-f-bnl4b",
+      "status": "Pending",
+      "step": 0,
+      "loss": null,
+      "edits": null,
+      "mean_phi": null,
+      "rate_steps_sec": null,
+      "eta_minutes": null
+    }
+  ]
+}

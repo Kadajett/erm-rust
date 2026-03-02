@@ -17,6 +17,7 @@
 //! - [`refinement`] — one-step refinement pipeline
 
 pub mod ants;
+pub mod bpe_tokenizer;
 pub mod burn_scorer;
 pub mod config;
 pub mod corruption;
@@ -31,5 +32,6 @@ pub mod topk;
 pub mod types;
 
 // Re-export the most commonly used items at crate root.
+pub use bpe_tokenizer::{BpeTokenizer, TokenizerApi};
 pub use config::ErmConfig;
 pub use error::{ErmError, ErmResult};
