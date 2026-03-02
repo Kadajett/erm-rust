@@ -34,8 +34,7 @@ use erm_core::error::{ErmError, ErmResult};
 use erm_core::graph::RouteGraph;
 use erm_core::merge::{compute_ant_deltas, merge_proposals};
 use erm_core::pheromone::{
-    build_edge_traces, prune_edges, update_pheromones_with_stats, PheromoneStats,
-    RunningDeltaStats,
+    build_edge_traces, prune_edges, update_pheromones_with_stats, PheromoneStats, RunningDeltaStats,
 };
 
 use crate::bridge::{tensor2d_to_vec, tensor_to_vec, tokens_to_tensor};
