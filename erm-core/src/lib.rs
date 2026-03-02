@@ -22,6 +22,7 @@ pub mod corruption;
 pub mod error;
 pub mod graph;
 pub mod merge;
+pub mod pheromone;
 pub mod refinement;
 pub mod scorer;
 pub mod tokenizer;

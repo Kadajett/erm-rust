@@ -87,6 +87,12 @@ pub struct ErmConfig {
     /// Fraction of ants that are leaders (rest are followers).
     pub leader_fraction: f32,
 
+    // ── Pruning ──────────────────────────────────────────────────────────
+    /// Minimum composite score `φ - λ·τ` below which edges are pruned.
+    pub prune_min_score: f32,
+    /// Maximum edge age (in refinement steps) before pruning.
+    pub prune_max_age: u32,
+
     // ── Optimizer (for reference; consumed by erm-train) ───────────────
     /// Learning rate.
     pub learning_rate: f64,
@@ -121,17 +127,20 @@ impl Default for ErmConfig {
             replace_rate_max: 0.1,
             replace_rate_min: 0.02,
 
-            pheromone_evap: 0.05,
-            pheromone_eta: 0.01,
-            taint_zeta: 0.05,
+            pheromone_evap: 0.1,
+            pheromone_eta: 0.5,
+            taint_zeta: 0.3,
             taint_max: 5.0,
-            taint_decay: 0.01,
+            taint_decay: 0.05,
             phi_max: 100.0,
             phi_init: 0.05,
 
             route_epsilon: 1e-6,
             route_lambda: 1.0,
             route_mu: 0.01,
+
+            prune_min_score: -1.0,
+            prune_max_age: 1000,
 
             death_streak: 5,
             max_edits_per_step: 0.15,
@@ -202,6 +211,66 @@ impl ErmConfig {
         }
         self.replace_rate_max
             + (self.replace_rate_min - self.replace_rate_max) * (big_t - t_f) / (big_t - 1.0)
+    }
+}
+
+/// Pheromone-specific configuration extracted from [`ErmConfig`].
+///
+/// Groups the stigmergy hyperparameters for ergonomic passing to
+/// pheromone update functions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PheromoneConfig {
+    /// Evaporation rate `ρ`. Applied to ALL edges each step.
+    pub evaporation_rate: f32,
+    /// Deposit rate `η`. Scales the bounded deposit `η * tanh(relu(Δ))`.
+    pub deposit_rate: f32,
+    /// Taint deposit rate `ζ`. Scales taint from negative deltas.
+    pub taint_rate: f32,
+    /// Taint decay rate `ρ_τ`. Applied to ALL edges each step.
+    pub taint_decay: f32,
+    /// Maximum taint value `τ_max`. Taint is clamped to `[0, τ_max]`.
+    pub taint_max: f32,
+    /// Maximum pheromone value `φ_max`. Pheromone is clamped to `[0, φ_max]`.
+    pub phi_max: f32,
+    /// Minimum composite score `φ - λ·τ` for pruning.
+    pub prune_min_score: f32,
+    /// Maximum edge age before pruning.
+    pub prune_max_age: u32,
+    /// Taint penalty coefficient `λ` used in composite score for pruning.
+    pub route_lambda: f32,
+}
+
+impl Default for PheromoneConfig {
+    fn default() -> Self {
+        Self {
+            evaporation_rate: 0.1,
+            deposit_rate: 0.5,
+            taint_rate: 0.3,
+            taint_decay: 0.05,
+            taint_max: 5.0,
+            phi_max: 100.0,
+            prune_min_score: -1.0,
+            prune_max_age: 1000,
+            route_lambda: 1.0,
+        }
+    }
+}
+
+impl PheromoneConfig {
+    /// Build from the global [`ErmConfig`].
+    #[must_use]
+    pub fn from_config(config: &ErmConfig) -> Self {
+        Self {
+            evaporation_rate: config.pheromone_evap,
+            deposit_rate: config.pheromone_eta,
+            taint_rate: config.taint_zeta,
+            taint_decay: config.taint_decay,
+            taint_max: config.taint_max,
+            phi_max: config.phi_max,
+            prune_min_score: config.prune_min_score,
+            prune_max_age: config.prune_max_age,
+            route_lambda: config.route_lambda,
+        }
     }
 }
 

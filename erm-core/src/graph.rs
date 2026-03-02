@@ -24,6 +24,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::ants::EdgeProposal;
 use crate::config::ErmConfig;
 use crate::error::{ErmError, ErmResult};
 use crate::types::{BatchIdx, EdgeSlot, PosIdx};
@@ -354,6 +355,72 @@ impl RouteGraph {
         }
 
         Ok((r, edge_weights))
+    }
+
+    /// Insert new edges proposed by leader ants.
+    ///
+    /// For each `EdgeProposal`, attempts to add an edge `src → dst` in the
+    /// graph. If the destination's slots are full, replaces the weakest edge
+    /// (by composite score `φ - λ·τ`).
+    ///
+    /// # Arguments
+    ///
+    /// - `proposals`: edge proposals from leader ants.
+    /// - `initial_phi`: initial pheromone value for new edges.
+    /// - `lambda`: taint penalty coefficient for finding the weakest edge.
+    ///
+    /// # Returns
+    ///
+    /// Number of edges successfully inserted.
+    pub fn propose_edges(
+        &mut self,
+        proposals: &[EdgeProposal],
+        initial_phi: f32,
+        lambda: f32,
+    ) -> usize {
+        let mut inserted = 0;
+
+        for ep in proposals {
+            let b = ep.batch_idx;
+            let dst = ep.dst;
+            let src = ep.src;
+
+            // Validate indices.
+            if b >= self.batch_size || dst >= self.seq_len || src >= self.seq_len {
+                continue;
+            }
+
+            // Skip self-loops.
+            if src == dst {
+                continue;
+            }
+
+            // Check if this edge already exists.
+            let already_exists = (0..self.emax).any(|e| {
+                let flat = self.idx(b, dst, e);
+                self.nbr_idx[flat] == src as i32
+            });
+            if already_exists {
+                continue;
+            }
+
+            // Try to add to an empty slot first.
+            match self.add_edge(b, dst, src, initial_phi) {
+                Ok(_) => {
+                    inserted += 1;
+                }
+                Err(_) => {
+                    // Slots are full — replace the weakest.
+                    if let Ok(Some(_removed)) = self.prune_weakest(b, dst, lambda) {
+                        if self.add_edge(b, dst, src, initial_phi).is_ok() {
+                            inserted += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        inserted
     }
 }
 

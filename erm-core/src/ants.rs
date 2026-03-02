@@ -29,6 +29,17 @@ use crate::graph::{RouteGraph, EMPTY_SLOT};
 use crate::merge::SimpleEditProposal;
 use crate::types::{AntIdx, BatchIdx, PosIdx, TokenId};
 
+/// Death/respawn mode for ant lifecycle management.
+///
+/// Controls how underperforming ants are identified and replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeathMode {
+    /// Streak-based: ant dies after `K` consecutive no-improvement steps.
+    Streak,
+    /// Random pool: replace a fixed fraction (10%) of ants each step.
+    RandomPool,
+}
+
 /// Type of an ant in the colony.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
@@ -548,6 +559,343 @@ impl AntColony {
     }
 }
 
+/// Configuration for leader ant sampling.
+#[derive(Debug, Clone)]
+pub struct LeaderConfig {
+    /// Epsilon floor for route strength denominator.
+    pub epsilon: f32,
+    /// Sampling temperature for token selection (> 1.0 = more exploratory).
+    pub temperature: f32,
+    /// Maximum positions each leader proposes edits at.
+    pub pmax: usize,
+    /// Top-k candidates per position.
+    pub topk: usize,
+}
+
+impl Default for LeaderConfig {
+    fn default() -> Self {
+        Self {
+            epsilon: 1e-4,
+            temperature: 1.5,
+            pmax: 8,
+            topk: 8,
+        }
+    }
+}
+
+impl LeaderConfig {
+    /// Build from the global ErmConfig.
+    #[must_use]
+    pub fn from_config(config: &ErmConfig) -> Self {
+        Self {
+            epsilon: 1e-4,
+            temperature: 1.5,
+            pmax: config.pmax,
+            topk: config.topk,
+        }
+    }
+}
+
+impl AntColony {
+    /// Sample leader edit proposals targeting high-uncertainty, low-pheromone positions.
+    ///
+    /// Leaders explore under-served regions of the sequence by scoring positions as:
+    ///
+    /// ```text
+    /// score_i = u_i / (route_strength_i + ε)
+    /// ```
+    ///
+    /// where `u_i` is the uncertainty signal and `route_strength_i` is the sum
+    /// of pheromone at position `i`. This targets positions with high uncertainty
+    /// and low pheromone support.
+    ///
+    /// Leaders also propose new edges (`EdgeProposal`) connecting high-uncertainty
+    /// positions to other positions, enabling the graph to grow.
+    ///
+    /// # Arguments
+    ///
+    /// - `logits`: flat `[L * V]` logit values for one sequence.
+    /// - `uncertainty`: flat `[L]` uncertainty values from scorer.
+    /// - `graph`: route graph providing pheromone strengths.
+    /// - `batch_idx`: which batch element in the graph to use.
+    /// - `leader_config`: sampling parameters.
+    /// - `editable`: boolean mask `[L]`, `true` = position can be edited.
+    /// - `num_leaders`: number of leader ants.
+    /// - `first_leader_id`: ant id offset for the first leader (typically 0).
+    /// - `seq_len`: sequence length `L`.
+    /// - `vocab_size`: vocabulary size `V`.
+    /// - `rng`: random number generator.
+    ///
+    /// # Returns
+    ///
+    /// `(proposals, edge_proposals)` — edit proposals and new edge proposals.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErmError::ShapeMismatch`] if input dimensions don't match.
+    ///
+    /// # Shape reference
+    ///
+    /// | Tensor | Shape |
+    /// |---|---|
+    /// | `logits` (input) | `[L, V]` flat |
+    /// | `uncertainty` (input) | `[L]` |
+    /// | `editable` (input) | `[L]` |
+    /// | edit output | `Vec<SimpleEditProposal>`, up to `num_leaders * pmax` |
+    /// | edge output | `Vec<EdgeProposal>`, up to `num_leaders` |
+    #[allow(clippy::too_many_arguments)]
+    pub fn sample_leader_proposals<R: Rng>(
+        logits: &[f32],
+        uncertainty: &[f32],
+        graph: &RouteGraph,
+        batch_idx: usize,
+        leader_config: &LeaderConfig,
+        editable: &[bool],
+        num_leaders: usize,
+        first_leader_id: usize,
+        seq_len: usize,
+        vocab_size: usize,
+        rng: &mut R,
+    ) -> ErmResult<(Vec<SimpleEditProposal>, Vec<EdgeProposal>)> {
+        let expected_logits = seq_len * vocab_size;
+        if logits.len() != expected_logits {
+            return Err(ErmError::ShapeMismatch {
+                expected: format!("[L={seq_len}, V={vocab_size}] = {expected_logits}"),
+                got: format!("{}", logits.len()),
+            });
+        }
+        if uncertainty.len() != seq_len {
+            return Err(ErmError::ShapeMismatch {
+                expected: format!("uncertainty length = {seq_len}"),
+                got: format!("{}", uncertainty.len()),
+            });
+        }
+        if editable.len() != seq_len {
+            return Err(ErmError::ShapeMismatch {
+                expected: format!("editable length = {seq_len}"),
+                got: format!("{}", editable.len()),
+            });
+        }
+
+        let epsilon = leader_config.epsilon;
+        let temperature = leader_config.temperature;
+        let pmax = leader_config.pmax;
+        let topk = leader_config.topk.min(vocab_size);
+
+        // Step 1: Compute per-position leader scores.
+        // score_i = u_i / (route_strength_i + ε)
+        let mut scores = Vec::with_capacity(seq_len);
+
+        for (i, &is_editable) in editable.iter().enumerate() {
+            if !is_editable {
+                scores.push(0.0_f32);
+                continue;
+            }
+
+            let u_i = uncertainty[i];
+
+            // route_strength_i = sum of phi for valid edges at this position.
+            let mut route_strength = 0.0_f32;
+            if batch_idx < graph.batch_size && i < graph.seq_len {
+                for e in 0..graph.emax {
+                    let flat = graph.idx(batch_idx, i, e);
+                    if graph.nbr_idx[flat] != EMPTY_SLOT {
+                        route_strength += graph.phi[flat];
+                    }
+                }
+            }
+
+            let score = u_i / (route_strength + epsilon);
+            scores.push(score);
+        }
+
+        // Step 2: Build CDF for weighted sampling.
+        let editable_positions: Vec<usize> = (0..seq_len).filter(|&i| editable[i]).collect();
+        if editable_positions.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+
+        let score_sum: f32 = editable_positions.iter().map(|&i| scores[i]).sum();
+
+        // Step 3: For each leader, sample positions and propose tokens + edges.
+        let mut proposals = Vec::with_capacity(num_leaders * pmax);
+        let mut edge_proposals = Vec::with_capacity(num_leaders);
+
+        for leader_offset in 0..num_leaders {
+            let ant_id = first_leader_id + leader_offset;
+
+            // Sample pmax positions weighted by leader score.
+            let mut sampled_positions = Vec::with_capacity(pmax);
+
+            for _ in 0..pmax {
+                let pos = if score_sum > 0.0 {
+                    let r: f32 = rng.gen::<f32>() * score_sum;
+                    let mut cumulative = 0.0_f32;
+                    let mut chosen = editable_positions[editable_positions.len() - 1];
+                    for &p in &editable_positions {
+                        cumulative += scores[p];
+                        if cumulative >= r {
+                            chosen = p;
+                            break;
+                        }
+                    }
+                    chosen
+                } else {
+                    let idx = rng.gen_range(0..editable_positions.len());
+                    editable_positions[idx]
+                };
+                sampled_positions.push(pos);
+            }
+
+            sampled_positions.sort_unstable();
+            sampled_positions.dedup();
+
+            // Propose edge from the highest-scored sampled position to a random other position.
+            if let Some(&best_pos) = sampled_positions.first() {
+                // Pick a random destination that's different from best_pos.
+                let dst = loop {
+                    let candidate = rng.gen_range(0..seq_len);
+                    if candidate != best_pos {
+                        break candidate;
+                    }
+                    if seq_len <= 1 {
+                        break 0;
+                    }
+                };
+                edge_proposals.push(EdgeProposal {
+                    batch_idx,
+                    src: best_pos,
+                    dst,
+                    etype: 1, // long-range
+                });
+            }
+
+            // For each sampled position, pick a token from top-k with high temperature.
+            for pos in sampled_positions {
+                let row_start = pos * vocab_size;
+                let row = &logits[row_start..row_start + vocab_size];
+
+                let mut indexed: Vec<(u32, f32)> = row
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &v)| (j as u32, v))
+                    .collect();
+
+                if topk < vocab_size {
+                    indexed.select_nth_unstable_by(topk - 1, |a, b| {
+                        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                }
+                let top_slice = &mut indexed[..topk];
+
+                let max_val = top_slice
+                    .iter()
+                    .map(|(_, v)| *v)
+                    .fold(f32::NEG_INFINITY, f32::max);
+
+                let mut exp_vals: Vec<f32> = top_slice
+                    .iter()
+                    .map(|(_, v)| ((v - max_val) / temperature).exp())
+                    .collect();
+
+                let exp_sum: f32 = exp_vals.iter().sum();
+                if exp_sum > 0.0 {
+                    for v in &mut exp_vals {
+                        *v /= exp_sum;
+                    }
+                }
+
+                let r: f32 = rng.gen();
+                let mut cumulative = 0.0_f32;
+                let mut chosen_idx = 0;
+                for (j, &p) in exp_vals.iter().enumerate() {
+                    cumulative += p;
+                    if cumulative >= r {
+                        chosen_idx = j;
+                        break;
+                    }
+                }
+
+                let token = top_slice[chosen_idx].0;
+                let predicted_gain = uncertainty[pos] * scores[pos];
+
+                proposals.push(SimpleEditProposal {
+                    position: pos,
+                    token,
+                    predicted_gain,
+                    ant_id,
+                });
+            }
+        }
+
+        Ok((proposals, edge_proposals))
+    }
+}
+
+/// Apply death/respawn logic to the ant colony.
+///
+/// # Death Modes
+///
+/// - `DeathMode::Streak`: Ants with consecutive no-improvement streaks >= `K`
+///   are killed and respawned.
+/// - `DeathMode::RandomPool`: A fixed fraction (10%) of ants are randomly
+///   replaced each step, regardless of performance.
+///
+/// # Arguments
+///
+/// - `ant_state`: mutable ant lifecycle state.
+/// - `ant_deltas`: per-ant improvement deltas from the merge step. Shape: `[num_ants]`.
+/// - `config`: ERM hyperparameters.
+/// - `mode`: which death mode to use.
+/// - `rng`: random number generator.
+///
+/// # Returns
+///
+/// Number of ants that died and were respawned.
+pub fn apply_death_respawn<R: Rng>(
+    ant_state: &mut AntState,
+    ant_deltas: &[f32],
+    config: &ErmConfig,
+    mode: DeathMode,
+    rng: &mut R,
+) -> usize {
+    let mut deaths = 0;
+
+    match mode {
+        DeathMode::Streak => {
+            for b in 0..ant_state.batch_size {
+                for k in 0..ant_state.num_ants {
+                    let delta = if k < ant_deltas.len() {
+                        ant_deltas[k]
+                    } else {
+                        0.0
+                    };
+                    let should_die = ant_state.record_delta(b, k, delta, config);
+                    if should_die {
+                        ant_state.respawn(b, k, config);
+                        deaths += 1;
+                    }
+                }
+            }
+        }
+        DeathMode::RandomPool => {
+            let pool_size = (ant_state.num_ants as f32 * 0.1).ceil() as usize;
+            for b in 0..ant_state.batch_size {
+                // Randomly select pool_size ants to replace.
+                let mut replaced = 0;
+                while replaced < pool_size {
+                    let k = rng.gen_range(0..ant_state.num_ants);
+                    ant_state.respawn(b, k, config);
+                    replaced += 1;
+                    deaths += 1;
+                }
+            }
+        }
+    }
+
+    deaths
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -944,5 +1292,257 @@ mod tests {
             &mut rng,
         )
         .is_err());
+    }
+
+    // ── Leader ant sampler tests ────────────────────────────────────────
+
+    #[test]
+    fn test_leader_targets_high_uncertainty_low_pheromone() {
+        let seq_len = 8;
+        let vocab_size = 16;
+        let cfg = ErmConfig {
+            batch_size: 1,
+            seq_len,
+            vocab_size,
+            emax: 4,
+            ..ErmConfig::default()
+        };
+        let mut graph = RouteGraph::new(&cfg);
+
+        // Position 2 has strong pheromone, position 5 has none.
+        graph.add_edge(0, 2, 0, 5.0).expect("add edge");
+        graph.add_edge(0, 2, 1, 3.0).expect("add edge");
+
+        let editable = vec![true; seq_len];
+        let leader_cfg = LeaderConfig {
+            epsilon: 1e-4,
+            temperature: 1.5,
+            pmax: 4,
+            topk: 4,
+        };
+
+        let logits: Vec<f32> = (0..seq_len * vocab_size)
+            .map(|i| (i as f32 * 0.1) - 5.0)
+            .collect();
+
+        // High uncertainty at positions 5 and 6, low elsewhere.
+        let mut uncertainty = vec![0.1_f32; seq_len];
+        uncertainty[5] = 0.9;
+        uncertainty[6] = 0.85;
+
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+
+        let (proposals, edge_proposals) = AntColony::sample_leader_proposals(
+            &logits,
+            &uncertainty,
+            &graph,
+            0,
+            &leader_cfg,
+            &editable,
+            3,
+            0,
+            seq_len,
+            vocab_size,
+            &mut rng,
+        )
+        .expect("leader proposals");
+
+        // Should produce some proposals.
+        assert!(!proposals.is_empty(), "leaders should produce proposals");
+
+        // Should produce edge proposals.
+        assert!(
+            !edge_proposals.is_empty(),
+            "leaders should propose new edges"
+        );
+
+        // Validate all proposals.
+        for p in &proposals {
+            assert!(p.position < seq_len);
+            assert!((p.token as usize) < vocab_size);
+            assert!(p.predicted_gain.is_finite());
+        }
+
+        // Check edge proposals are valid.
+        for ep in &edge_proposals {
+            assert!(ep.src < seq_len);
+            assert!(ep.dst < seq_len);
+            assert_ne!(ep.src, ep.dst, "edge should not be self-loop");
+        }
+    }
+
+    #[test]
+    fn test_leader_deterministic_with_seed() {
+        let seq_len = 8;
+        let vocab_size = 16;
+        let cfg = ErmConfig {
+            batch_size: 1,
+            seq_len,
+            vocab_size,
+            emax: 4,
+            ..ErmConfig::default()
+        };
+        let graph = RouteGraph::new(&cfg);
+        let editable = vec![true; seq_len];
+        let leader_cfg = LeaderConfig::from_config(&cfg);
+
+        let logits: Vec<f32> = (0..seq_len * vocab_size)
+            .map(|i| (i as f32 * 0.1) - 5.0)
+            .collect();
+        let uncertainty = vec![0.5_f32; seq_len];
+
+        let mut rng1 = ChaCha8Rng::seed_from_u64(123);
+        let (p1, e1) = AntColony::sample_leader_proposals(
+            &logits,
+            &uncertainty,
+            &graph,
+            0,
+            &leader_cfg,
+            &editable,
+            2,
+            0,
+            seq_len,
+            vocab_size,
+            &mut rng1,
+        )
+        .expect("proposals");
+
+        let mut rng2 = ChaCha8Rng::seed_from_u64(123);
+        let (p2, e2) = AntColony::sample_leader_proposals(
+            &logits,
+            &uncertainty,
+            &graph,
+            0,
+            &leader_cfg,
+            &editable,
+            2,
+            0,
+            seq_len,
+            vocab_size,
+            &mut rng2,
+        )
+        .expect("proposals");
+
+        assert_eq!(p1.len(), p2.len());
+        for (a, b) in p1.iter().zip(p2.iter()) {
+            assert_eq!(a.position, b.position);
+            assert_eq!(a.token, b.token);
+            assert_eq!(a.ant_id, b.ant_id);
+        }
+        assert_eq!(e1.len(), e2.len());
+    }
+
+    #[test]
+    fn test_leader_no_editable_returns_empty() {
+        let seq_len = 4;
+        let vocab_size = 8;
+        let cfg = ErmConfig {
+            batch_size: 1,
+            seq_len,
+            vocab_size,
+            emax: 2,
+            ..ErmConfig::default()
+        };
+        let graph = RouteGraph::new(&cfg);
+        let editable = vec![false; seq_len];
+        let leader_cfg = LeaderConfig::default();
+        let logits = vec![0.0_f32; seq_len * vocab_size];
+        let uncertainty = vec![0.5_f32; seq_len];
+        let mut rng = ChaCha8Rng::seed_from_u64(0);
+
+        let (proposals, edge_proposals) = AntColony::sample_leader_proposals(
+            &logits,
+            &uncertainty,
+            &graph,
+            0,
+            &leader_cfg,
+            &editable,
+            3,
+            0,
+            seq_len,
+            vocab_size,
+            &mut rng,
+        )
+        .expect("proposals");
+
+        assert!(proposals.is_empty());
+        assert!(edge_proposals.is_empty());
+    }
+
+    // ── Death/respawn tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_death_mode_streak() {
+        let cfg = ErmConfig {
+            batch_size: 1,
+            num_ants: 5,
+            death_streak: 2,
+            leader_fraction: 0.0,
+            ..small_config()
+        };
+        let mut state = AntState::new(&cfg);
+        let mut rng = ChaCha8Rng::seed_from_u64(0);
+
+        // All ants have zero delta → all should die after 2 steps.
+        let deltas = vec![0.0_f32; 5];
+        let d1 = apply_death_respawn(&mut state, &deltas, &cfg, DeathMode::Streak, &mut rng);
+        assert_eq!(d1, 0, "no deaths after 1 step (streak=1)");
+
+        let d2 = apply_death_respawn(&mut state, &deltas, &cfg, DeathMode::Streak, &mut rng);
+        assert_eq!(d2, 5, "all 5 ants should die after 2 steps");
+
+        // After respawn, streaks should be reset.
+        for k in 0..5 {
+            assert_eq!(state.streak[state.idx(0, k)], 0);
+        }
+    }
+
+    #[test]
+    fn test_death_mode_random_pool() {
+        let cfg = ErmConfig {
+            batch_size: 1,
+            num_ants: 20,
+            leader_fraction: 0.10,
+            ..small_config()
+        };
+        let mut state = AntState::new(&cfg);
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+
+        let deltas = vec![0.0_f32; 20];
+        let deaths =
+            apply_death_respawn(&mut state, &deltas, &cfg, DeathMode::RandomPool, &mut rng);
+
+        // Should replace ~10% = 2 ants (ceil(20*0.1) = 2).
+        assert_eq!(deaths, 2, "should replace ceil(10%) = 2 ants");
+    }
+
+    #[test]
+    fn test_death_streak_resets_on_improvement() {
+        let cfg = ErmConfig {
+            batch_size: 1,
+            num_ants: 3,
+            death_streak: 3,
+            leader_fraction: 0.0,
+            ..small_config()
+        };
+        let mut state = AntState::new(&cfg);
+        let mut rng = ChaCha8Rng::seed_from_u64(0);
+
+        // No improvement for 2 steps.
+        let zero_deltas = vec![0.0_f32; 3];
+        apply_death_respawn(&mut state, &zero_deltas, &cfg, DeathMode::Streak, &mut rng);
+        apply_death_respawn(&mut state, &zero_deltas, &cfg, DeathMode::Streak, &mut rng);
+
+        // Now improve: streak should reset.
+        let good_deltas = vec![1.0_f32; 3];
+        let deaths =
+            apply_death_respawn(&mut state, &good_deltas, &cfg, DeathMode::Streak, &mut rng);
+        assert_eq!(deaths, 0, "no deaths after improvement");
+
+        // Two more zero steps should not kill (streak only at 2, need 3).
+        apply_death_respawn(&mut state, &zero_deltas, &cfg, DeathMode::Streak, &mut rng);
+        let deaths2 =
+            apply_death_respawn(&mut state, &zero_deltas, &cfg, DeathMode::Streak, &mut rng);
+        assert_eq!(deaths2, 0, "streak should be 2, not enough to die");
     }
 }
