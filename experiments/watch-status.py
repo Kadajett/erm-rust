@@ -40,21 +40,33 @@ TARGET_STEPS = 10000
 
 
 def read_last_metrics(exp_id: str) -> dict:
-    """Read the last entry from metrics.jsonl for an experiment."""
-    metrics_path = EXP_BASE / exp_id / "metrics.jsonl"
-    if not metrics_path.exists():
-        return {}
-    try:
-        last_line = None
-        with open(metrics_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    last_line = line
-        if last_line:
-            return json.loads(last_line)
-    except Exception as e:
-        print(f"  [warn] {exp_id} metrics read error: {e}", file=sys.stderr)
+    """Read the last entry from metrics.jsonl for an experiment.
+
+    Checks both the main metrics path and the smoke test path, returning
+    whichever has the higher step count.
+    """
+    # Main run metrics takes priority; fall back to smoke if main not started yet.
+    candidates_ordered = [
+        EXP_BASE / exp_id / "metrics.jsonl",           # main run (priority)
+        EXP_BASE / exp_id / "smoke" / "metrics.jsonl",  # smoke test fallback
+        EXP_BASE / exp_id / "smoke-retry" / "metrics.jsonl",
+    ]
+    for metrics_path in candidates_ordered:
+        if not metrics_path.exists():
+            continue
+        try:
+            last_line = None
+            with open(metrics_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        last_line = line
+            if last_line:
+                record = json.loads(last_line)
+                if record.get("step", 0) > 0:
+                    return record
+        except Exception as e:
+            print(f"  [warn] {exp_id} metrics read error: {e}", file=sys.stderr)
     return {}
 
 
