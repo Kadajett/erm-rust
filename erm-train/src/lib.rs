@@ -1,7 +1,7 @@
 //! # erm-train
 //!
-//! Training loop, data pipeline, evaluation, and orchestration for the
-//! Emergent Route Model.
+//! Training loop, data pipeline, evaluation, orchestration, and benchmarks
+//! for the Emergent Route Model.
 //!
 //! ## Modules
 //!
@@ -11,7 +11,9 @@
 //! - [`orchestrator`] — two-phase training (warm-start → colony), checkpoints
 //! - [`eval`] — evaluation: denoising accuracy, entropy, unique-token ratio
 //! - [`comparison`] — comparison harness for multi-run experiments; JSON report
+//! - [`bench`] — throughput and memory benchmarking harness
 
+pub mod bench;
 pub mod comparison;
 pub mod dataset;
 pub mod eval;

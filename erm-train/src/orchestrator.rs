@@ -236,7 +236,7 @@ impl Orchestrator {
         let mut result = train_step(&self.scorer, batch, None, &self.config.erm, &mut self.rng)?;
         result.step = self.global_step;
 
-        if self.global_step % self.config.log_every == 0 {
+        if self.global_step.is_multiple_of(self.config.log_every) {
             self.loss_log.push(LossRecord {
                 step: self.global_step,
                 phase: phase.to_string(),
@@ -250,7 +250,7 @@ impl Orchestrator {
 
         if let Some(dir) = checkpoint_dir {
             if self.config.checkpoint_every > 0
-                && self.global_step % self.config.checkpoint_every == 0
+                && self.global_step.is_multiple_of(self.config.checkpoint_every)
             {
                 self.save_checkpoint(dir, phase)?;
             }
@@ -294,7 +294,7 @@ fn scorer_to_bytes(scorer: &Scorer) -> Vec<u8> {
 /// Returns [`ErmError::ShapeMismatch`] if byte count doesn't match expected params.
 #[allow(unused_assignments)]
 fn bytes_to_scorer(bytes: &[u8], scorer: &mut Scorer) -> ErmResult<()> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(ErmError::ShapeMismatch {
             expected: "multiple of 4 bytes".to_string(),
             got: format!("{} bytes", bytes.len()),

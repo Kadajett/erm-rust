@@ -1,463 +1,465 @@
 //! ERM CLI — command-line interface for the Emergent Route Model.
 //!
-//! # Subcommands
-//!
-//! | Subcommand | Description |
-//! |------------|-------------|
-//! | `train`    | Run warm-start + colony training from text or directory |
-//! | `eval`     | Evaluate a checkpoint: denoising accuracy and generation metrics |
-//! | `generate` | Generate token sequences from a checkpoint using the scorer |
-//! | `info`     | Print model architecture info for a checkpoint |
+//! Subcommands:
+//! - `train` — run the training loop
+//! - `generate` — generate text from scratch or with a prompt
+//! - `eval` — evaluate a checkpoint (scorer forward + loss)
+//! - `bench` — throughput and memory benchmarks
 
-use std::process;
-
-use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use erm_core::config::ErmConfig;
-use erm_core::scorer::Scorer;
-use erm_core::tokenizer::CharTokenizer;
-use erm_train::comparison::{save_comparison_report, ComparisonMetrics};
-use erm_train::dataset::TextDataset;
-use erm_train::eval::{evaluate_denoising, evaluate_generation};
-use erm_train::orchestrator::{Orchestrator, TrainingConfig};
-
+/// Emergent Route Model — CLI entrypoint.
 #[derive(Parser, Debug)]
-#[command(
-    name = "erm",
-    version,
-    about = "Emergent Route Model: training, evaluation, and generation"
-)]
+#[command(name = "erm", version, about = "Emergent Route Model")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
 
+/// Available subcommands.
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Train the ERM model (warm-start denoiser, then colony phase).
+    /// Train the model on text data.
     Train {
-        /// Path to a single `.txt` file or a directory of `.txt` files.
-        #[arg(long, short = 'd')]
+        /// Path to training data (plain text file).
+        #[arg(long)]
         data: String,
 
-        /// Output directory for checkpoints and loss log.
-        #[arg(long, short = 'o', default_value = "./erm-checkpoints")]
-        output: String,
+        /// Number of training steps.
+        #[arg(long, default_value = "1000")]
+        steps: usize,
 
-        /// Path to a JSON training config file. Uses defaults if omitted.
-        #[arg(long, short = 'c')]
+        /// Number of warm-start steps (plain denoiser, no colony).
+        #[arg(long, default_value = "500")]
+        warmstart: usize,
+
+        /// Path to config file (JSON). Uses defaults if not provided.
+        #[arg(long)]
         config: Option<String>,
 
-        /// Number of warm-start steps (overrides config if set).
-        #[arg(long)]
-        warm_steps: Option<usize>,
-
-        /// Number of colony steps (overrides config if set).
-        #[arg(long)]
-        colony_steps: Option<usize>,
-
-        /// RNG seed.
-        #[arg(long, default_value = "42")]
-        seed: u64,
-
-        /// Dry run: validate config and exit without training.
+        /// Dry run: validate config and shapes, no actual training.
         #[arg(long)]
         dry_run: bool,
     },
 
-    /// Evaluate a checkpoint on a text dataset.
-    Eval {
-        /// Path to a checkpoint directory (produced by `train`).
-        #[arg(long, short = 'k')]
-        checkpoint: String,
-
-        /// Path to evaluation `.txt` file or directory.
-        #[arg(long, short = 'd')]
-        data: String,
-
-        /// Number of evaluation batches.
-        #[arg(long, default_value = "10")]
-        num_batches: usize,
-
-        /// Save a comparison report JSON to this path (optional).
-        #[arg(long)]
-        report: Option<String>,
-
-        /// RNG seed.
-        #[arg(long, default_value = "0")]
-        seed: u64,
-    },
-
-    /// Generate token sequences from a checkpoint.
+    /// Generate text from a model.
     Generate {
-        /// Path to a checkpoint directory.
-        #[arg(long, short = 'k')]
-        checkpoint: String,
+        /// Output length in tokens.
+        #[arg(long, default_value = "128")]
+        length: usize,
 
-        /// Number of sequences to generate.
-        #[arg(long, default_value = "4")]
-        num_sequences: usize,
+        /// Number of refinement steps.
+        #[arg(long, default_value = "6")]
+        steps: usize,
 
-        /// Sequence length in tokens (uses checkpoint config if not set).
+        /// Optional prompt text (prefix for prompted generation).
         #[arg(long)]
-        length: Option<usize>,
+        prompt: Option<String>,
 
-        /// RNG seed.
+        /// Random seed for deterministic generation.
         #[arg(long, default_value = "42")]
         seed: u64,
+
+        /// Path to config file (JSON). Uses defaults if not provided.
+        #[arg(long)]
+        config: Option<String>,
     },
 
-    /// Print model architecture info for a config or checkpoint.
-    Info {
-        /// Path to a JSON config file or checkpoint directory.
-        /// If omitted, prints default config info.
+    /// Evaluate a model on held-out data.
+    Eval {
+        /// Path to evaluation data (plain text file).
         #[arg(long)]
-        source: Option<String>,
+        data: String,
+
+        /// Path to checkpoint directory.
+        #[arg(long)]
+        checkpoint: String,
+
+        /// Path to config file (JSON). Uses defaults if not provided.
+        #[arg(long)]
+        config: Option<String>,
+    },
+
+    /// Run throughput and memory benchmarks.
+    Bench {
+        /// Batch size for benchmarks.
+        #[arg(long, default_value = "8")]
+        batch_size: usize,
+
+        /// Sequence length for benchmarks.
+        #[arg(long, default_value = "128")]
+        seq_len: usize,
+
+        /// Number of refinement steps to benchmark.
+        #[arg(long, default_value = "6")]
+        steps: usize,
+
+        /// Number of iterations per benchmark.
+        #[arg(long, default_value = "10")]
+        iters: usize,
     },
 }
 
 fn main() {
     let cli = Cli::parse();
-    if let Err(e) = run(cli) {
-        eprintln!("error: {e:#}");
-        process::exit(1);
-    }
-}
 
-fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Train {
             data,
-            output,
+            steps,
+            warmstart,
             config,
-            warm_steps,
-            colony_steps,
-            seed,
             dry_run,
-        } => cmd_train(
-            &data,
-            &output,
-            config.as_deref(),
-            warm_steps,
-            colony_steps,
-            seed,
-            dry_run,
-        ),
-        Commands::Eval {
-            checkpoint,
-            data,
-            num_batches,
-            report,
-            seed,
-        } => cmd_eval(&checkpoint, &data, num_batches, report.as_deref(), seed),
+        } => {
+            run_train(&data, steps, warmstart, config.as_deref(), dry_run);
+        }
         Commands::Generate {
-            checkpoint,
-            num_sequences,
             length,
+            steps,
+            prompt,
             seed,
-        } => cmd_generate(&checkpoint, num_sequences, length, seed),
-        Commands::Info { source } => cmd_info(source.as_deref()),
+            config,
+        } => {
+            run_generate(length, steps, prompt.as_deref(), seed, config.as_deref());
+        }
+        Commands::Eval {
+            data,
+            checkpoint,
+            config,
+        } => {
+            run_eval(&data, &checkpoint, config.as_deref());
+        }
+        Commands::Bench {
+            batch_size,
+            seq_len,
+            steps,
+            iters,
+        } => {
+            run_bench(batch_size, seq_len, steps, iters);
+        }
     }
 }
 
-// ── train ───────────────────────────────────────────────────────────────────
-
-fn cmd_train(
-    data: &str,
-    output: &str,
-    config_path: Option<&str>,
-    warm_steps: Option<usize>,
-    colony_steps: Option<usize>,
-    seed: u64,
-    dry_run: bool,
-) -> Result<()> {
-    let mut train_cfg = if let Some(path) = config_path {
-        let json =
-            std::fs::read_to_string(path).with_context(|| format!("reading config {path}"))?;
-        serde_json::from_str::<TrainingConfig>(&json)
-            .with_context(|| format!("parsing config {path}"))?
-    } else {
-        TrainingConfig {
-            seed,
-            ..TrainingConfig::default()
+/// Load an [`ErmConfig`](erm_core::ErmConfig) from a JSON file, or return defaults.
+fn load_config(path: Option<&str>) -> erm_core::ErmConfig {
+    if let Some(p) = path {
+        let json = match std::fs::read_to_string(p) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("ERROR: cannot read config file '{p}': {e}");
+                std::process::exit(1);
+            }
+        };
+        match serde_json::from_str(&json) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("ERROR: cannot parse config file '{p}': {e}");
+                std::process::exit(1);
+            }
         }
-    };
-
-    if let Some(w) = warm_steps {
-        train_cfg.warm_start_steps = w;
+    } else {
+        erm_core::ErmConfig::default()
     }
-    if let Some(c) = colony_steps {
-        train_cfg.colony_steps = c;
-    }
-    train_cfg.seed = seed;
+}
 
-    println!("ERM Training");
-    println!("  data:         {data}");
-    println!("  output:       {output}");
-    println!("  warm_steps:   {}", train_cfg.warm_start_steps);
-    println!("  colony_steps: {}", train_cfg.colony_steps);
-    println!("  seed:         {}", train_cfg.seed);
+fn run_train(
+    data_path: &str,
+    total_steps: usize,
+    warmstart_steps: usize,
+    config_path: Option<&str>,
+    dry_run: bool,
+) {
+    use erm_train::orchestrator::{Orchestrator, TrainingConfig};
 
-    let corpus = load_corpus(data)?;
-    let tokenizer = CharTokenizer::from_text(&corpus);
-    let vocab = tokenizer.vocab_size();
-    println!("  vocab_size:   {vocab}");
-
-    train_cfg.erm.vocab_size = vocab;
-    let seq_len = train_cfg.erm.seq_len;
+    let erm_cfg = load_config(config_path);
 
     if dry_run {
+        println!("=== DRY RUN ===");
         println!(
-            "Dry run: config valid. Scorer params: {}",
-            Scorer::new(&train_cfg.erm, vocab, seed).num_parameters()
+            "Config: seq_len={}, vocab_size={}, hidden_dim={}",
+            erm_cfg.seq_len, erm_cfg.vocab_size, erm_cfg.hidden_dim
         );
-        return Ok(());
+        println!(
+            "Shapes: logits=[{}, {}, {}]",
+            erm_cfg.batch_size, erm_cfg.seq_len, erm_cfg.vocab_size
+        );
+        let colony_steps = total_steps.saturating_sub(warmstart_steps);
+        println!("Steps: warmstart={warmstart_steps}, colony={colony_steps}");
+        println!("Data: {data_path}");
+        println!("Config validated OK.");
+        return;
     }
 
-    let dataset =
-        TextDataset::from_text(&corpus, &tokenizer, seq_len).with_context(|| "building dataset")?;
-    println!("  sequences:    {}", dataset.len());
+    // Read training text.
+    let text = match std::fs::read_to_string(data_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("ERROR: cannot read data file '{data_path}': {e}");
+            std::process::exit(1);
+        }
+    };
 
-    let mut orch = Orchestrator::new(train_cfg, vocab);
-    orch.run_all(&dataset, Some(output))
-        .map_err(|e| anyhow::anyhow!("training failed: {e}"))?;
+    let tokenizer = erm_core::tokenizer::CharTokenizer::from_text(&text);
+    let vocab_size = tokenizer.vocab_size();
 
-    orch.save_checkpoint(output, "done")
-        .map_err(|e| anyhow::anyhow!("checkpoint save failed: {e}"))?;
+    let mut cfg = erm_cfg;
+    cfg.vocab_size = vocab_size;
 
-    let log_path = format!("{output}/loss_log.json");
-    let log_json = serde_json::to_string_pretty(&orch.loss_log).context("serialising loss log")?;
-    std::fs::write(&log_path, log_json)
-        .with_context(|| format!("writing loss log to {log_path}"))?;
+    let colony_steps = total_steps.saturating_sub(warmstart_steps);
+    let train_cfg = TrainingConfig {
+        erm: cfg,
+        warm_start_steps: warmstart_steps,
+        colony_steps,
+        log_every: 100,
+        checkpoint_every: 0,
+        seed: 42,
+    };
 
-    println!("Training complete. Checkpoint saved to: {output}");
-    println!("Loss log: {log_path}");
-    Ok(())
+    let total_vocab = train_cfg.erm.total_vocab_size();
+    let dataset = match erm_train::dataset::TextDataset::from_text(
+        &text,
+        &tokenizer,
+        train_cfg.erm.seq_len,
+    ) {
+        Ok(ds) => ds,
+        Err(e) => {
+            eprintln!("ERROR: cannot build dataset: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut orch = Orchestrator::new(train_cfg, total_vocab);
+    println!("Training: warmstart={warmstart_steps}, colony={colony_steps}, vocab={vocab_size}");
+
+    if let Err(e) = orch.run_all(&dataset, None) {
+        eprintln!("ERROR during training: {e}");
+        std::process::exit(1);
+    }
+
+    println!("Training complete. Global step: {}", orch.global_step);
+    if let Some(last) = orch.loss_log.last() {
+        println!("Final loss: {:.4} (step {})", last.loss, last.step);
+    }
 }
 
-// ── eval ────────────────────────────────────────────────────────────────────
-
-fn cmd_eval(
-    checkpoint: &str,
-    data: &str,
-    num_batches: usize,
-    report_path: Option<&str>,
+fn run_generate(
+    length: usize,
+    steps: usize,
+    prompt: Option<&str>,
     seed: u64,
-) -> Result<()> {
+    config_path: Option<&str>,
+) {
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
 
-    println!("ERM Evaluation");
-    println!("  checkpoint: {checkpoint}");
-    println!("  data:       {data}");
-    println!("  batches:    {num_batches}");
-
-    let (orch, phase) = Orchestrator::load_checkpoint(checkpoint)
-        .map_err(|e| anyhow::anyhow!("loading checkpoint: {e}"))?;
-    println!("  loaded phase: {phase}, step: {}", orch.global_step);
-
-    let corpus = load_corpus(data)?;
-    let tokenizer = CharTokenizer::from_text(&corpus);
-    let seq_len = orch.config.erm.seq_len;
-    let dataset = TextDataset::from_text(&corpus, &tokenizer, seq_len)
-        .with_context(|| "building eval dataset")?;
-
-    let mut rng = ChaCha8Rng::seed_from_u64(seed);
-
-    let denoise_metrics = evaluate_denoising(
-        &orch.scorer,
-        &dataset,
-        &orch.config.erm,
-        num_batches,
-        None,
-        &mut rng,
-    )
-    .map_err(|e| anyhow::anyhow!("denoising eval: {e}"))?;
-
-    println!("\nDenoising evaluation:");
-    println!(
-        "  masked_token_accuracy: {:?}",
-        denoise_metrics.masked_token_accuracy
-    );
-    println!("  avg_loss:              {:?}", denoise_metrics.avg_loss);
-    println!("  num_positions:         {}", denoise_metrics.num_positions);
-
-    let gen_metrics = evaluate_generation(&orch.scorer, &orch.config.erm, num_batches, &mut rng)
-        .map_err(|e| anyhow::anyhow!("generation eval: {e}"))?;
-
-    println!("\nGeneration evaluation:");
-    println!("  token_entropy:      {:?}", gen_metrics.token_entropy);
-    println!("  unique_token_ratio: {:?}", gen_metrics.unique_token_ratio);
-    println!("  num_positions:      {}", gen_metrics.num_positions);
-
-    if let Some(path) = report_path {
-        let entries = vec![
-            ComparisonMetrics::new("denoising", denoise_metrics),
-            ComparisonMetrics::new("generation", gen_metrics),
-        ];
-        save_comparison_report(path, &entries)
-            .map_err(|e| anyhow::anyhow!("saving report: {e}"))?;
-        println!("\nComparison report saved to: {path}");
+    let mut cfg = load_config(config_path);
+    cfg.seq_len = length;
+    cfg.refinement_steps = steps;
+    // Use a small vocab for demo generation without a real model.
+    if cfg.vocab_size > 256 {
+        cfg.vocab_size = 256;
     }
 
-    Ok(())
-}
-
-// ── generate ────────────────────────────────────────────────────────────────
-
-fn cmd_generate(
-    checkpoint: &str,
-    num_sequences: usize,
-    length: Option<usize>,
-    seed: u64,
-) -> Result<()> {
-    use rand::SeedableRng;
-    use rand_chacha::ChaCha8Rng;
-
-    println!("ERM Generate");
-    println!("  checkpoint:     {checkpoint}");
-    println!("  num_sequences:  {num_sequences}");
-
-    let (orch, phase) = Orchestrator::load_checkpoint(checkpoint)
-        .map_err(|e| anyhow::anyhow!("loading checkpoint: {e}"))?;
-    println!("  loaded phase: {phase}");
-
-    let seq_len = length.unwrap_or(orch.config.erm.seq_len);
-    let cfg = &orch.config.erm;
-    let v = orch.scorer.vocab_size;
-    let mask_id = cfg.mask_token_id() as u32;
-
+    let pconfig = erm_core::config::PheromoneConfig::from_config(&cfg);
+    let scorer = erm_core::scorer::Scorer::new(&cfg, cfg.vocab_size, seed);
+    let mut graph = erm_core::graph::RouteGraph::new(&cfg);
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    let _ = &mut rng;
 
-    println!("  seq_len:        {seq_len}");
-    println!("  vocab_size:     {v}\n");
-
-    let fully_masked: Vec<u32> = vec![mask_id; num_sequences * seq_len];
-    let output = orch
-        .scorer
-        .forward(&fully_masked, num_sequences)
-        .map_err(|e| anyhow::anyhow!("scorer forward: {e}"))?;
-
-    for b in 0..num_sequences {
-        let mut tokens: Vec<u32> = Vec::with_capacity(seq_len);
-        for pos in 0..seq_len {
-            let logit_start = (b * seq_len + pos) * v;
-            let logit_slice = &output.logits[logit_start..logit_start + v];
-            let pred = argmax(logit_slice) as u32;
-            tokens.push(pred);
+    let result = if let Some(prompt_text) = prompt {
+        // Convert chars to token ids (mod vocab_size for safety).
+        let prefix: Vec<u32> = prompt_text
+            .chars()
+            .map(|c| (c as u32) % cfg.vocab_size as u32)
+            .collect();
+        let gen_length = length.saturating_sub(prefix.len());
+        if gen_length == 0 {
+            eprintln!("ERROR: prompt is as long as or longer than generation length");
+            std::process::exit(1);
         }
-        println!("sequence {b}: {:?}", &tokens[..seq_len.min(32)]);
-        if seq_len > 32 {
-            println!("  ... ({} total tokens)", seq_len);
+        match erm_core::refinement::generate_prompted(
+            &scorer, &mut graph, &cfg, &pconfig, &prefix, gen_length, &mut rng,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("ERROR: generation failed: {e}");
+                std::process::exit(1);
+            }
         }
-    }
-
-    Ok(())
-}
-
-// ── info ────────────────────────────────────────────────────────────────────
-
-fn cmd_info(source: Option<&str>) -> Result<()> {
-    let cfg = match source {
-        None => {
-            println!("(no source specified — showing default config)");
-            ErmConfig::default()
-        }
-        Some(path) => {
-            let config_path = format!("{path}/config.json");
-            if std::path::Path::new(&config_path).exists() {
-                let json = std::fs::read_to_string(&config_path)
-                    .with_context(|| format!("reading {config_path}"))?;
-                let train_cfg: TrainingConfig =
-                    serde_json::from_str(&json).with_context(|| "parsing checkpoint config")?;
-                println!("Loaded from checkpoint: {path}");
-                if let Ok(meta_json) = std::fs::read_to_string(format!("{path}/step.json")) {
-                    println!("Checkpoint meta: {meta_json}");
-                }
-                train_cfg.erm
-            } else {
-                let json =
-                    std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
-                serde_json::from_str::<ErmConfig>(&json)
-                    .with_context(|| "parsing ErmConfig JSON")?
+    } else {
+        match erm_core::refinement::generate_from_scratch(
+            &scorer, &mut graph, &cfg, &pconfig, length, &mut rng,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("ERROR: generation failed: {e}");
+                std::process::exit(1);
             }
         }
     };
 
-    let vocab = cfg.total_vocab_size();
-    let scorer = Scorer::new(&cfg, vocab, 0);
-    let n_params = scorer.num_parameters();
-
-    println!("\nERM Model Architecture");
     println!(
-        "  vocab_size:      {} ({} with MASK)",
-        cfg.vocab_size, vocab
+        "Generated {} tokens in {} steps ({})",
+        result.y_final.len(),
+        result.steps_executed,
+        result.stop_reason
     );
-    println!("  seq_len:         {}", cfg.seq_len);
-    println!("  hidden_dim:      {}", cfg.hidden_dim);
-    println!("  num_blocks:      {}", cfg.num_blocks);
-    println!("  num_heads:       {}", cfg.num_heads);
-    println!("  mlp_expansion:   {}", cfg.mlp_expansion);
-    println!("  num_ants:        {}", cfg.num_ants);
-    println!("  refinement_steps:{}", cfg.refinement_steps);
-    println!("  batch_size:      {}", cfg.batch_size);
-    println!("  learning_rate:   {}", cfg.learning_rate);
-    println!("\n  Total parameters: {n_params}");
-
-    Ok(())
+    let display_len = result.y_final.len().min(64);
+    println!("Tokens: {:?}", &result.y_final[..display_len]);
+    println!(
+        "Peak memory estimate: {} bytes",
+        result.peak_memory_estimate
+    );
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+fn run_eval(data_path: &str, checkpoint_dir: &str, config_path: Option<&str>) {
+    use erm_train::orchestrator::Orchestrator;
 
-fn load_corpus(path: &str) -> Result<String> {
-    let p = std::path::Path::new(path);
-    if p.is_dir() {
-        let mut files: Vec<String> = Vec::new();
-        collect_txt_recursive(path, &mut files)?;
-        files.sort();
-        if files.is_empty() {
-            anyhow::bail!("no .txt files found in directory: {path}");
+    let _ = config_path; // config comes from checkpoint
+
+    // Load checkpoint.
+    let (orch, phase) = match Orchestrator::load_checkpoint(checkpoint_dir) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("ERROR: cannot load checkpoint from '{checkpoint_dir}': {e}");
+            std::process::exit(1);
         }
-        let mut corpus = String::new();
-        for f in &files {
-            let content = std::fs::read_to_string(f).with_context(|| format!("reading {f}"))?;
-            if !corpus.is_empty() {
-                corpus.push('\n');
+    };
+
+    println!(
+        "Loaded checkpoint: step={}, phase={phase}",
+        orch.global_step
+    );
+
+    // Read eval text.
+    let text = match std::fs::read_to_string(data_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("ERROR: cannot read data file '{data_path}': {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let tokenizer = erm_core::tokenizer::CharTokenizer::from_text(&text);
+    let cfg = &orch.config.erm;
+    let dataset = match erm_train::dataset::TextDataset::from_text(&text, &tokenizer, cfg.seq_len) {
+        Ok(ds) => ds,
+        Err(e) => {
+            eprintln!("ERROR: cannot build eval dataset: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    use rand::SeedableRng;
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(0);
+    let num_eval_batches = 10;
+    let mut total_loss = 0.0_f32;
+    let mut total_corrupted = 0_usize;
+
+    for _ in 0..num_eval_batches {
+        let batch = dataset.get_batch(cfg.batch_size, &mut rng);
+        match erm_train::training::train_step(&orch.scorer, &batch, None, cfg, &mut rng) {
+            Ok(result) => {
+                total_loss += result.loss * result.num_corrupted as f32;
+                total_corrupted += result.num_corrupted;
             }
-            corpus.push_str(&content);
+            Err(e) => {
+                eprintln!("WARNING: eval step failed: {e}");
+            }
         }
-        Ok(corpus)
+    }
+
+    let mean_loss = if total_corrupted > 0 {
+        total_loss / total_corrupted as f32
     } else {
-        std::fs::read_to_string(path).with_context(|| format!("reading {path}"))
-    }
+        0.0
+    };
+
+    println!("Eval results ({num_eval_batches} batches):");
+    println!("  Mean denoising loss: {mean_loss:.4}");
+    println!("  Total corrupted positions: {total_corrupted}");
 }
 
-fn collect_txt_recursive(dir: &str, out: &mut Vec<String>) -> Result<()> {
-    for entry in std::fs::read_dir(dir).with_context(|| format!("reading directory {dir}"))? {
-        let entry = entry.context("directory entry")?;
-        let path = entry.path();
-        if path.is_dir() {
-            let sub = path.to_str().context("non-UTF-8 path")?.to_string();
-            collect_txt_recursive(&sub, out)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("txt") {
-            out.push(path.to_str().context("non-UTF-8 path")?.to_string());
-        }
-    }
-    Ok(())
+fn run_bench(batch_size: usize, seq_len: usize, steps: usize, iters: usize) {
+    erm_train::bench::run_benchmarks(batch_size, seq_len, steps, iters);
 }
 
-fn argmax(logits: &[f32]) -> usize {
-    logits
-        .iter()
-        .enumerate()
-        .fold((0usize, f32::NEG_INFINITY), |(bi, bv), (i, &v)| {
-            if v > bv {
-                (i, v)
-            } else {
-                (bi, bv)
-            }
-        })
-        .0
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cli_parse_train() {
+        let cli = Cli::try_parse_from([
+            "erm",
+            "train",
+            "--data",
+            "test.txt",
+            "--steps",
+            "100",
+            "--warmstart",
+            "50",
+        ]);
+        assert!(cli.is_ok(), "train subcommand should parse");
+    }
+
+    #[test]
+    fn test_cli_parse_train_dry_run() {
+        let cli = Cli::try_parse_from(["erm", "train", "--data", "test.txt", "--dry-run"]);
+        assert!(cli.is_ok(), "train --dry-run should parse");
+    }
+
+    #[test]
+    fn test_cli_parse_generate() {
+        let cli = Cli::try_parse_from([
+            "erm", "generate", "--length", "64", "--steps", "4", "--prompt", "hello",
+        ]);
+        assert!(cli.is_ok(), "generate subcommand should parse");
+    }
+
+    #[test]
+    fn test_cli_parse_generate_defaults() {
+        let cli = Cli::try_parse_from(["erm", "generate"]);
+        assert!(cli.is_ok(), "generate with defaults should parse");
+    }
+
+    #[test]
+    fn test_cli_parse_eval() {
+        let cli = Cli::try_parse_from([
+            "erm",
+            "eval",
+            "--data",
+            "test.txt",
+            "--checkpoint",
+            "/tmp/ckpt",
+        ]);
+        assert!(cli.is_ok(), "eval subcommand should parse");
+    }
+
+    #[test]
+    fn test_cli_parse_bench() {
+        let cli = Cli::try_parse_from([
+            "erm",
+            "bench",
+            "--batch-size",
+            "4",
+            "--seq-len",
+            "64",
+            "--steps",
+            "3",
+        ]);
+        assert!(cli.is_ok(), "bench subcommand should parse");
+    }
+
+    #[test]
+    fn test_cli_parse_bench_defaults() {
+        let cli = Cli::try_parse_from(["erm", "bench"]);
+        assert!(cli.is_ok(), "bench with defaults should parse");
+    }
+
+    #[test]
+    fn test_load_config_default() {
+        let cfg = load_config(None);
+        assert_eq!(cfg.seq_len, 128);
+        assert_eq!(cfg.vocab_size, 16_384);
+    }
 }

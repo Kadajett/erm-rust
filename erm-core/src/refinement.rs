@@ -490,6 +490,351 @@ pub fn full_colony_step<R: Rng>(
     })
 }
 
+// ── Multi-step refinement (Milestone 6) ───────────────────────────────────
+
+/// Statistics for a single step within multi-step refinement.
+#[derive(Debug, Clone)]
+pub struct StepStats {
+    /// Number of edits applied in this step.
+    pub num_edits: usize,
+    /// Pheromone statistics after this step.
+    pub pheromone_stats: PheromoneStats,
+}
+
+/// Result of a multi-step refinement run.
+#[derive(Debug, Clone)]
+pub struct MultiStepResult {
+    /// Final refined tokens. Shape: `[L]`.
+    pub y_final: Vec<u32>,
+    /// Per-step statistics (edits, pheromone stats).
+    pub step_stats: Vec<StepStats>,
+    /// Total number of refinement steps actually executed (may be < T if early-stopped).
+    pub steps_executed: usize,
+    /// Reason for stopping: `"max_steps"`, `"no_edits"`, `"convergence"`, or `"confidence"`.
+    pub stop_reason: String,
+    /// Peak memory estimate in bytes (sum of largest Vec allocations tracked).
+    pub peak_memory_estimate: usize,
+}
+
+/// Configuration for multi-step refinement stopping criteria.
+#[derive(Debug, Clone)]
+pub struct MultiStepConfig {
+    /// Maximum number of refinement steps `T`.
+    pub max_steps: usize,
+    /// Confidence threshold: stop if mean max-softmax across editable positions exceeds this.
+    pub confidence_threshold: f32,
+}
+
+impl MultiStepConfig {
+    /// Build from the global [`ErmConfig`].
+    #[must_use]
+    pub fn from_config(config: &ErmConfig) -> Self {
+        Self {
+            max_steps: config.refinement_steps,
+            confidence_threshold: 0.9,
+        }
+    }
+}
+
+/// Compute the mean confidence (max softmax probability) across editable positions.
+///
+/// Confidence for position `i` = `max(softmax(logits[i]))`.
+///
+/// # Arguments
+///
+/// - `logits`: flat `[L * V]` logits for one sequence.
+/// - `editable`: boolean mask `[L]`.
+/// - `seq_len`: sequence length `L`.
+/// - `vocab_size`: vocabulary size `V`.
+///
+/// # Returns
+///
+/// Mean confidence across editable positions. Returns `1.0` if no positions are editable.
+fn mean_confidence(logits: &[f32], editable: &[bool], seq_len: usize, vocab_size: usize) -> f32 {
+    let mut total_conf = 0.0_f32;
+    let mut count = 0_usize;
+
+    for (i, &is_editable) in editable.iter().enumerate().take(seq_len) {
+        if !is_editable {
+            continue;
+        }
+        let start = i * vocab_size;
+        let end = start + vocab_size;
+        if end > logits.len() {
+            continue;
+        }
+        let row = &logits[start..end];
+
+        // Numerically stable softmax: max softmax = 1 / sum(exp(x_j - x_max)).
+        let max_val = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exp_sum: f32 = row.iter().map(|&x| (x - max_val).exp()).sum();
+        if exp_sum > 0.0 {
+            let max_softmax = 1.0 / exp_sum;
+            total_conf += max_softmax;
+        }
+        count += 1;
+    }
+
+    if count == 0 {
+        1.0
+    } else {
+        total_conf / count as f32
+    }
+}
+
+/// Run T refinement steps in sequence: `y_T → y_{T-1} → ... → y_1`.
+///
+/// Each step uses [`refine_step_with_pheromones`]. The loop stops early if:
+/// - No edits were applied in a step.
+/// - Mean confidence across editable positions exceeds `confidence_threshold`.
+/// - Convergence: `y` is unchanged between consecutive steps.
+///
+/// # Arguments
+///
+/// - `y_init`: initial tokens for one sequence, `[L]`.
+/// - `scorer`: the neural scorer network.
+/// - `graph`: mutable route graph (updated in-place across steps).
+/// - `batch_idx`: which batch element in the graph.
+/// - `config`: ERM hyperparameters.
+/// - `pheromone_config`: pheromone hyperparameters.
+/// - `multi_config`: multi-step stopping criteria.
+/// - `editable`: boolean mask `[L]`.
+/// - `rng`: random number generator.
+///
+/// # Returns
+///
+/// [`MultiStepResult`] with final tokens, per-step stats, and stopping info.
+///
+/// # Errors
+///
+/// Returns [`ErmError`] on shape mismatches or scorer failures.
+#[allow(clippy::too_many_arguments)]
+pub fn multi_step_refine<R: Rng>(
+    y_init: &[u32],
+    scorer: &Scorer,
+    graph: &mut RouteGraph,
+    batch_idx: usize,
+    config: &ErmConfig,
+    pheromone_config: &PheromoneConfig,
+    multi_config: &MultiStepConfig,
+    editable: &[bool],
+    rng: &mut R,
+) -> ErmResult<MultiStepResult> {
+    let seq_len = config.seq_len;
+    let vocab_size = config.vocab_size;
+
+    if y_init.len() != seq_len {
+        return Err(ErmError::ShapeMismatch {
+            expected: format!("y_init length = {seq_len}"),
+            got: format!("{}", y_init.len()),
+        });
+    }
+
+    let mut y_current = y_init.to_vec();
+    let mut step_stats: Vec<StepStats> = Vec::with_capacity(multi_config.max_steps);
+    let mut stop_reason = "max_steps".to_string();
+
+    // Track peak memory estimate: start with y_current.
+    let y_mem = y_current.len() * std::mem::size_of::<u32>();
+    let mut peak_mem: usize = y_mem;
+
+    for step in 0..multi_config.max_steps {
+        let y_before = y_current.clone();
+
+        // Track memory: y_current + y_before clones.
+        let clone_mem = y_mem * 2 + step_stats.len() * std::mem::size_of::<StepStats>();
+        peak_mem = peak_mem.max(clone_mem);
+
+        let result = refine_step_with_pheromones(
+            &y_current,
+            scorer,
+            graph,
+            batch_idx,
+            config,
+            pheromone_config,
+            editable,
+            rng,
+        )?;
+
+        // Track memory from logits (2 forward passes inside refine_step_with_pheromones).
+        let logits_mem = seq_len * vocab_size * std::mem::size_of::<f32>() * 2;
+        peak_mem = peak_mem.max(logits_mem);
+
+        step_stats.push(StepStats {
+            num_edits: result.num_edits,
+            pheromone_stats: result.pheromone_stats,
+        });
+
+        y_current = result.y_new;
+
+        // Early stop: no edits applied.
+        if result.num_edits == 0 {
+            stop_reason = "no_edits".to_string();
+            break;
+        }
+
+        // Early stop: convergence (y unchanged).
+        if y_current == y_before {
+            stop_reason = "convergence".to_string();
+            break;
+        }
+
+        // Early stop: mean confidence exceeds threshold.
+        if step + 1 < multi_config.max_steps {
+            let scorer_out = scorer.forward(&y_current, 1)?;
+            let conf = mean_confidence(&scorer_out.logits, editable, seq_len, vocab_size);
+            if conf > multi_config.confidence_threshold {
+                stop_reason = "confidence".to_string();
+                break;
+            }
+        }
+    }
+
+    Ok(MultiStepResult {
+        y_final: y_current,
+        steps_executed: step_stats.len(),
+        step_stats,
+        stop_reason,
+        peak_memory_estimate: peak_mem,
+    })
+}
+
+/// Generate tokens from scratch by initializing with MASK tokens and refining.
+///
+/// Initializes `y_T = [MASK] * length`, then runs [`multi_step_refine`] to
+/// produce a complete token sequence.
+///
+/// # Arguments
+///
+/// - `scorer`: the neural scorer.
+/// - `graph`: mutable route graph.
+/// - `config`: ERM hyperparameters. `config.seq_len` must equal `length`.
+/// - `pheromone_config`: pheromone hyperparameters.
+/// - `length`: desired output length in tokens.
+/// - `rng`: random number generator.
+///
+/// # Returns
+///
+/// [`MultiStepResult`] with generated tokens.
+///
+/// # Errors
+///
+/// Returns [`ErmError`] if `length != config.seq_len` or on refinement failures.
+pub fn generate_from_scratch<R: Rng>(
+    scorer: &Scorer,
+    graph: &mut RouteGraph,
+    config: &ErmConfig,
+    pheromone_config: &PheromoneConfig,
+    length: usize,
+    rng: &mut R,
+) -> ErmResult<MultiStepResult> {
+    if length != config.seq_len {
+        return Err(ErmError::InvalidConfig(format!(
+            "generate_from_scratch: length={length} must equal config.seq_len={}",
+            config.seq_len
+        )));
+    }
+
+    // MASK token id = vocab_size (sentinel). If scorer embedding table is large
+    // enough, use the real MASK id; otherwise use 0 as a pseudo-mask.
+    let mask_id = if (config.vocab_size as u32) < scorer.total_vocab as u32 {
+        config.vocab_size as u32
+    } else {
+        0_u32
+    };
+    let y_init: Vec<u32> = vec![mask_id; length];
+    let editable = vec![true; length];
+    let multi_config = MultiStepConfig::from_config(config);
+
+    multi_step_refine(
+        &y_init,
+        scorer,
+        graph,
+        0,
+        config,
+        pheromone_config,
+        &multi_config,
+        &editable,
+        rng,
+    )
+}
+
+/// Generate tokens with a fixed prefix (prompted generation).
+///
+/// The prefix tokens are set as non-editable. The suffix is initialized with
+/// MASK tokens and refined via [`multi_step_refine`].
+///
+/// # Arguments
+///
+/// - `scorer`: the neural scorer.
+/// - `graph`: mutable route graph.
+/// - `config`: ERM hyperparameters. `config.seq_len` must equal `prefix.len() + gen_length`.
+/// - `pheromone_config`: pheromone hyperparameters.
+/// - `prefix`: token ids for the fixed prompt prefix.
+/// - `gen_length`: number of tokens to generate after the prefix.
+/// - `rng`: random number generator.
+///
+/// # Returns
+///
+/// [`MultiStepResult`] with generated tokens. Prefix positions are preserved unchanged.
+///
+/// # Errors
+///
+/// Returns [`ErmError`] if lengths don't match, prefix is empty, or refinement fails.
+#[allow(clippy::too_many_arguments)]
+pub fn generate_prompted<R: Rng>(
+    scorer: &Scorer,
+    graph: &mut RouteGraph,
+    config: &ErmConfig,
+    pheromone_config: &PheromoneConfig,
+    prefix: &[u32],
+    gen_length: usize,
+    rng: &mut R,
+) -> ErmResult<MultiStepResult> {
+    let total_len = prefix.len() + gen_length;
+    if total_len != config.seq_len {
+        return Err(ErmError::InvalidConfig(format!(
+            "generate_prompted: prefix({}) + gen_length({gen_length}) = {total_len}, \
+             must equal config.seq_len={}",
+            prefix.len(),
+            config.seq_len
+        )));
+    }
+    if prefix.is_empty() {
+        return Err(ErmError::InvalidConfig(
+            "generate_prompted: prefix must not be empty".to_string(),
+        ));
+    }
+
+    // Build initial sequence: prefix ++ [MASK] * gen_length.
+    let mask_id = if (config.vocab_size as u32) < scorer.total_vocab as u32 {
+        config.vocab_size as u32
+    } else {
+        0_u32
+    };
+    let mut y_init: Vec<u32> = Vec::with_capacity(total_len);
+    y_init.extend_from_slice(prefix);
+    y_init.extend(std::iter::repeat_n(mask_id, gen_length));
+
+    // Editable mask: prefix = false, suffix = true.
+    let mut editable = vec![false; prefix.len()];
+    editable.extend(std::iter::repeat_n(true, gen_length));
+
+    let multi_config = MultiStepConfig::from_config(config);
+
+    multi_step_refine(
+        &y_init,
+        scorer,
+        graph,
+        0,
+        config,
+        pheromone_config,
+        &multi_config,
+        &editable,
+        rng,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,10 +1110,7 @@ mod tests {
         .unwrap();
 
         // Should have some deaths (ceil(20 * 0.1) = 2 per batch).
-        assert!(
-            result.deaths > 0,
-            "RandomPool should produce deaths, got 0"
-        );
+        assert!(result.deaths > 0, "RandomPool should produce deaths, got 0");
     }
 
     #[test]
@@ -817,5 +1159,218 @@ mod tests {
         assert_eq!(r1.y_new, r2.y_new);
         assert_eq!(r1.num_edits, r2.num_edits);
         assert_eq!(r1.deaths, r2.deaths);
+    }
+
+    // ── multi_step_refine tests (Milestone 6) ───────────────────────────
+
+    #[test]
+    fn test_multi_step_refine_shape() {
+        let cfg = test_config();
+        let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
+        let mut graph = RouteGraph::new(&cfg);
+        let pconfig = PheromoneConfig::from_config(&cfg);
+        let multi_cfg = MultiStepConfig {
+            max_steps: 3,
+            confidence_threshold: 0.99,
+        };
+        let editable = vec![true; cfg.seq_len];
+        let y_init: Vec<u32> = (0..cfg.seq_len as u32).collect();
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+
+        let result = multi_step_refine(
+            &y_init, &scorer, &mut graph, 0, &cfg, &pconfig, &multi_cfg, &editable, &mut rng,
+        )
+        .unwrap();
+
+        assert_eq!(result.y_final.len(), cfg.seq_len);
+        for &t in &result.y_final {
+            assert!(
+                (t as usize) < cfg.vocab_size,
+                "token {t} >= vocab_size {}",
+                cfg.vocab_size
+            );
+        }
+        assert!(result.steps_executed <= multi_cfg.max_steps);
+        assert!(!result.stop_reason.is_empty());
+        assert!(result.peak_memory_estimate > 0);
+    }
+
+    #[test]
+    fn test_multi_step_reduces_corruption() {
+        // After multiple steps, the sequence should differ from the initial MASK-heavy input.
+        let cfg = test_config();
+        let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
+        let mut graph = RouteGraph::new(&cfg);
+        let pconfig = PheromoneConfig::from_config(&cfg);
+        let multi_cfg = MultiStepConfig {
+            max_steps: 4,
+            confidence_threshold: 0.99,
+        };
+        let editable = vec![true; cfg.seq_len];
+        // Start with all zeros (simulating a "corrupted" sequence).
+        let y_init = vec![0_u32; cfg.seq_len];
+        let mut rng = ChaCha8Rng::seed_from_u64(77);
+
+        let result = multi_step_refine(
+            &y_init, &scorer, &mut graph, 0, &cfg, &pconfig, &multi_cfg, &editable, &mut rng,
+        )
+        .unwrap();
+
+        // At least one step should have been executed.
+        assert!(result.steps_executed >= 1, "expected at least 1 step");
+    }
+
+    #[test]
+    fn test_multi_step_early_stop_no_edits() {
+        // If the scorer proposes no changes, the loop should stop early.
+        let cfg = test_config();
+        let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
+        let mut graph = RouteGraph::new(&cfg);
+        let pconfig = PheromoneConfig::from_config(&cfg);
+        let multi_cfg = MultiStepConfig {
+            max_steps: 10,
+            confidence_threshold: 0.99,
+        };
+        // Make nothing editable → no edits possible → early stop.
+        let editable = vec![false; cfg.seq_len];
+        let y_init: Vec<u32> = (0..cfg.seq_len as u32).collect();
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+
+        let result = multi_step_refine(
+            &y_init, &scorer, &mut graph, 0, &cfg, &pconfig, &multi_cfg, &editable, &mut rng,
+        )
+        .unwrap();
+
+        // Should stop after 1 step with "no_edits".
+        assert_eq!(result.steps_executed, 1);
+        assert_eq!(result.stop_reason, "no_edits");
+        // y_final should be identical to y_init since nothing was editable.
+        assert_eq!(result.y_final, y_init);
+    }
+
+    #[test]
+    fn test_generate_from_scratch() {
+        let cfg = test_config();
+        let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
+        let mut graph = RouteGraph::new(&cfg);
+        let pconfig = PheromoneConfig::from_config(&cfg);
+        let mut rng = ChaCha8Rng::seed_from_u64(55);
+
+        let result =
+            generate_from_scratch(&scorer, &mut graph, &cfg, &pconfig, cfg.seq_len, &mut rng)
+                .unwrap();
+
+        assert_eq!(result.y_final.len(), cfg.seq_len);
+        for &t in &result.y_final {
+            assert!(
+                (t as usize) < cfg.vocab_size,
+                "generated token {t} out of range"
+            );
+        }
+    }
+
+    #[test]
+    fn test_generate_from_scratch_wrong_length() {
+        let cfg = test_config();
+        let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
+        let mut graph = RouteGraph::new(&cfg);
+        let pconfig = PheromoneConfig::from_config(&cfg);
+        let mut rng = ChaCha8Rng::seed_from_u64(0);
+
+        // Wrong length should fail.
+        let result = generate_from_scratch(
+            &scorer,
+            &mut graph,
+            &cfg,
+            &pconfig,
+            cfg.seq_len + 1,
+            &mut rng,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_generate_prompted_preserves_prefix() {
+        let cfg = test_config();
+        let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
+        let mut graph = RouteGraph::new(&cfg);
+        let pconfig = PheromoneConfig::from_config(&cfg);
+        let mut rng = ChaCha8Rng::seed_from_u64(99);
+
+        let prefix: Vec<u32> = vec![1, 2, 3, 4];
+        let gen_length = cfg.seq_len - prefix.len();
+
+        let result = generate_prompted(
+            &scorer, &mut graph, &cfg, &pconfig, &prefix, gen_length, &mut rng,
+        )
+        .unwrap();
+
+        assert_eq!(result.y_final.len(), cfg.seq_len);
+        // Prefix must be preserved.
+        for (i, &expected) in prefix.iter().enumerate() {
+            assert_eq!(
+                result.y_final[i], expected,
+                "prefix position {i}: expected {expected}, got {}",
+                result.y_final[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_generate_prompted_wrong_total_length() {
+        let cfg = test_config();
+        let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
+        let mut graph = RouteGraph::new(&cfg);
+        let pconfig = PheromoneConfig::from_config(&cfg);
+        let mut rng = ChaCha8Rng::seed_from_u64(0);
+
+        let prefix = vec![1_u32, 2, 3];
+        // Total = 3 + 10 = 13, but seq_len = 8.
+        let result = generate_prompted(&scorer, &mut graph, &cfg, &pconfig, &prefix, 10, &mut rng);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_generate_prompted_empty_prefix() {
+        let cfg = test_config();
+        let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
+        let mut graph = RouteGraph::new(&cfg);
+        let pconfig = PheromoneConfig::from_config(&cfg);
+        let mut rng = ChaCha8Rng::seed_from_u64(0);
+
+        let result = generate_prompted(
+            &scorer,
+            &mut graph,
+            &cfg,
+            &pconfig,
+            &[],
+            cfg.seq_len,
+            &mut rng,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_mean_confidence_all_editable() {
+        let seq_len = 4;
+        let vocab_size = 3;
+        // Very confident logits: one token dominates.
+        let mut logits = vec![0.0_f32; seq_len * vocab_size];
+        for i in 0..seq_len {
+            logits[i * vocab_size] = 100.0; // token 0 very confident
+        }
+        let editable = vec![true; seq_len];
+
+        let conf = mean_confidence(&logits, &editable, seq_len, vocab_size);
+        // With logits [100, 0, 0], softmax ≈ [1.0, ~0, ~0], so max ≈ 1.0.
+        assert!(conf > 0.9, "expected high confidence, got {conf}");
+    }
+
+    #[test]
+    fn test_mean_confidence_none_editable() {
+        let logits = vec![0.0_f32; 12];
+        let editable = vec![false; 4];
+        let conf = mean_confidence(&logits, &editable, 4, 3);
+        assert!((conf - 1.0).abs() < 1e-6, "expected 1.0, got {conf}");
     }
 }

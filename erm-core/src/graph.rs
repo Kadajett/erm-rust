@@ -84,6 +84,8 @@ impl RouteGraph {
             phi: vec![config.phi_init; total],
             taint: vec![0.0; total],
             age: vec![0; total],
+            utility: vec![0.0; total],
+            leader_edge: vec![false; total],
         }
     }
 
@@ -132,6 +134,23 @@ impl RouteGraph {
         src: PosIdx,
         phi_init: f32,
     ) -> ErmResult<EdgeSlot> {
+        self.add_edge_with_leader(b, dst, src, phi_init, false)
+    }
+
+    /// Insert an edge `src → dst`, optionally marking it as leader-introduced
+    /// for utility EMA tracking.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErmError::GraphError`] if the destination's slots are full.
+    pub fn add_edge_with_leader(
+        &mut self,
+        b: BatchIdx,
+        dst: PosIdx,
+        src: PosIdx,
+        phi_init: f32,
+        is_leader: bool,
+    ) -> ErmResult<EdgeSlot> {
         let slot = self
             .first_empty_slot(b, dst)
             .ok_or_else(|| ErmError::GraphError(format!("slots full at ({b}, {dst})")))?;
@@ -141,6 +160,8 @@ impl RouteGraph {
         self.phi[flat] = phi_init;
         self.taint[flat] = 0.0;
         self.age[flat] = 0;
+        self.utility[flat] = 0.0;
+        self.leader_edge[flat] = is_leader;
 
         Ok(slot)
     }
@@ -170,6 +191,8 @@ impl RouteGraph {
                 self.phi[flat] = self.phi[flat_last];
                 self.taint[flat] = self.taint[flat_last];
                 self.age[flat] = self.age[flat_last];
+                self.utility[flat] = self.utility[flat_last];
+                self.leader_edge[flat] = self.leader_edge[flat_last];
             }
             // Clear the (now-vacant) last slot.
             let flat_last = self.idx(b, dst, last);
@@ -177,6 +200,8 @@ impl RouteGraph {
             self.phi[flat_last] = 0.0;
             self.taint[flat_last] = 0.0;
             self.age[flat_last] = 0;
+            self.utility[flat_last] = 0.0;
+            self.leader_edge[flat_last] = false;
         }
 
         Ok(())
@@ -411,15 +436,18 @@ impl RouteGraph {
                 continue;
             }
 
-            // Try to add to an empty slot first.
-            match self.add_edge(b, dst, src, initial_phi) {
+            // Try to add to an empty slot first (leader-introduced).
+            match self.add_edge_with_leader(b, dst, src, initial_phi, true) {
                 Ok(_) => {
                     inserted += 1;
                 }
                 Err(_) => {
                     // Slots are full — replace the weakest.
                     if let Ok(Some(_removed)) = self.prune_weakest(b, dst, lambda) {
-                        if self.add_edge(b, dst, src, initial_phi).is_ok() {
+                        if self
+                            .add_edge_with_leader(b, dst, src, initial_phi, true)
+                            .is_ok()
+                        {
                             inserted += 1;
                         }
                     }
@@ -428,6 +456,76 @@ impl RouteGraph {
         }
 
         inserted
+    }
+
+    /// Update leader utility EMA for leader-introduced edges.
+    ///
+    /// For each leader-introduced edge that was used (positive edge weight),
+    /// updates:
+    ///
+    /// ```text
+    /// U(e) = (1 - γ) * U(e) + γ * relu(Δ)
+    /// ```
+    ///
+    /// where `Δ` is the improvement delta at that edge's destination position.
+    ///
+    /// # Arguments
+    ///
+    /// - `edge_weights`: flat `[B, L, Emax]` softmax weights from route aggregation.
+    /// - `pos_deltas`: per-position improvement delta. Shape: `[B * L]`.
+    /// - `gamma`: EMA smoothing factor (0 < γ ≤ 1).
+    ///
+    /// # Returns
+    ///
+    /// Number of leader edges updated.
+    pub fn update_leader_utility(
+        &mut self,
+        edge_weights: &[f32],
+        pos_deltas: &[f32],
+        gamma: f32,
+    ) -> usize {
+        let b = self.batch_size;
+        let l = self.seq_len;
+        let e = self.emax;
+        let mut updated = 0;
+
+        for bi in 0..b {
+            for i in 0..l {
+                let pos_flat = bi * l + i;
+                let delta = if pos_flat < pos_deltas.len() {
+                    pos_deltas[pos_flat]
+                } else {
+                    0.0
+                };
+                let relu_delta = delta.max(0.0);
+
+                for ei in 0..e {
+                    let flat = self.idx(bi, i, ei);
+                    if self.nbr_idx[flat] == EMPTY_SLOT {
+                        continue;
+                    }
+                    if !self.leader_edge[flat] {
+                        continue;
+                    }
+
+                    // Check if edge was used (positive weight).
+                    let ew_idx = (bi * l + i) * e + ei;
+                    let weight = if ew_idx < edge_weights.len() {
+                        edge_weights[ew_idx]
+                    } else {
+                        0.0
+                    };
+
+                    if weight > 0.0 {
+                        self.utility[flat] =
+                            (1.0 - gamma) * self.utility[flat] + gamma * relu_delta;
+                        updated += 1;
+                    }
+                }
+            }
+        }
+
+        updated
     }
 }
 

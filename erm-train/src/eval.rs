@@ -62,8 +62,7 @@ pub fn evaluate_denoising(
         let output = scorer.forward(&y_t_u32, b)?;
         let logits = &output.logits;
 
-        for pos in 0..(b * l) {
-            let original = x_i32[pos];
+        for (pos, &original) in x_i32.iter().enumerate().take(b * l) {
             let corrupted = corruption.y_t[pos];
 
             if corrupted == original {
@@ -137,8 +136,7 @@ pub fn evaluate_generation(
         let output = scorer.forward(&fully_masked, batch_size)?;
         let logits = &output.logits;
 
-        for pos in 0..(batch_size * l) {
-            let logit_slice = &logits[pos * v..(pos + 1) * v];
+        for logit_slice in logits.chunks_exact(v).take(batch_size * l) {
             let pred = argmax(logit_slice) as u32;
             *token_counts.entry(pred).or_insert(0) += 1;
             total_tokens += 1;

@@ -13,8 +13,6 @@
 //! Same 50% overlap strategy as [`crate::dataset::TextDataset`]:
 //! stride = `seq_len / 2`.
 
-use std::path::Path;
-
 use rand::seq::SliceRandom;
 use rand::Rng;
 
@@ -261,7 +259,12 @@ fn parse_pgm_p5_bytes(data: &[u8]) -> Result<Vec<u8>, String> {
     let skip_ws_comments = |pos: &mut usize| {
         loop {
             // Skip whitespace.
-            while *pos < data.len() && (data[*pos] == b' ' || data[*pos] == b'\t' || data[*pos] == b'\n' || data[*pos] == b'\r') {
+            while *pos < data.len()
+                && (data[*pos] == b' '
+                    || data[*pos] == b'\t'
+                    || data[*pos] == b'\n'
+                    || data[*pos] == b'\r')
+            {
                 *pos += 1;
             }
             // Skip comment lines.
@@ -278,7 +281,12 @@ fn parse_pgm_p5_bytes(data: &[u8]) -> Result<Vec<u8>, String> {
     // Helper: read ASCII token until whitespace.
     let read_token = |pos: &mut usize| -> Result<String, String> {
         let start = *pos;
-        while *pos < data.len() && data[*pos] != b' ' && data[*pos] != b'\t' && data[*pos] != b'\n' && data[*pos] != b'\r' {
+        while *pos < data.len()
+            && data[*pos] != b' '
+            && data[*pos] != b'\t'
+            && data[*pos] != b'\n'
+            && data[*pos] != b'\r'
+        {
             *pos += 1;
         }
         if *pos == start {
@@ -409,8 +417,8 @@ fn collect_pgm_paths(dir: &str, out: &mut Vec<String>) -> ErmResult<()> {
         .map_err(|e| ErmError::InvalidConfig(format!("cannot read directory {dir}: {e}")))?;
 
     for entry in entries {
-        let entry = entry
-            .map_err(|e| ErmError::InvalidConfig(format!("directory entry error: {e}")))?;
+        let entry =
+            entry.map_err(|e| ErmError::InvalidConfig(format!("directory entry error: {e}")))?;
         let path = entry.path();
         if path.is_dir() {
             let sub = path
@@ -495,9 +503,9 @@ mod tests {
         // Single sequence: [2, 130, 257]
         let mut rng = ChaCha8Rng::seed_from_u64(0);
         let batch = ds.get_batch(1, &mut rng);
-        assert_eq!(batch.tokens[0], 2);    // 0 + 2
-        assert_eq!(batch.tokens[1], 130);  // 128 + 2
-        assert_eq!(batch.tokens[2], 257);  // 255 + 2
+        assert_eq!(batch.tokens[0], 2); // 0 + 2
+        assert_eq!(batch.tokens[1], 130); // 128 + 2
+        assert_eq!(batch.tokens[2], 257); // 255 + 2
     }
 
     #[test]
