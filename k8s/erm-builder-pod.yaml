@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: erm-builder
+  namespace: pcn-train
+spec:
+  restartPolicy: Never
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/hostname
+            operator: In
+            values:
+            - theshire
+  containers:
+  - name: builder
+    image: rust:latest
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      set -eo pipefail
+      cd /workspace/erm-rust-src
+      touch erm-core/src/config.rs erm-core/src/graph.rs erm-train/src/streaming_dataset.rs erm-cli/src/main.rs
+      cargo build --release --bin erm 2>&1
+      ls -la target/release/erm
+      cp target/release/erm /workspace/erm-rust/bin/erm.new
+      echo "DONE"
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "2Gi"
+      limits:
+        cpu: "8"
+        memory: "16Gi"
+    volumeMounts:
+    - name: erm-rust-src
+      mountPath: /workspace/erm-rust-src
+    - name: erm-rust
+      mountPath: /workspace/erm-rust
+  volumes:
+  - name: erm-rust-src
+    hostPath:
+      path: /home/kadajett/dev/erm-rust-src
+      type: Directory
+  - name: erm-rust
+    hostPath:
+      path: /home/kadajett/dev/erm-rust
+      type: Directory

@@ -331,17 +331,18 @@ impl RouteGraph {
         lambda: f32,
         mu: f32,
     ) -> ErmResult<(Vec<f32>, Vec<f32>)> {
-        let b = self.batch_size;
         let l = self.seq_len;
         let e = self.emax;
 
-        let expected_hidden = b * l * d;
-        if hidden.len() != expected_hidden {
+        // Derive B dynamically from the actual hidden buffer size.
+        let ld = l * d;
+        if ld == 0 || hidden.len() % ld != 0 {
             return Err(ErmError::ShapeMismatch {
-                expected: format!("[B={b}, L={l}, d={d}] = {expected_hidden}"),
+                expected: format!("[B, L={l}, d={d}] — hidden.len() must be a multiple of L*d={ld}"),
                 got: format!("{}", hidden.len()),
             });
         }
+        let b = hidden.len() / ld;
 
         let mut r = vec![0.0_f32; b * l * d];
         let mut edge_weights = vec![0.0_f32; b * l * e];
