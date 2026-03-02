@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: erm-train-v2
+  namespace: pcn-train
+  labels:
+    app: erm-train
+    version: v2
+spec:
+  restartPolicy: Never
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/hostname
+            operator: In
+            values:
+            - theshire
+  containers:
+  - name: erm-train
+    image: debian:bookworm-slim
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      set -e
+      echo "=== ERM Training v2 (burn + per-step logging) ==="
+      echo "Host: $(hostname)"
+      echo "Binary: $(/workspace/erm-rust/bin/erm --version 2>&1 || echo 'no --version')"
+      echo "Corpus: $(wc -c < /workspace/erm-rust/data/text/corpus.txt) bytes"
+      echo ""
+      
+      echo "=== Phase 1: Vec<f32> Training (warmstart + colony) ==="
+      /workspace/erm-rust/bin/erm train \
+        --data /workspace/erm-rust/data/text/corpus.txt \
+        --steps 10000 \
+        --warmstart 1000 \
+        2>&1 | tee /workspace/erm-rust/data/train-log-v2.txt
+      
+      echo ""
+      echo "=== Phase 2: Burn NdArray Training (CPU autodiff) ==="
+      /workspace/erm-rust/bin/erm burn-train \
+        --data /workspace/erm-rust/data/text/corpus.txt \
+        --steps 5000 \
+        --backend cpu \
+        2>&1 | tee /workspace/erm-rust/data/burn-train-log.txt
+      
+      echo ""
+      echo "=== Training Complete ==="
+    resources:
+      requests:
+        memory: "4Gi"
+        cpu: "4"
+      limits:
+        memory: "8Gi"
+        cpu: "8"
+    volumeMounts:
+    - name: workspace
+      mountPath: /workspace
+  volumes:
+  - name: workspace
+    hostPath:
+      path: /home/kadajett/dev

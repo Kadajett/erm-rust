@@ -466,14 +466,22 @@ fn run_burn_train(
             );
         }
         BackendChoice::Gpu => {
-            let device = burn_wgpu::WgpuDevice::default();
-            burn_train_loop::<burn_autodiff::Autodiff<burn_wgpu::Wgpu>>(
-                &cfg,
-                &dataset,
-                total_steps,
-                log_every,
-                device,
-            );
+            #[cfg(feature = "gpu")]
+            {
+                let device = burn_wgpu::WgpuDevice::default();
+                burn_train_loop::<burn_autodiff::Autodiff<burn_wgpu::Wgpu>>(
+                    &cfg,
+                    &dataset,
+                    total_steps,
+                    log_every,
+                    device,
+                );
+            }
+            #[cfg(not(feature = "gpu"))]
+            {
+                eprintln!("ERROR: GPU support not compiled. Rebuild with: cargo build --release --features gpu");
+                std::process::exit(1);
+            }
         }
     }
 }
