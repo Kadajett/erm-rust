@@ -1,3 +1,4 @@
+#![recursion_limit = "512"]
 //! ERM CLI — command-line interface for the Emergent Route Model.
 //!
 //! Subcommands:
@@ -114,7 +115,7 @@ enum Commands {
         config: Option<String>,
 
         /// Backend to use for burn training.
-        #[arg(long, default_value = "cpu")]
+        #[arg(long, default_value = "gpu")]
         backend: BackendChoice,
 
         /// Log every N steps.
