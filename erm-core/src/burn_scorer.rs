@@ -148,6 +148,20 @@ impl<B: Backend> BurnScorer<B> {
     /// - `logits`: `[B, L, V]` — per-position token distributions.
     /// - `uncertainty`: `[B, L]` — per-position uncertainty (sigmoid output).
     pub fn forward(&self, tokens: Tensor<B, 2, Int>) -> (Tensor<B, 3>, Tensor<B, 2>) {
+        let (logits, unc, _hidden) = self.forward_with_hidden(tokens);
+        (logits, unc)
+    }
+
+    /// Forward pass returning logits, uncertainty, AND encoder hidden states.
+    ///
+    /// The hidden states `h` are the encoder outputs after all feed-forward
+    /// blocks, before the logit/uncertainty heads. Shape: `[B, L, d]`.
+    ///
+    /// Use this when you need hidden states for route aggregation.
+    pub fn forward_with_hidden(
+        &self,
+        tokens: Tensor<B, 2, Int>,
+    ) -> (Tensor<B, 3>, Tensor<B, 2>, Tensor<B, 3>) {
         let device = tokens.device();
         let [batch_size, seq_len] = tokens.dims();
 
@@ -172,10 +186,10 @@ impl<B: Backend> BurnScorer<B> {
         let logits = self.logit_head.forward(h.clone());
 
         // Uncertainty head: [B, L, d] → [B, L, 1] → sigmoid → reshape → [B, L]
-        let unc_raw = self.uncertainty_head.forward(h);
+        let unc_raw = self.uncertainty_head.forward(h.clone());
         let unc = burn::tensor::activation::sigmoid(unc_raw).reshape([batch_size, seq_len]);
 
-        (logits, unc)
+        (logits, unc, h)
     }
 
     /// Get the vocabulary size this scorer was built for.

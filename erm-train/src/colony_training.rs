@@ -153,22 +153,22 @@ impl<B: AutodiffBackend> ColonyTrainer<B> {
         let corruption = corrupt(&x_i32, t_val, config, rng)?;
         let y_t_flat = &corruption.y_t;
 
-        // ── Step 1: Forward y_t on GPU → logits ────────────────────────
+        // ── Step 1: Forward y_t on GPU → logits + hidden states ────────
         let y_t_u32: Vec<u32> = y_t_flat.iter().map(|&v| v as u32).collect();
         let tokens_tensor = tokens_to_tensor::<B>(&y_t_u32, b, l, &self.device)?;
-        let (logits_tensor, uncertainty_tensor) = self.scorer.forward(tokens_tensor);
+        let (logits_tensor, uncertainty_tensor, hidden_tensor) =
+            self.scorer.forward_with_hidden(tokens_tensor);
 
-        // ── Step 2: Transfer logits + uncertainty to CPU ────────────────
-        // We need to clone the logits tensor before consuming it for CPU transfer,
-        // because we also need it for the loss computation later.
+        // ── Step 2: Transfer logits + uncertainty + hidden to CPU ───────
+        // Clone logits_tensor before consuming — needed for loss computation later.
         let logits_cpu = tensor_to_vec(logits_tensor.clone())?;
         let uncertainty_cpu = tensor2d_to_vec(uncertainty_tensor)?;
+        let hidden_cpu = tensor_to_vec(hidden_tensor)?;
 
         // ── Step 3: Colony on CPU (all batch elements) ─────────────────
         let d = config.hidden_dim;
-        let hidden = vec![0.0_f32; config.batch_size * l * d];
         let (_, edge_weights) = self.graph.route_aggregate(
-            &hidden,
+            &hidden_cpu,
             d,
             config.route_epsilon,
             config.route_lambda,
@@ -256,25 +256,37 @@ impl<B: AutodiffBackend> ColonyTrainer<B> {
         let logits_new_cpu = tensor_to_vec(logits_new_tensor)?;
 
         // ── Step 5: Compute ant deltas on CPU (aggregate across batch) ─
-        // Use first batch item's logits for delta computation (ant IDs are
-        // per-batch-item but we aggregate the improvement signal).
-        let batch_idx_for_deltas = 0;
-        let seq_logits_0 = &logits_cpu
-            [batch_idx_for_deltas * l * vocab_size..(batch_idx_for_deltas + 1) * l * vocab_size];
-        let logits_new_seq_0 = &logits_new_cpu
-            [batch_idx_for_deltas * l * vocab_size..(batch_idx_for_deltas + 1) * l * vocab_size];
-        let y_t_seq_0 = &y_t_u32[batch_idx_for_deltas * l..(batch_idx_for_deltas + 1) * l];
-        let y_new_seq_0 = &y_new_batch[batch_idx_for_deltas * l..(batch_idx_for_deltas + 1) * l];
+        // Compute per-batch-item deltas and average across the batch.
+        let mut ant_deltas = vec![0.0_f32; total_ants];
+        for batch_idx in 0..b {
+            let seq_logits_b =
+                &logits_cpu[batch_idx * l * vocab_size..(batch_idx + 1) * l * vocab_size];
+            let logits_new_b =
+                &logits_new_cpu[batch_idx * l * vocab_size..(batch_idx + 1) * l * vocab_size];
+            let y_t_b = &y_t_u32[batch_idx * l..(batch_idx + 1) * l];
+            let y_new_b = &y_new_batch[batch_idx * l..(batch_idx + 1) * l];
 
-        let ant_deltas = compute_ant_deltas(
-            &all_proposals_global,
-            y_t_seq_0,
-            y_new_seq_0,
-            seq_logits_0,
-            logits_new_seq_0,
-            vocab_size,
-            total_ants,
-        )?;
+            let batch_deltas = compute_ant_deltas(
+                &all_proposals_global,
+                y_t_b,
+                y_new_b,
+                seq_logits_b,
+                logits_new_b,
+                vocab_size,
+                total_ants,
+            )?;
+
+            for (acc, &d) in ant_deltas.iter_mut().zip(batch_deltas.iter()) {
+                *acc += d;
+            }
+        }
+        // Average across batch items.
+        if b > 1 {
+            let b_f = b as f32;
+            for d in &mut ant_deltas {
+                *d /= b_f;
+            }
+        }
 
         // ── Step 6: Pheromone update on CPU ────────────────────────────
         let traces = build_edge_traces(
