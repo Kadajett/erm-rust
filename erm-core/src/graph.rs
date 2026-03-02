@@ -63,14 +63,50 @@ pub struct RouteGraph {
 }
 
 impl RouteGraph {
-    /// Create an empty route graph.
+    /// Create a route graph pre-seeded with short skip-connections.
+    ///
+    /// For each node `i` in each batch, edges from `i±1`, `i±2`, `i±4`
+    /// (within bounds) are inserted with `phi_init` pheromone. This gives
+    /// the colony immediate local structure to build on, reducing cold-start
+    /// iterations. Remaining slots are left empty (`EMPTY_SLOT`).
+    ///
+    /// - `nbr_idx` initialized to [`EMPTY_SLOT`] (-1), then seeded
+    /// - `phi` initialized to `phi_init` for seeded edges
+    /// - `taint` initialized to `0.0`
+    /// - `age` initialized to `0`
+    #[must_use]
+    pub fn new(config: &ErmConfig) -> Self {
+        let mut graph = Self::new_empty(config);
+
+        // Seed short skip-connections: offsets ±1, ±2, ±4.
+        let offsets: &[isize] = &[-4, -2, -1, 1, 2, 4];
+        for bi in 0..graph.batch_size {
+            for i in 0..graph.seq_len {
+                for &off in offsets {
+                    let src = i as isize + off;
+                    if src >= 0 && (src as usize) < graph.seq_len && src as usize != i {
+                        // Silently ignore if slots are full (emax may be small).
+                        let _ = graph.add_edge(bi, i, src as usize, config.phi_init);
+                    }
+                }
+            }
+        }
+
+        graph
+    }
+
+    /// Create an empty route graph with no pre-seeded edges.
+    ///
+    /// Prefer [`new`](Self::new) for production use. This constructor is
+    /// useful for tests or situations where you want full control over
+    /// initial topology.
     ///
     /// - `nbr_idx` initialized to [`EMPTY_SLOT`] (-1)
     /// - `phi` initialized to `phi_init` (small warm-start value)
     /// - `taint` initialized to `0.0`
     /// - `age` initialized to `0`
     #[must_use]
-    pub fn new(config: &ErmConfig) -> Self {
+    pub fn new_empty(config: &ErmConfig) -> Self {
         let b = config.batch_size;
         let l = config.seq_len;
         let e = config.emax;
@@ -551,7 +587,7 @@ mod tests {
     #[test]
     fn test_init_shapes() {
         let cfg = test_config();
-        let g = RouteGraph::new(&cfg);
+        let g = RouteGraph::new_empty(&cfg);
         let expected = 2 * 4 * 3;
         assert_eq!(g.nbr_idx.len(), expected);
         assert_eq!(g.phi.len(), expected);
@@ -562,7 +598,7 @@ mod tests {
     #[test]
     fn test_init_values() {
         let cfg = test_config();
-        let g = RouteGraph::new(&cfg);
+        let g = RouteGraph::new_empty(&cfg);
         // All nbr_idx should be EMPTY_SLOT
         assert!(g.nbr_idx.iter().all(|&v| v == EMPTY_SLOT));
         // All phi should be phi_init
@@ -576,7 +612,7 @@ mod tests {
     #[test]
     fn test_add_and_count_edges() {
         let cfg = test_config();
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
 
         // Initially empty.
         assert_eq!(g.edge_count(0, 0), 0);
@@ -594,7 +630,7 @@ mod tests {
     #[test]
     fn test_remove_edge_swap() {
         let cfg = test_config();
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
 
         g.add_edge(0, 1, 0, 1.0).unwrap(); // slot 0 → nbr 0
         g.add_edge(0, 1, 2, 2.0).unwrap(); // slot 1 → nbr 2
@@ -616,7 +652,7 @@ mod tests {
     #[test]
     fn test_prune_weakest() {
         let cfg = test_config();
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
 
         // Fill all slots for (0, 2) with varying phi and taint.
         g.add_edge(0, 2, 0, 1.0).unwrap();
@@ -635,7 +671,7 @@ mod tests {
     #[test]
     fn test_prune_not_needed() {
         let cfg = test_config();
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
         g.add_edge(0, 0, 1, 0.5).unwrap();
         // Only 1 of 3 slots used — no prune needed.
         let removed = g.prune_weakest(0, 0, 1.0).unwrap();
@@ -645,7 +681,7 @@ mod tests {
     #[test]
     fn test_serde_roundtrip() {
         let cfg = test_config();
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
         g.add_edge(0, 0, 1, 0.5).unwrap();
         g.add_edge(1, 3, 2, 1.0).unwrap();
 
@@ -661,7 +697,7 @@ mod tests {
     #[test]
     fn test_valid_nbr_idx_invariant() {
         let cfg = test_config();
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
         g.add_edge(0, 0, 1, 0.1).unwrap();
         g.add_edge(0, 0, 3, 0.2).unwrap();
 
@@ -677,7 +713,7 @@ mod tests {
     fn test_route_aggregate_empty_graph() {
         // With all slots empty, r must be zeros. Edge weights must also be zeros.
         let cfg = test_config();
-        let g = RouteGraph::new(&cfg);
+        let g = RouteGraph::new_empty(&cfg);
         let b = cfg.batch_size;
         let l = cfg.seq_len;
         let d = 8_usize;
@@ -706,7 +742,7 @@ mod tests {
             emax: 4,
             ..ErmConfig::default()
         };
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
         g.add_edge(0, 1, 0, 0.5).unwrap();
 
         let d = 16_usize;
@@ -726,7 +762,7 @@ mod tests {
             emax: 2,
             ..ErmConfig::default()
         };
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
         g.add_edge(0, 1, 0, 1.0).unwrap();
 
         let d = 2_usize;
@@ -756,7 +792,7 @@ mod tests {
             emax: 3,
             ..ErmConfig::default()
         };
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
         g.add_edge(0, 2, 1, 0.5).unwrap();
 
         let bi: usize = 0;
@@ -780,7 +816,7 @@ mod tests {
             emax: 4,
             ..ErmConfig::default()
         };
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
         g.add_edge(0, 3, 0, 1.0).unwrap();
         g.add_edge(0, 3, 1, 0.5).unwrap();
         g.add_edge(0, 3, 2, 2.0).unwrap();
@@ -800,7 +836,7 @@ mod tests {
     #[test]
     fn test_route_aggregate_deterministic() {
         let cfg = test_config();
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
         g.add_edge(0, 0, 1, 0.8).unwrap();
         g.add_edge(0, 0, 3, 0.3).unwrap();
 
@@ -825,7 +861,7 @@ mod tests {
             emax: 4,
             ..ErmConfig::default()
         };
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
 
         // Add edges with extreme phi/taint/age values.
         g.add_edge(0, 0, 1, 0.0001).unwrap(); // very small phi
@@ -859,7 +895,7 @@ mod tests {
     #[test]
     fn test_route_aggregate_shape_mismatch() {
         let cfg = test_config();
-        let g = RouteGraph::new(&cfg);
+        let g = RouteGraph::new_empty(&cfg);
 
         // Wrong hidden length.
         let hidden = vec![1.0_f32; 5];
@@ -877,7 +913,7 @@ mod tests {
             hidden_dim: 256,
             ..ErmConfig::default()
         };
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
 
         for bi in 0..cfg.batch_size {
             for i in 0..cfg.seq_len {
@@ -906,7 +942,7 @@ mod tests {
     #[test]
     fn test_propose_edges_empty_slots() {
         let cfg = test_config();
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
 
         let proposals = vec![
             EdgeProposal {
@@ -932,7 +968,7 @@ mod tests {
     #[test]
     fn test_propose_edges_replaces_weakest_when_full() {
         let cfg = test_config(); // emax=3
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
 
         // Fill all slots for (0, 0).
         g.add_edge(0, 0, 1, 0.1).unwrap();
@@ -969,7 +1005,7 @@ mod tests {
     #[test]
     fn test_propose_edges_skips_self_loops() {
         let cfg = test_config();
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
 
         let proposals = vec![EdgeProposal {
             batch_idx: 0,
@@ -990,7 +1026,7 @@ mod tests {
             emax: 2, // only 2 slots
             ..ErmConfig::default()
         };
-        let mut g = RouteGraph::new(&cfg);
+        let mut g = RouteGraph::new_empty(&cfg);
 
         // Fill both slots for (0, 0).
         g.add_edge(0, 0, 1, 1.0).unwrap();
@@ -1049,7 +1085,7 @@ mod proptests {
                     emax,
                     ..ErmConfig::default()
                 };
-                let mut g = RouteGraph::new(&cfg);
+                let mut g = RouteGraph::new_empty(&cfg);
 
                 // Fill edges according to the random fill vector.
                 for bi in 0..b {

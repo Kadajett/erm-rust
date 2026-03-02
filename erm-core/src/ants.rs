@@ -1072,7 +1072,7 @@ mod tests {
             emax: 4,
             ..ErmConfig::default()
         };
-        let graph = RouteGraph::new(&cfg);
+        let graph = RouteGraph::new_empty(&cfg);
         let editable = vec![true; seq_len];
         let follower_cfg = FollowerConfig {
             epsilon: 1e-4,
@@ -1132,7 +1132,7 @@ mod tests {
             emax: 4,
             ..ErmConfig::default()
         };
-        let graph = RouteGraph::new(&cfg);
+        let graph = RouteGraph::new_empty(&cfg);
         let editable = vec![true; seq_len];
         let follower_cfg = FollowerConfig {
             epsilon: 1e-4,
@@ -1195,7 +1195,7 @@ mod tests {
             emax: 2,
             ..ErmConfig::default()
         };
-        let graph = RouteGraph::new(&cfg);
+        let graph = RouteGraph::new_empty(&cfg);
         // Only position 2 is editable.
         let editable = vec![false, false, true, false];
         let follower_cfg = FollowerConfig {
@@ -1239,7 +1239,7 @@ mod tests {
             emax: 2,
             ..ErmConfig::default()
         };
-        let graph = RouteGraph::new(&cfg);
+        let graph = RouteGraph::new_empty(&cfg);
         let editable = vec![false; seq_len];
         let follower_cfg = FollowerConfig::default();
 
@@ -1272,7 +1272,7 @@ mod tests {
             emax: 2,
             ..ErmConfig::default()
         };
-        let graph = RouteGraph::new(&cfg);
+        let graph = RouteGraph::new_empty(&cfg);
         let editable = vec![true; 4];
         let follower_cfg = FollowerConfig::default();
         let mut rng = ChaCha8Rng::seed_from_u64(0);
@@ -1307,7 +1307,7 @@ mod tests {
             emax: 4,
             ..ErmConfig::default()
         };
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
 
         // Position 2 has strong pheromone, position 5 has none.
         graph.add_edge(0, 2, 0, 5.0).expect("add edge");
@@ -1382,7 +1382,7 @@ mod tests {
             emax: 4,
             ..ErmConfig::default()
         };
-        let graph = RouteGraph::new(&cfg);
+        let graph = RouteGraph::new_empty(&cfg);
         let editable = vec![true; seq_len];
         let leader_cfg = LeaderConfig::from_config(&cfg);
 
@@ -1443,7 +1443,7 @@ mod tests {
             emax: 2,
             ..ErmConfig::default()
         };
-        let graph = RouteGraph::new(&cfg);
+        let graph = RouteGraph::new_empty(&cfg);
         let editable = vec![false; seq_len];
         let leader_cfg = LeaderConfig::default();
         let logits = vec![0.0_f32; seq_len * vocab_size];

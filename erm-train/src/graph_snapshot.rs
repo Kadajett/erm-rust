@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn test_snapshot_save_load_roundtrip() {
         let config = test_config();
-        let graph = RouteGraph::new(&config);
+        let graph = RouteGraph::new_empty(&config);
         let ant_state = AntState::new(&config);
 
         let snapshot = GraphSnapshot::new(100, 3.5, 20, 0.5, 2, 5, 100, graph, ant_state);
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn test_graph_stats() {
         let config = test_config();
-        let mut graph = RouteGraph::new(&config);
+        let mut graph = RouteGraph::new_empty(&config);
 
         // Add some test edges with known pheromone
         graph.nbr_idx[0] = 0;

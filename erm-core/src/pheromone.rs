@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn test_evaporation() {
         let cfg = small_config();
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         graph.add_edge(0, 0, 1, 1.0).expect("add edge");
         graph.add_edge(0, 1, 2, 2.0).expect("add edge");
 
@@ -404,7 +404,7 @@ mod tests {
     #[test]
     fn test_bounded_deposit_uses_tanh() {
         let cfg = small_config();
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         graph.add_edge(0, 0, 1, 0.5).expect("add edge");
 
         // Ant 0 has a large positive delta → deposit should be tanh-bounded.
@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn test_deposit_tanh_bounding_small_delta() {
         let cfg = small_config();
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         graph.add_edge(0, 0, 1, 0.5).expect("add edge");
 
         // Small delta → tanh(0.1) ≈ 0.0997
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn test_taint_clamping() {
         let cfg = small_config();
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         graph.add_edge(0, 0, 1, 1.0).expect("add edge");
 
         // Ant with very negative delta → large taint deposit.
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn test_taint_decay() {
         let cfg = small_config();
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         graph.add_edge(0, 0, 1, 1.0).expect("add edge");
 
         // Set initial taint.
@@ -511,7 +511,7 @@ mod tests {
     #[test]
     fn test_age_increment() {
         let cfg = small_config();
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         graph.add_edge(0, 0, 1, 1.0).expect("add edge");
 
         let flat = graph.idx(0, 0, 0);
@@ -531,7 +531,7 @@ mod tests {
     #[test]
     fn test_phi_non_negative() {
         let cfg = small_config();
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         graph.add_edge(0, 0, 1, 0.001).expect("add edge");
 
         // Many evaporation steps should not make phi negative.
@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn test_pruning_by_score() {
         let cfg = small_config();
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         graph.add_edge(0, 0, 1, 0.1).expect("add edge");
         graph.add_edge(0, 0, 2, 2.0).expect("add edge");
 
@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn test_pruning_by_age() {
         let cfg = small_config();
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         graph.add_edge(0, 0, 1, 1.0).expect("add edge");
 
         // Set old age.
@@ -585,7 +585,7 @@ mod tests {
     #[test]
     fn test_pruning_preserves_good_edges() {
         let cfg = small_config();
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         graph.add_edge(0, 0, 1, 5.0).expect("add edge");
         graph.add_edge(0, 0, 2, 3.0).expect("add edge");
 
@@ -645,7 +645,7 @@ mod tests {
     #[test]
     fn test_stats_computed_correctly() {
         let cfg = small_config();
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         graph.add_edge(0, 0, 1, 2.0).expect("add edge");
         graph.add_edge(0, 1, 2, 4.0).expect("add edge");
 
@@ -669,7 +669,7 @@ mod tests {
     #[test]
     fn test_negative_delta_no_deposit() {
         let cfg = small_config();
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         graph.add_edge(0, 0, 1, 1.0).expect("add edge");
 
         // Negative delta → no deposit, only taint.
@@ -710,7 +710,7 @@ mod tests {
             emax: 3,
             ..ErmConfig::default()
         };
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
 
         // Add some edges across both batch elements.
         graph.add_edge(0, 0, 1, 1.0).expect("add");

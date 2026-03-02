@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn test_render_snapshot_svg_basic() {
         let config = test_config();
-        let mut graph = RouteGraph::new(&config);
+        let mut graph = RouteGraph::new_empty(&config);
 
         // Add some test edges
         graph.nbr_idx[0] = 0;
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn test_render_snapshot_batch_idx_bounds() {
         let config = test_config();
-        let graph = RouteGraph::new(&config);
+        let graph = RouteGraph::new_empty(&config);
         let ant_state = AntState::new(&config);
         let snapshot = super::super::graph_snapshot::GraphSnapshot::new(
             0, 0.0, 0, 0.0, 0, 0, 0, graph, ant_state,
@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn test_render_summary() {
         let config = test_config();
-        let graph = RouteGraph::new(&config);
+        let graph = RouteGraph::new_empty(&config);
         let ant_state = AntState::new(&config);
         let snapshot = super::super::graph_snapshot::GraphSnapshot::new(
             100, 3.5, 20, 0.5, 2, 5, 100, graph, ant_state,

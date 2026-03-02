@@ -865,7 +865,7 @@ mod tests {
     fn test_refine_step_produces_valid_output() {
         let cfg = test_config();
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let graph = RouteGraph::new(&cfg);
+        let graph = RouteGraph::new_empty(&cfg);
         let editable = vec![true; cfg.seq_len];
         let y_t: Vec<u32> = (0..cfg.seq_len as u32).collect();
         let mut rng = ChaCha8Rng::seed_from_u64(99);
@@ -897,7 +897,7 @@ mod tests {
     fn test_refine_step_deterministic() {
         let cfg = test_config();
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let graph = RouteGraph::new(&cfg);
+        let graph = RouteGraph::new_empty(&cfg);
         let editable = vec![true; cfg.seq_len];
         let y_t: Vec<u32> = (0..cfg.seq_len as u32).collect();
 
@@ -920,7 +920,7 @@ mod tests {
         let cfg = test_config();
         // max_edits = ceil(0.15 * 8) = 2
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let graph = RouteGraph::new(&cfg);
+        let graph = RouteGraph::new_empty(&cfg);
         let editable = vec![true; cfg.seq_len];
         let y_t: Vec<u32> = (0..cfg.seq_len as u32).collect();
         let mut rng = ChaCha8Rng::seed_from_u64(55);
@@ -940,7 +940,7 @@ mod tests {
     fn test_refine_step_non_editable_preserved() {
         let cfg = test_config();
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let graph = RouteGraph::new(&cfg);
+        let graph = RouteGraph::new_empty(&cfg);
         // Only first 2 positions are editable.
         let mut editable = vec![false; cfg.seq_len];
         editable[0] = true;
@@ -963,7 +963,7 @@ mod tests {
     fn test_refine_step_shape_mismatch() {
         let cfg = test_config();
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let graph = RouteGraph::new(&cfg);
+        let graph = RouteGraph::new_empty(&cfg);
         let editable = vec![true; cfg.seq_len];
 
         // Wrong y_t length.
@@ -978,7 +978,7 @@ mod tests {
     fn test_refine_step_with_pheromones_produces_valid_output() {
         let cfg = test_config();
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
 
         // Add some edges so pheromone update has something to work with.
         graph.add_edge(0, 0, 1, 0.5).unwrap();
@@ -1006,7 +1006,7 @@ mod tests {
     fn test_refine_step_with_pheromones_updates_graph() {
         let cfg = test_config();
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
 
         graph.add_edge(0, 0, 1, 1.0).unwrap();
         let flat = graph.idx(0, 0, 0);
@@ -1043,7 +1043,7 @@ mod tests {
     fn test_full_colony_step_produces_valid_output() {
         let cfg = test_config();
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         let mut ant_state = AntState::new(&cfg);
 
         graph.add_edge(0, 0, 1, 0.5).unwrap();
@@ -1087,7 +1087,7 @@ mod tests {
             ..test_config()
         };
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         let mut ant_state = AntState::new(&cfg);
 
         let editable = vec![true; cfg.seq_len];
@@ -1122,7 +1122,7 @@ mod tests {
         let y_t: Vec<u32> = (0..cfg.seq_len as u32).collect();
         let pconfig = PheromoneConfig::from_config(&cfg);
 
-        let mut graph1 = RouteGraph::new(&cfg);
+        let mut graph1 = RouteGraph::new_empty(&cfg);
         let mut ant_state1 = AntState::new(&cfg);
         let mut rng1 = ChaCha8Rng::seed_from_u64(42);
         let r1 = full_colony_step(
@@ -1139,7 +1139,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut graph2 = RouteGraph::new(&cfg);
+        let mut graph2 = RouteGraph::new_empty(&cfg);
         let mut ant_state2 = AntState::new(&cfg);
         let mut rng2 = ChaCha8Rng::seed_from_u64(42);
         let r2 = full_colony_step(
@@ -1167,7 +1167,7 @@ mod tests {
     fn test_multi_step_refine_shape() {
         let cfg = test_config();
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         let pconfig = PheromoneConfig::from_config(&cfg);
         let multi_cfg = MultiStepConfig {
             max_steps: 3,
@@ -1200,7 +1200,7 @@ mod tests {
         // After multiple steps, the sequence should differ from the initial MASK-heavy input.
         let cfg = test_config();
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         let pconfig = PheromoneConfig::from_config(&cfg);
         let multi_cfg = MultiStepConfig {
             max_steps: 4,
@@ -1225,7 +1225,7 @@ mod tests {
         // If the scorer proposes no changes, the loop should stop early.
         let cfg = test_config();
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         let pconfig = PheromoneConfig::from_config(&cfg);
         let multi_cfg = MultiStepConfig {
             max_steps: 10,
@@ -1252,7 +1252,7 @@ mod tests {
     fn test_generate_from_scratch() {
         let cfg = test_config();
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         let pconfig = PheromoneConfig::from_config(&cfg);
         let mut rng = ChaCha8Rng::seed_from_u64(55);
 
@@ -1273,7 +1273,7 @@ mod tests {
     fn test_generate_from_scratch_wrong_length() {
         let cfg = test_config();
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         let pconfig = PheromoneConfig::from_config(&cfg);
         let mut rng = ChaCha8Rng::seed_from_u64(0);
 
@@ -1293,7 +1293,7 @@ mod tests {
     fn test_generate_prompted_preserves_prefix() {
         let cfg = test_config();
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         let pconfig = PheromoneConfig::from_config(&cfg);
         let mut rng = ChaCha8Rng::seed_from_u64(99);
 
@@ -1320,7 +1320,7 @@ mod tests {
     fn test_generate_prompted_wrong_total_length() {
         let cfg = test_config();
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         let pconfig = PheromoneConfig::from_config(&cfg);
         let mut rng = ChaCha8Rng::seed_from_u64(0);
 
@@ -1334,7 +1334,7 @@ mod tests {
     fn test_generate_prompted_empty_prefix() {
         let cfg = test_config();
         let scorer = Scorer::new(&cfg, cfg.vocab_size, 42);
-        let mut graph = RouteGraph::new(&cfg);
+        let mut graph = RouteGraph::new_empty(&cfg);
         let pconfig = PheromoneConfig::from_config(&cfg);
         let mut rng = ChaCha8Rng::seed_from_u64(0);
 

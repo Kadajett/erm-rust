@@ -439,10 +439,8 @@ mod tests {
         let device = Default::default();
         let mut trainer = ColonyTrainer::<TestAutodiffBackend>::new(&cfg, device);
 
-        // Add some edges so pheromone updates have something to work with.
-        trainer.graph.add_edge(0, 0, 1, 0.5).unwrap();
-        trainer.graph.add_edge(0, 2, 3, 0.3).unwrap();
-
+        // RouteGraph::new() pre-seeds skip-connection edges, so the graph
+        // already has edges for pheromone updates to work with.
         let initial_phi: Vec<f32> = trainer.graph.phi.clone();
 
         let mut rng = ChaCha8Rng::seed_from_u64(42);
