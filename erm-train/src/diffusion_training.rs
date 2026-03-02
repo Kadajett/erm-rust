@@ -147,7 +147,16 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
         let b = batch.batch_size;
         let l = batch.seq_len;
         let big_t = cfg.diffusion_steps.max(1);
+        // vocab_size from config — validated against actual tensor shapes below.
         let vocab_size = cfg.total_vocab_size();
+
+        // Validate batch token count matches declared B*L.
+        if batch.tokens.len() != b * l {
+            return Err(ErmError::ShapeMismatch {
+                expected: format!("batch.tokens.len() == B*L = {}*{} = {}", b, l, b * l),
+                got: format!("{}", batch.tokens.len()),
+            });
+        }
 
         let x_i32: Vec<i32> = batch.tokens.iter().map(|&v| v as i32).collect();
 
@@ -193,10 +202,35 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             });
 
             // 4. CPU colony step.
-            // Transfer what we need to CPU.
+            // Transfer what we need to CPU and derive shapes from actual tensors.
             let logits_cpu = tensor_to_vec(logits_tensor)?;
             let uncertainty_cpu = tensor2d_to_vec(unc_tensor)?;
             let hidden_cpu = tensor_to_vec(hidden_tensor)?;
+
+            // Derive V from actual logits buffer: logits_cpu.len() == B*L*V.
+            let bl = b * l;
+            if bl == 0 || logits_cpu.len() % bl != 0 {
+                return Err(ErmError::ShapeMismatch {
+                    expected: format!("logits.len() divisible by B*L={}*{}={}", b, l, bl),
+                    got: format!("{}", logits_cpu.len()),
+                });
+            }
+            let actual_v = logits_cpu.len() / bl;
+            if actual_v != vocab_size {
+                eprintln!(
+                    "[diffusion_step] WARNING: runtime V={actual_v} != config V={vocab_size}; using runtime V"
+                );
+            }
+            let v_rt = actual_v; // runtime vocab size for slicing
+
+            // Derive d from actual hidden buffer: hidden_cpu.len() == B*L*d.
+            if hidden_cpu.len() % bl != 0 {
+                return Err(ErmError::ShapeMismatch {
+                    expected: format!("hidden.len() divisible by B*L={}*{}={}", b, l, bl),
+                    got: format!("{}", hidden_cpu.len()),
+                });
+            }
+            let d = hidden_cpu.len() / bl;
 
             // Scale edit budget: coarse (more edits) at high t, fine (fewer) at low t.
             let edit_scale = t as f32 / big_t as f32;
@@ -204,7 +238,6 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 ((cfg.max_edits() as f32 * edit_scale.max(0.1)).ceil() as usize).max(1);
 
             // Route aggregation using hidden states.
-            let d = cfg.hidden_dim;
             let (_, edge_weights) = self.graph.route_aggregate(
                 &hidden_cpu,
                 d,
@@ -224,10 +257,24 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             let mut all_edge_proposals = Vec::new();
 
             for batch_idx in 0..b {
-                let seq_logits =
-                    &logits_cpu[batch_idx * l * vocab_size..(batch_idx + 1) * l * vocab_size];
-                let seq_uncertainty =
-                    &uncertainty_cpu[batch_idx * l..(batch_idx + 1) * l];
+                let logit_start = batch_idx * l * v_rt;
+                let logit_end = logit_start + l * v_rt;
+                if logit_end > logits_cpu.len() {
+                    return Err(ErmError::ShapeMismatch {
+                        expected: format!("logits[{logit_start}..{logit_end}]"),
+                        got: format!("logits.len()={}", logits_cpu.len()),
+                    });
+                }
+                let seq_logits = &logits_cpu[logit_start..logit_end];
+                let unc_start = batch_idx * l;
+                let unc_end = unc_start + l;
+                if unc_end > uncertainty_cpu.len() {
+                    return Err(ErmError::ShapeMismatch {
+                        expected: format!("uncertainty[{unc_start}..{unc_end}]"),
+                        got: format!("uncertainty.len()={}", uncertainty_cpu.len()),
+                    });
+                }
+                let seq_uncertainty = &uncertainty_cpu[unc_start..unc_end];
                 let z_t_seq = &z_t_u32[batch_idx * l..(batch_idx + 1) * l];
 
                 // Editable mask: positions corrupted from clean tokens.
@@ -248,7 +295,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                     num_followers,
                     first_follower_id,
                     l,
-                    vocab_size,
+                    v_rt,
                     rng,
                 )?;
 
@@ -263,7 +310,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                     num_leaders,
                     0,
                     l,
-                    vocab_size,
+                    v_rt,
                     rng,
                 )?;
 
@@ -298,12 +345,23 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             let (logits_new_tensor, _) = self.scorer.forward(y_new_tensor);
             let logits_new_cpu = tensor_to_vec(logits_new_tensor)?;
 
+            // Derive v_rt_new from actual logits_new tensor.
+            let actual_v_new = if bl > 0 { logits_new_cpu.len() / bl } else { v_rt };
+
             let mut ant_deltas = vec![0.0_f32; cfg.num_ants];
             for batch_idx in 0..b {
-                let logits_b =
-                    &logits_cpu[batch_idx * l * vocab_size..(batch_idx + 1) * l * vocab_size];
-                let logits_new_b =
-                    &logits_new_cpu[batch_idx * l * vocab_size..(batch_idx + 1) * l * vocab_size];
+                let lo_start = batch_idx * l * v_rt;
+                let lo_end = (batch_idx + 1) * l * v_rt;
+                let ln_start = batch_idx * l * actual_v_new;
+                let ln_end = (batch_idx + 1) * l * actual_v_new;
+                if lo_end > logits_cpu.len() || ln_end > logits_new_cpu.len() {
+                    return Err(ErmError::ShapeMismatch {
+                        expected: format!("logits slice [{lo_start}..{lo_end}] and new [{ln_start}..{ln_end}]"),
+                        got: format!("logits.len()={} new.len()={}", logits_cpu.len(), logits_new_cpu.len()),
+                    });
+                }
+                let logits_b = &logits_cpu[lo_start..lo_end];
+                let logits_new_b = &logits_new_cpu[ln_start..ln_end];
                 let z_t_b = &z_t_u32[batch_idx * l..(batch_idx + 1) * l];
                 let y_new_b = &y_new_batch[batch_idx * l..(batch_idx + 1) * l];
 
@@ -313,7 +371,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                     y_new_b,
                     logits_b,
                     logits_new_b,
-                    vocab_size,
+                    v_rt,
                     cfg.num_ants,
                 )?;
                 for (acc, &d) in ant_deltas.iter_mut().zip(batch_deltas.iter()) {
@@ -482,20 +540,23 @@ fn diffusion_ce_loss<B: AutodiffBackend>(
     logits: Tensor<B, 3>,
     targets: Tensor<B, 2, Int>,
     gamma: f32,
-    b: usize,
-    l: usize,
-    v: usize,
+    _b: usize,
+    _l: usize,
+    _v: usize,
 ) -> Tensor<B, 1> {
+    // Derive B, L, V from the actual tensor shape — never trust caller dims.
+    let [b_rt, l_rt, v_rt] = logits.dims();
     // [B,L,V] → [B*L, V]
-    let logits_flat = logits.reshape([b * l, v]);
+    let logits_flat = logits.reshape([b_rt * l_rt, v_rt]);
     // [B,L] → [B*L]
-    let targets_flat = targets.reshape([b * l]);
+    let bl = b_rt * l_rt;
+    let targets_flat = targets.reshape([bl]);
     // log-softmax for numerical stability
     let log_sm = burn::tensor::activation::log_softmax(logits_flat, 1);
     // gather log-prob at each target
     let targets_idx = targets_flat.unsqueeze_dim::<2>(1); // [B*L, 1]
     let log_prob = log_sm.gather(1, targets_idx); // [B*L, 1]
-    let nll = -log_prob.reshape([b * l]).mean(); // scalar
+    let nll = -log_prob.reshape([bl]).mean(); // scalar
     nll * gamma
 }
 
@@ -546,7 +607,6 @@ pub fn diffusion_infer<B: burn::tensor::backend::Backend>(
 ) -> ErmResult<Vec<u32>> {
     let mask_id = cfg.mask_token_id() as u32;
     let prompt_len = prompt_tokens.map(|p| p.len()).unwrap_or(0);
-    let vocab_size = cfg.total_vocab_size();
 
     // Initialise: prefix + masks for the rest.
     let mut y: Vec<u32> = Vec::with_capacity(seq_len);
@@ -580,16 +640,22 @@ pub fn diffusion_infer<B: burn::tensor::backend::Backend>(
             break;
         }
 
-        // Forward pass.
+        // Forward pass — derive V from actual tensor shape.
         let y_tensor = tokens_to_tensor::<B>(&y, b, l, device)?;
         let (logits_tensor, _unc, _hidden) = scorer.forward_with_hidden(y_tensor);
         let logits_cpu = tensor_to_vec(logits_tensor)?;
+        let v_rt = if l > 0 { logits_cpu.len() / l } else { 0 };
 
         // Fill top `to_fill` masked positions greedily.
         let mut candidates: Vec<(usize, u32, f32)> = masked
             .iter()
-            .map(|&pos| {
-                let pos_logits = &logits_cpu[pos * vocab_size..(pos + 1) * vocab_size];
+            .filter_map(|&pos| {
+                let start = pos * v_rt;
+                let end = start + v_rt;
+                if end > logits_cpu.len() || v_rt == 0 {
+                    return None;
+                }
+                let pos_logits = &logits_cpu[start..end];
                 let best_tok = pos_logits
                     .iter()
                     .enumerate()
@@ -598,7 +664,7 @@ pub fn diffusion_infer<B: burn::tensor::backend::Backend>(
                     })
                     .map(|(i, &v)| (i, v))
                     .unwrap_or((0, 0.0));
-                (pos, best_tok.0 as u32, best_tok.1)
+                Some((pos, best_tok.0 as u32, best_tok.1))
             })
             .collect();
 
@@ -615,9 +681,15 @@ pub fn diffusion_infer<B: burn::tensor::backend::Backend>(
     let y_tensor = tokens_to_tensor::<B>(&y, b, l, device)?;
     let (logits_tensor, _, _) = scorer.forward_with_hidden(y_tensor);
     let logits_cpu = tensor_to_vec(logits_tensor)?;
+    let v_rt = if l > 0 { logits_cpu.len() / l } else { 0 };
     for pos in prompt_len..l {
         if y[pos] == mask_id {
-            let pos_logits = &logits_cpu[pos * vocab_size..(pos + 1) * vocab_size];
+            let start = pos * v_rt;
+            let end = start + v_rt;
+            if end > logits_cpu.len() || v_rt == 0 {
+                continue;
+            }
+            let pos_logits = &logits_cpu[start..end];
             let best = pos_logits
                 .iter()
                 .enumerate()

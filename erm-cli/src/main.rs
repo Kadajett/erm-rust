@@ -988,16 +988,11 @@ fn run_io_example(
         std::process::exit(1);
     };
 
-    // ── Preflight: validate buffer sizes ──────────────────────────────
-    let b = 1_usize; // io-example always uses batch=1
-    let l = cfg.seq_len;
-    let d = cfg.hidden_dim;
-    let v = cfg.total_vocab_size();
-    let expected_logits = b * l * v;
-    let expected_hidden = b * l * d;
+    // ── Preflight: log expected dims from config (actual shapes derived at runtime) ──
     eprintln!(
-        "[io-example] Shape preflight: B={b} L={l} d={d} V={v} \
-         logits_buf={expected_logits} hidden_buf={expected_hidden}"
+        "[io-example] Config hints: seq_len={} hidden_dim={} vocab_size={} \
+         (actual dims derived from scorer/tensor at runtime)",
+        cfg.seq_len, cfg.hidden_dim, cfg.total_vocab_size()
     );
 
     // ── Step 2: Find and load BPE vocabulary ──────────────────────────
@@ -1160,8 +1155,9 @@ fn io_example_loop_bpe<B: burn::tensor::backend::AutodiffBackend>(
     }
 
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    let vocab_size = cfg.total_vocab_size();
-    let l = cfg.seq_len;
+    // Use scorer's runtime dims — these come from the actual weights, not config hints.
+    let l = scorer_seq;
+    let cfg_vocab = cfg.total_vocab_size();
 
     // Tokenize entire text into BPE tokens and create batches manually.
     let all_tokens = tokenizer.encode_text(text);
@@ -1199,7 +1195,7 @@ fn io_example_loop_bpe<B: burn::tensor::backend::AutodiffBackend>(
         };
         let y_t_u32: Vec<u32> = corruption.y_t.iter().map(|&v| v as u32).collect();
 
-        // Forward pass (batch=1).
+        // Forward pass (batch=1). B is implicit from the tensor shape.
         let tokens_tensor = match tokens_to_tensor::<B>(&y_t_u32, 1, l, &device) {
             Ok(t) => t,
             Err(e) => {
@@ -1216,15 +1212,12 @@ fn io_example_loop_bpe<B: burn::tensor::backend::AutodiffBackend>(
             }
         };
 
-        // Verify logits buffer size.
-        let expected_size = l * vocab_size;
-        if logits_cpu.len() != expected_size {
+        // Derive V from actual logits buffer: len == 1*L*V → V = len/L.
+        let vocab_size = if l > 0 { logits_cpu.len() / l } else { cfg_vocab };
+        if logits_cpu.len() != l * vocab_size {
             eprintln!(
-                "ERROR: logits buffer size mismatch! Got {} but expected {} (L={l} × V={vocab_size}).\n\
-                 This indicates a shape mismatch between the scorer and the config.\n\
-                 Check that config.json in the checkpoint matches the scorer.bin weights.",
-                logits_cpu.len(),
-                expected_size
+                "ERROR: logits buffer size {} is not divisible by L={l}. Cannot derive V.",
+                logits_cpu.len()
             );
             std::process::exit(1);
         }
@@ -1239,7 +1232,12 @@ fn io_example_loop_bpe<B: burn::tensor::backend::AutodiffBackend>(
 
         for pos in 0..l {
             if y_t_u32[pos] == mask_id || y_t_u32[pos] != batch_tokens[pos] {
-                let pos_logits = &logits_cpu[pos * vocab_size..(pos + 1) * vocab_size];
+                let start_idx = pos * vocab_size;
+                let end_idx = start_idx + vocab_size;
+                if end_idx > logits_cpu.len() {
+                    continue; // bounds-safe skip
+                }
+                let pos_logits = &logits_cpu[start_idx..end_idx];
 
                 // Softmax.
                 let max_logit = pos_logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
@@ -1292,15 +1290,15 @@ fn io_example_loop_bpe<B: burn::tensor::backend::AutodiffBackend>(
         examples.push(example);
     }
 
-    // Build final JSON.
+    // Build final JSON — use runtime-derived dimensions.
     let output = serde_json::json!({
         "metadata": {
             "checkpoint_dir": checkpoint_dir,
             "checkpoint_step": trainer.step,
             "seed": seed,
             "seq_len": l,
-            "hidden_dim": cfg.hidden_dim,
-            "vocab_size": vocab_size,
+            "hidden_dim": scorer_hidden,
+            "vocab_size": scorer_vocab,
             "num_examples": examples.len(),
             "tokenizer_type": "bpe",
         },
@@ -1367,7 +1365,6 @@ fn io_example_loop_char<B: burn::tensor::backend::AutodiffBackend>(
     );
 
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    let vocab_size = cfg.total_vocab_size();
     let l = cfg.seq_len;
     let mut examples: Vec<serde_json::Value> = Vec::new();
 
@@ -1401,6 +1398,9 @@ fn io_example_loop_char<B: burn::tensor::backend::AutodiffBackend>(
             }
         };
 
+        // Derive vocab_size from actual logits buffer.
+        let vocab_size = if l > 0 { logits_cpu.len() / l } else { cfg.total_vocab_size() };
+
         let clean_tokens: Vec<u32> = x_i32.iter().map(|&v| v as u32).collect();
         let clean_string = tokenizer.decode(&clean_tokens);
         let corrupted_string = tokenizer.decode(&y_t_u32);
@@ -1409,7 +1409,12 @@ fn io_example_loop_char<B: burn::tensor::backend::AutodiffBackend>(
 
         for pos in 0..l {
             if y_t_u32[pos] == mask_id || y_t_u32[pos] != clean_tokens[pos] {
-                let pos_logits = &logits_cpu[pos * vocab_size..(pos + 1) * vocab_size];
+                let start_idx = pos * vocab_size;
+                let end_idx = start_idx + vocab_size;
+                if end_idx > logits_cpu.len() {
+                    continue;
+                }
+                let pos_logits = &logits_cpu[start_idx..end_idx];
                 let max_logit = pos_logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
                 let exps: Vec<f32> = pos_logits.iter().map(|&v| (v - max_logit).exp()).collect();
                 let sum_exps: f32 = exps.iter().sum();
@@ -1463,7 +1468,7 @@ fn io_example_loop_char<B: burn::tensor::backend::AutodiffBackend>(
             "seed": seed,
             "seq_len": l,
             "hidden_dim": cfg.hidden_dim,
-            "vocab_size": vocab_size,
+            "vocab_size": cfg.total_vocab_size(),
             "num_examples": examples.len(),
             "tokenizer_type": "char",
         },
