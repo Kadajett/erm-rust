@@ -53,6 +53,13 @@ pub struct RouteGraph {
     pub taint: Vec<f32>,
     /// Edge age (steps since creation). Shape: `[B, L, Emax]`.
     pub age: Vec<i32>,
+    /// Leader utility EMA per edge. Shape: `[B, L, Emax]`.
+    /// Tracks `U(e) = (1-γ)*U(e) + γ*relu(Δ)` for leader-introduced edges.
+    /// Edges introduced by followers have `utility = 0.0` (not tracked).
+    pub utility: Vec<f32>,
+    /// Whether each edge was introduced by a leader. Shape: `[B, L, Emax]`.
+    /// `true` = leader-introduced edge.
+    pub leader_edge: Vec<bool>,
 }
 
 impl RouteGraph {
@@ -794,6 +801,114 @@ mod tests {
         assert_eq!(ew.len(), cfg.batch_size * cfg.seq_len * cfg.emax);
         assert!(elapsed.as_secs() < 2);
         println!("route_aggregate B=8 L=128 Emax=16 d=256: {elapsed:?}");
+    }
+
+    // ── propose_edges tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_propose_edges_empty_slots() {
+        let cfg = test_config();
+        let mut g = RouteGraph::new(&cfg);
+
+        let proposals = vec![
+            EdgeProposal {
+                batch_idx: 0,
+                src: 1,
+                dst: 0,
+                etype: 1,
+            },
+            EdgeProposal {
+                batch_idx: 0,
+                src: 3,
+                dst: 2,
+                etype: 1,
+            },
+        ];
+
+        let inserted = g.propose_edges(&proposals, 0.1, 1.0);
+        assert_eq!(inserted, 2);
+        assert_eq!(g.edge_count(0, 0), 1);
+        assert_eq!(g.edge_count(0, 2), 1);
+    }
+
+    #[test]
+    fn test_propose_edges_replaces_weakest_when_full() {
+        let cfg = test_config(); // emax=3
+        let mut g = RouteGraph::new(&cfg);
+
+        // Fill all slots for (0, 0).
+        g.add_edge(0, 0, 1, 0.1).unwrap();
+        g.add_edge(0, 0, 2, 0.5).unwrap();
+        g.add_edge(0, 0, 3, 2.0).unwrap();
+
+        // Give slot 0 high taint → weakest score.
+        let flat0 = g.idx(0, 0, 0);
+        g.taint[flat0] = 4.0; // score = 0.1 - 4.0 = -3.9
+
+        // Propose a new edge.
+        let proposals = vec![EdgeProposal {
+            batch_idx: 0,
+            src: 2, // Note: src=2 already exists, so it'll be skipped. Use another src.
+            dst: 0,
+            etype: 1,
+        }];
+
+        // src=2 already exists, should skip.
+        let inserted = g.propose_edges(&proposals, 0.5, 1.0);
+        assert_eq!(inserted, 0, "duplicate edge should not be inserted");
+
+        // Try with a truly new source.
+        let new_proposals = vec![EdgeProposal {
+            batch_idx: 1, // different batch
+            src: 0,
+            dst: 1,
+            etype: 1,
+        }];
+        let inserted2 = g.propose_edges(&new_proposals, 0.5, 1.0);
+        assert_eq!(inserted2, 1);
+    }
+
+    #[test]
+    fn test_propose_edges_skips_self_loops() {
+        let cfg = test_config();
+        let mut g = RouteGraph::new(&cfg);
+
+        let proposals = vec![EdgeProposal {
+            batch_idx: 0,
+            src: 2,
+            dst: 2, // self-loop
+            etype: 0,
+        }];
+
+        let inserted = g.propose_edges(&proposals, 0.1, 1.0);
+        assert_eq!(inserted, 0, "self-loops should be skipped");
+    }
+
+    #[test]
+    fn test_propose_edges_respects_edge_cap() {
+        let cfg = ErmConfig {
+            batch_size: 1,
+            seq_len: 4,
+            emax: 2, // only 2 slots
+            ..ErmConfig::default()
+        };
+        let mut g = RouteGraph::new(&cfg);
+
+        // Fill both slots for (0, 0).
+        g.add_edge(0, 0, 1, 1.0).unwrap();
+        g.add_edge(0, 0, 2, 1.0).unwrap();
+
+        // Try to add a third — should replace the weakest.
+        let proposals = vec![EdgeProposal {
+            batch_idx: 0,
+            src: 3,
+            dst: 0,
+            etype: 1,
+        }];
+
+        let inserted = g.propose_edges(&proposals, 0.5, 1.0);
+        assert_eq!(inserted, 1, "should replace weakest edge");
+        assert_eq!(g.edge_count(0, 0), 2, "edge count should remain at emax");
     }
 }
 

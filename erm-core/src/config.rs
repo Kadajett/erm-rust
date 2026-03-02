@@ -93,6 +93,11 @@ pub struct ErmConfig {
     /// Maximum edge age (in refinement steps) before pruning.
     pub prune_max_age: u32,
 
+    // ── Leader utility EMA ─────────────────────────────────────────────
+    /// EMA smoothing factor `γ` for leader edge utility tracking.
+    /// `U(e) = (1 - γ) * U(e) + γ * relu(Δ)`.
+    pub leader_ema_gamma: f32,
+
     // ── Optimizer (for reference; consumed by erm-train) ───────────────
     /// Learning rate.
     pub learning_rate: f64,
@@ -141,6 +146,8 @@ impl Default for ErmConfig {
 
             prune_min_score: -1.0,
             prune_max_age: 1000,
+
+            leader_ema_gamma: 0.3,
 
             death_streak: 5,
             max_edits_per_step: 0.15,

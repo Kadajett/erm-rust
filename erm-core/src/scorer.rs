@@ -72,24 +72,33 @@ impl FeedForwardBlock {
     ///
     /// Input: `x` of length `d`.
     /// Output: `x + down(relu(up(x)))` of length `d`.
+    #[allow(clippy::needless_range_loop)]
     fn forward_vec(&self, x: &[f32]) -> Vec<f32> {
-        // up: [4d] = W_up @ x + b_up, then ReLU
-        let hidden: Vec<f32> = (0..self.d_inner)
-            .map(|i| {
-                let row = &self.w_up[i * self.d_in..(i + 1) * self.d_in];
-                let dot: f32 = row.iter().zip(x.iter()).map(|(&w, &xi)| w * xi).sum();
-                (dot + self.b_up[i]).max(0.0) // ReLU
-            })
-            .collect();
+        // up: [4d] = W_up @ x + b_up
+        let mut hidden = vec![0.0f32; self.d_inner];
+        for i in 0..self.d_inner {
+            let mut sum = self.b_up[i];
+            let row_start = i * self.d_in;
+            for j in 0..self.d_in {
+                sum += self.w_up[row_start + j] * x[j];
+            }
+            // ReLU
+            hidden[i] = sum.max(0.0);
+        }
 
-        // down: [d] = W_down @ hidden + b_down + x (residual)
-        (0..self.d_in)
-            .map(|i| {
-                let row = &self.w_down[i * self.d_inner..(i + 1) * self.d_inner];
-                let dot: f32 = row.iter().zip(hidden.iter()).map(|(&w, &hi)| w * hi).sum();
-                x[i] + dot + self.b_down[i] // residual
-            })
-            .collect()
+        // down: [d] = W_down @ hidden + b_down
+        let mut out = vec![0.0f32; self.d_in];
+        for i in 0..self.d_in {
+            let mut sum = self.b_down[i];
+            let row_start = i * self.d_inner;
+            for j in 0..self.d_inner {
+                sum += self.w_down[row_start + j] * hidden[j];
+            }
+            // Residual connection
+            out[i] = x[i] + sum;
+        }
+
+        out
     }
 }
 
@@ -186,63 +195,23 @@ impl Scorer {
         }
     }
 
-    /// Forward pass through the scorer (no route message — uses zeros).
-    ///
-    /// Equivalent to calling [`forward_with_route`](Self::forward_with_route)
-    /// with `route_msg = None`.
+    /// Forward pass through the scorer.
     ///
     /// # Arguments
     ///
-    /// - `y_t`: corrupted token ids, flat `[B * L]`. Values in `[0, total_vocab)`.
+    /// - `y_t`: corrupted token ids. Shape: flat `[B * L]`.
+    ///   Values must be in `[0, total_vocab)`.
     /// - `batch_size`: the batch dimension `B`.
     ///
     /// # Returns
     ///
-    /// [`ScorerOutput`] with logits `[B, L, V]` and uncertainty `[B, L]`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ErmError::ShapeMismatch`] if input length ≠ `B * L`.
-    pub fn forward(&self, y_t: &[u32], batch_size: usize) -> ErmResult<ScorerOutput> {
-        self.forward_with_route(y_t, batch_size, None)
-    }
-
-    /// Forward pass with an optional route message added to the input embedding.
-    ///
-    /// Computes `h = token_emb[tok] + pos_emb[pos] + route_msg[b, pos, :]`
-    /// before passing through the feed-forward blocks. When `route_msg` is
-    /// `None`, the route contribution is zero (equivalent to Phase 1).
-    ///
-    /// # Arguments
-    ///
-    /// - `y_t`: corrupted token ids, flat `[B * L]`. Values in `[0, total_vocab)`.
-    /// - `batch_size`: the batch dimension `B`.
-    /// - `route_msg`: optional route aggregation output, flat `[B, L, d]`
-    ///   (row-major, length = `B * L * d`). Pass `None` for zero route.
-    ///
-    /// # Returns
-    ///
-    /// [`ScorerOutput`] with logits `[B, L, V]` and uncertainty `[B, L]`.
+    /// A [`ScorerOutput`] with logits `[B, L, V]` and uncertainty `[B, L]`.
     ///
     /// # Errors
     ///
     /// Returns [`ErmError::ShapeMismatch`] if input dimensions don't match.
-    ///
-    /// # Shape reference
-    ///
-    /// | Input          | Shape      |
-    /// |----------------|------------|
-    /// | `y_t`          | `[B * L]`  |
-    /// | `route_msg`    | `[B, L, d]` (flat, optional) |
-    /// | **logits**     | `[B, L, V]` |
-    /// | **uncertainty**| `[B, L]`   |
     #[allow(clippy::needless_range_loop)]
-    pub fn forward_with_route(
-        &self,
-        y_t: &[u32],
-        batch_size: usize,
-        route_msg: Option<&[f32]>,
-    ) -> ErmResult<ScorerOutput> {
+    pub fn forward(&self, y_t: &[u32], batch_size: usize) -> ErmResult<ScorerOutput> {
         let l = self.seq_len;
         let d = self.hidden_dim;
         let v = self.vocab_size;
@@ -253,17 +222,6 @@ impl Scorer {
                 expected: format!("[{batch_size} * {l}] = {expected_len}"),
                 got: format!("{}", y_t.len()),
             });
-        }
-
-        // Validate route_msg shape if provided: must be [B, L, d]
-        if let Some(rm) = route_msg {
-            let expected_rm = batch_size * l * d;
-            if rm.len() != expected_rm {
-                return Err(ErmError::ShapeMismatch {
-                    expected: format!("route_msg [B={batch_size}, L={l}, d={d}] = {expected_rm}"),
-                    got: format!("{}", rm.len()),
-                });
-            }
         }
 
         let mut logits = Vec::with_capacity(batch_size * l * v);
@@ -281,16 +239,13 @@ impl Scorer {
                 };
                 let pos_start = pos * d;
 
-                // h = token_emb[tok_id] + pos_emb[pos] + route_msg[b, pos, :]
-                let rm_base = (b * l + pos) * d;
-                let mut h: Vec<f32> = (0..d)
-                    .map(|k| {
-                        let te = self.token_emb[tok_start + k];
-                        let pe = self.pos_emb[pos_start + k];
-                        let rm = route_msg.map_or(0.0, |r| r[rm_base + k]);
-                        te + pe + rm
-                    })
+                // h = token_emb[tok_id] + pos_emb[pos]
+                let h: Vec<f32> = self.token_emb[tok_start..tok_start + d]
+                    .iter()
+                    .zip(&self.pos_emb[pos_start..pos_start + d])
+                    .map(|(&te, &pe)| te + pe)
                     .collect();
+                let mut h = h;
 
                 // Pass through feed-forward blocks
                 for block in &self.blocks {
@@ -299,8 +254,8 @@ impl Scorer {
 
                 // Logit head: [V] = W_logit @ h + b_logit
                 for vi in 0..v {
-                    let row = &self.logit_w[vi * d..(vi + 1) * d];
-                    let sum: f32 = row
+                    let row_start = vi * d;
+                    let sum: f32 = self.logit_w[row_start..row_start + d]
                         .iter()
                         .zip(h.iter())
                         .map(|(&w, &hj)| w * hj)
@@ -328,7 +283,7 @@ impl Scorer {
         })
     }
 
-    /// Count total number of parameters in the scorer.
+    /// Collect all weights into a single flat vector (for serialization/inspection).
     #[must_use]
     pub fn num_parameters(&self) -> usize {
         let mut count = 0;
@@ -362,7 +317,7 @@ fn sigmoid(x: f32) -> f32 {
 fn random_vec(len: usize, scale: f32, rng: &mut ChaCha8Rng) -> Vec<f32> {
     (0..len)
         .map(|_| {
-            // Box-Muller using uniform samples.
+            // Box-Muller approximation using uniform samples.
             let u1: f32 = rng.gen::<f32>().max(1e-10);
             let u2: f32 = rng.gen();
             let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
@@ -505,143 +460,5 @@ mod tests {
         assert!((sigmoid(0.0) - 0.5).abs() < 1e-6);
         assert!(sigmoid(100.0) > 0.99);
         assert!(sigmoid(-100.0) < 0.01);
-    }
-
-    // ── forward_with_route tests ─────────────────────────────────────────────
-
-    #[test]
-    fn test_forward_with_route_none_equals_forward() {
-        let cfg = test_config();
-        let scorer = Scorer::new(&cfg, 64, 42);
-        let y_t = vec![1u32; 2 * 16];
-
-        let out_plain = scorer.forward(&y_t, 2).unwrap();
-        let out_route = scorer.forward_with_route(&y_t, 2, None).unwrap();
-
-        assert_eq!(out_plain.logits, out_route.logits);
-        assert_eq!(out_plain.uncertainty, out_route.uncertainty);
-    }
-
-    #[test]
-    fn test_forward_with_route_zeros_equals_forward() {
-        let cfg = test_config();
-        let scorer = Scorer::new(&cfg, 64, 42);
-        let y_t = vec![1u32; 2 * 16];
-
-        let route_msg = vec![0.0_f32; 2 * 16 * 32]; // [B=2, L=16, d=32]
-        let out_plain = scorer.forward(&y_t, 2).unwrap();
-        let out_route = scorer
-            .forward_with_route(&y_t, 2, Some(&route_msg))
-            .unwrap();
-
-        assert_eq!(out_plain.logits, out_route.logits);
-        assert_eq!(out_plain.uncertainty, out_route.uncertainty);
-    }
-
-    #[test]
-    fn test_forward_with_route_nonzero_changes_output() {
-        let cfg = ErmConfig {
-            batch_size: 1,
-            seq_len: 4,
-            vocab_size: 16,
-            hidden_dim: 8,
-            num_blocks: 2,
-            mlp_expansion: 4,
-            dropout: 0.0,
-            ..ErmConfig::default()
-        };
-        let scorer = Scorer::new(&cfg, 16, 77);
-        let y_t = vec![2u32; 4];
-
-        let out_no_route = scorer.forward(&y_t, 1).unwrap();
-
-        // Non-zero route message.
-        let route_msg = vec![0.5_f32; 4 * 8];
-        let out_with_route = scorer
-            .forward_with_route(&y_t, 1, Some(&route_msg))
-            .unwrap();
-
-        assert_ne!(
-            out_no_route.logits, out_with_route.logits,
-            "non-zero route message must change logits"
-        );
-    }
-
-    #[test]
-    fn test_forward_with_route_shape_mismatch() {
-        let cfg = test_config();
-        let scorer = Scorer::new(&cfg, 64, 42);
-        let y_t = vec![0u32; 2 * 16];
-
-        // Wrong route_msg length.
-        let bad_route = vec![0.0_f32; 5];
-        assert!(scorer
-            .forward_with_route(&y_t, 2, Some(&bad_route))
-            .is_err());
-    }
-
-    #[test]
-    fn test_forward_with_route_shapes() {
-        let cfg = test_config();
-        let scorer = Scorer::new(&cfg, 64, 42);
-        let y_t = vec![0u32; 2 * 16];
-        let route_msg = vec![0.1_f32; 2 * 16 * 32];
-
-        let out = scorer
-            .forward_with_route(&y_t, 2, Some(&route_msg))
-            .unwrap();
-        assert_eq!(out.logits.len(), 2 * 16 * 64);
-        assert_eq!(out.uncertainty.len(), 2 * 16);
-    }
-
-    #[test]
-    fn test_forward_with_route_no_nan_no_inf() {
-        let cfg = ErmConfig {
-            batch_size: 1,
-            seq_len: 8,
-            vocab_size: 32,
-            hidden_dim: 16,
-            num_blocks: 2,
-            mlp_expansion: 4,
-            dropout: 0.0,
-            ..ErmConfig::default()
-        };
-        let scorer = Scorer::new(&cfg, 32, 99);
-        let y_t = vec![5u32; 8];
-        let route_msg = vec![0.3_f32; 8 * 16];
-
-        let out = scorer
-            .forward_with_route(&y_t, 1, Some(&route_msg))
-            .unwrap();
-
-        for (i, &v) in out.logits.iter().enumerate() {
-            assert!(!v.is_nan(), "NaN in logits at index {i}");
-            assert!(!v.is_infinite(), "Inf in logits at index {i}");
-        }
-        for (i, &v) in out.uncertainty.iter().enumerate() {
-            assert!(!v.is_nan(), "NaN in uncertainty at index {i}");
-            assert!(
-                (0.0..=1.0).contains(&v),
-                "uncertainty[{i}] = {v} out of [0,1]"
-            );
-        }
-    }
-
-    #[test]
-    fn test_forward_with_route_deterministic() {
-        let cfg = test_config();
-        let scorer = Scorer::new(&cfg, 64, 42);
-        let y_t = vec![7u32; 2 * 16];
-        let route_msg = vec![0.2_f32; 2 * 16 * 32];
-
-        let out1 = scorer
-            .forward_with_route(&y_t, 2, Some(&route_msg))
-            .unwrap();
-        let out2 = scorer
-            .forward_with_route(&y_t, 2, Some(&route_msg))
-            .unwrap();
-
-        assert_eq!(out1.logits, out2.logits);
-        assert_eq!(out1.uncertainty, out2.uncertainty);
     }
 }
