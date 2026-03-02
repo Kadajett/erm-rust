@@ -122,6 +122,33 @@ enum Commands {
         #[arg(long, default_value = "100")]
         log_every: usize,
     },
+
+    /// Run colony training (burn scorer on GPU + colony logic on CPU).
+    ColonyTrain {
+        /// Path to training data (plain text file).
+        #[arg(long)]
+        data: String,
+
+        /// Number of colony training steps.
+        #[arg(long, default_value = "5000")]
+        steps: usize,
+
+        /// Path to config file (JSON). Uses defaults if not provided.
+        #[arg(long)]
+        config: Option<String>,
+
+        /// Backend to use.
+        #[arg(long, default_value = "cpu")]
+        backend: BackendChoice,
+
+        /// Log every N steps.
+        #[arg(long, default_value = "100")]
+        log_every: usize,
+
+        /// Checkpoint directory (optional).
+        #[arg(long)]
+        checkpoint_dir: Option<String>,
+    },
 }
 
 /// Backend choice for burn-based training.
@@ -178,6 +205,23 @@ fn main() {
             log_every,
         } => {
             run_burn_train(&data, steps, config.as_deref(), &backend, log_every);
+        }
+        Commands::ColonyTrain {
+            data,
+            steps,
+            config,
+            backend,
+            log_every,
+            checkpoint_dir,
+        } => {
+            run_colony_train(
+                &data,
+                steps,
+                config.as_deref(),
+                &backend,
+                log_every,
+                checkpoint_dir.as_deref(),
+            );
         }
     }
 }
@@ -536,6 +580,115 @@ fn burn_train_loop<B: burn::tensor::backend::AutodiffBackend>(
     println!("Burn training complete.");
 }
 
+fn run_colony_train(
+    data_path: &str,
+    total_steps: usize,
+    config_path: Option<&str>,
+    backend: &BackendChoice,
+    log_every: usize,
+    checkpoint_dir: Option<&str>,
+) {
+    let erm_cfg = load_config(config_path);
+
+    let text = match std::fs::read_to_string(data_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("ERROR: cannot read data file '{data_path}': {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let tokenizer = erm_core::tokenizer::CharTokenizer::from_text(&text);
+    let vocab_size = tokenizer.vocab_size();
+    let mut cfg = erm_cfg;
+    cfg.vocab_size = vocab_size;
+
+    let dataset = match erm_train::dataset::TextDataset::from_text(&text, &tokenizer, cfg.seq_len) {
+        Ok(ds) => ds,
+        Err(e) => {
+            eprintln!("ERROR: cannot build dataset: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match backend {
+        BackendChoice::Cpu => {
+            colony_train_loop::<burn_autodiff::Autodiff<burn_ndarray::NdArray<f32>>>(
+                &cfg,
+                &dataset,
+                total_steps,
+                log_every,
+                checkpoint_dir,
+                Default::default(),
+            );
+        }
+        BackendChoice::Gpu => {
+            #[cfg(feature = "gpu")]
+            {
+                let device = burn_wgpu::WgpuDevice::default();
+                colony_train_loop::<burn_autodiff::Autodiff<burn_wgpu::Wgpu>>(
+                    &cfg,
+                    &dataset,
+                    total_steps,
+                    log_every,
+                    checkpoint_dir,
+                    device,
+                );
+            }
+            #[cfg(not(feature = "gpu"))]
+            {
+                eprintln!("ERROR: GPU support not compiled. Rebuild with: cargo build --release --features gpu");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+/// Generic colony training loop parameterised by backend.
+fn colony_train_loop<B: burn::tensor::backend::AutodiffBackend>(
+    cfg: &erm_core::ErmConfig,
+    dataset: &erm_train::dataset::TextDataset,
+    total_steps: usize,
+    log_every: usize,
+    checkpoint_dir: Option<&str>,
+    device: B::Device,
+) {
+    use erm_train::colony_orchestrator::{ColonyOrchestrator, ColonyTrainingConfig};
+
+    let colony_cfg = ColonyTrainingConfig {
+        erm: cfg.clone(),
+        colony_steps: total_steps,
+        log_every,
+        checkpoint_every: if checkpoint_dir.is_some() { 500 } else { 0 },
+        seed: 42,
+    };
+
+    let mut orch = ColonyOrchestrator::<B>::new(colony_cfg, device);
+
+    println!(
+        "Colony training: steps={total_steps}, vocab={}, hidden={}, backend={}",
+        cfg.vocab_size,
+        cfg.hidden_dim,
+        std::any::type_name::<B>(),
+    );
+
+    match orch.run_colony_phase(dataset, checkpoint_dir) {
+        Ok(_) => {
+            println!("Colony training complete. Steps: {}", orch.step);
+            if let Some(last) = orch.log.last() {
+                println!(
+                    "Final: loss={:.4}, edits={}, mean_φ={:.4}",
+                    last.loss, last.num_edits, last.mean_phi
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("ERROR during colony training: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -648,5 +801,41 @@ mod tests {
     fn test_cli_parse_burn_train_defaults() {
         let cli = Cli::try_parse_from(["erm", "burn-train", "--data", "test.txt"]);
         assert!(cli.is_ok(), "burn-train with defaults should parse");
+    }
+
+    #[test]
+    fn test_cli_parse_colony_train() {
+        let cli = Cli::try_parse_from([
+            "erm",
+            "colony-train",
+            "--data",
+            "test.txt",
+            "--steps",
+            "100",
+            "--backend",
+            "cpu",
+        ]);
+        assert!(cli.is_ok(), "colony-train should parse");
+    }
+
+    #[test]
+    fn test_cli_parse_colony_train_defaults() {
+        let cli = Cli::try_parse_from(["erm", "colony-train", "--data", "test.txt"]);
+        assert!(cli.is_ok(), "colony-train with defaults should parse");
+    }
+
+    #[test]
+    fn test_cli_parse_colony_train_with_checkpoint() {
+        let cli = Cli::try_parse_from([
+            "erm",
+            "colony-train",
+            "--data",
+            "test.txt",
+            "--steps",
+            "50",
+            "--checkpoint-dir",
+            "/tmp/ckpt",
+        ]);
+        assert!(cli.is_ok(), "colony-train with checkpoint should parse");
     }
 }
