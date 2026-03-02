@@ -137,7 +137,15 @@ impl AntState {
     /// - Otherwise: streak increments.
     ///
     /// Returns `true` if the ant should "die" (streak >= `death_streak`).
-    pub fn record_delta(&mut self, b: BatchIdx, k: AntIdx, delta: f32, config: &ErmConfig) -> bool {
+    ///
+    /// Use `config.effective_death_streak(step)` for warmstart-aware death threshold.
+    pub fn record_delta(
+        &mut self,
+        b: BatchIdx,
+        k: AntIdx,
+        delta: f32,
+        death_streak: usize,
+    ) -> bool {
         let flat = self.idx(b, k);
         let epsilon = 1e-6_f32;
 
@@ -146,7 +154,7 @@ impl AntState {
             false
         } else {
             self.streak[flat] += 1;
-            self.streak[flat] >= config.death_streak as i32
+            self.streak[flat] >= death_streak as i32
         }
     }
 
@@ -837,7 +845,8 @@ impl AntColony {
 /// # Death Modes
 ///
 /// - `DeathMode::Streak`: Ants with consecutive no-improvement streaks >= `K`
-///   are killed and respawned.
+///   are killed and respawned. During warm-start, `K` is multiplied by
+///   `warmstart_death_mult` to reduce churn.
 /// - `DeathMode::RandomPool`: A fixed fraction (10%) of ants are randomly
 ///   replaced each step, regardless of performance.
 ///
@@ -847,6 +856,7 @@ impl AntColony {
 /// - `ant_deltas`: per-ant improvement deltas from the merge step. Shape: `[num_ants]`.
 /// - `config`: ERM hyperparameters.
 /// - `mode`: which death mode to use.
+/// - `step`: current training step (used for warmstart-aware death streak).
 /// - `rng`: random number generator.
 ///
 /// # Returns
@@ -857,9 +867,11 @@ pub fn apply_death_respawn<R: Rng>(
     ant_deltas: &[f32],
     config: &ErmConfig,
     mode: DeathMode,
+    step: usize,
     rng: &mut R,
 ) -> usize {
     let mut deaths = 0;
+    let effective_streak = config.effective_death_streak(step);
 
     match mode {
         DeathMode::Streak => {
@@ -870,7 +882,7 @@ pub fn apply_death_respawn<R: Rng>(
                     } else {
                         0.0
                     };
-                    let should_die = ant_state.record_delta(b, k, delta, config);
+                    let should_die = ant_state.record_delta(b, k, delta, effective_streak);
                     if should_die {
                         ant_state.respawn(b, k, config);
                         deaths += 1;
@@ -930,9 +942,9 @@ mod tests {
         let mut state = AntState::new(&cfg);
 
         // Ant (0, 5) has no improvement 3 times → dies.
-        assert!(!state.record_delta(0, 5, 0.0, &cfg)); // streak=1
-        assert!(!state.record_delta(0, 5, -1.0, &cfg)); // streak=2
-        assert!(state.record_delta(0, 5, 0.0, &cfg)); // streak=3 → dies
+        assert!(!state.record_delta(0, 5, 0.0, cfg.death_streak)); // streak=1
+        assert!(!state.record_delta(0, 5, -1.0, cfg.death_streak)); // streak=2
+        assert!(state.record_delta(0, 5, 0.0, cfg.death_streak)); // streak=3 → dies
 
         // Respawn.
         state.respawn(0, 5, &cfg);
@@ -944,9 +956,9 @@ mod tests {
         let cfg = small_config();
         let mut state = AntState::new(&cfg);
 
-        state.record_delta(0, 3, 0.0, &cfg); // streak=1
-        state.record_delta(0, 3, 0.0, &cfg); // streak=2
-        state.record_delta(0, 3, 1.0, &cfg); // improvement → streak=0
+        state.record_delta(0, 3, 0.0, cfg.death_streak); // streak=1
+        state.record_delta(0, 3, 0.0, cfg.death_streak); // streak=2
+        state.record_delta(0, 3, 1.0, cfg.death_streak); // improvement → streak=0
         assert_eq!(state.streak[state.idx(0, 3)], 0);
     }
 
@@ -1484,11 +1496,12 @@ mod tests {
         let mut rng = ChaCha8Rng::seed_from_u64(0);
 
         // All ants have zero delta → all should die after 2 steps.
+        // step=999 → past any warmstart.
         let deltas = vec![0.0_f32; 5];
-        let d1 = apply_death_respawn(&mut state, &deltas, &cfg, DeathMode::Streak, &mut rng);
+        let d1 = apply_death_respawn(&mut state, &deltas, &cfg, DeathMode::Streak, 999, &mut rng);
         assert_eq!(d1, 0, "no deaths after 1 step (streak=1)");
 
-        let d2 = apply_death_respawn(&mut state, &deltas, &cfg, DeathMode::Streak, &mut rng);
+        let d2 = apply_death_respawn(&mut state, &deltas, &cfg, DeathMode::Streak, 999, &mut rng);
         assert_eq!(d2, 5, "all 5 ants should die after 2 steps");
 
         // After respawn, streaks should be reset.
@@ -1510,7 +1523,7 @@ mod tests {
 
         let deltas = vec![0.0_f32; 20];
         let deaths =
-            apply_death_respawn(&mut state, &deltas, &cfg, DeathMode::RandomPool, &mut rng);
+            apply_death_respawn(&mut state, &deltas, &cfg, DeathMode::RandomPool, 999, &mut rng);
 
         // Should replace ~10% = 2 ants (ceil(20*0.1) = 2).
         assert_eq!(deaths, 2, "should replace ceil(10%) = 2 ants");
@@ -1528,21 +1541,64 @@ mod tests {
         let mut state = AntState::new(&cfg);
         let mut rng = ChaCha8Rng::seed_from_u64(0);
 
-        // No improvement for 2 steps.
+        // No improvement for 2 steps. step=999 → past warmstart.
         let zero_deltas = vec![0.0_f32; 3];
-        apply_death_respawn(&mut state, &zero_deltas, &cfg, DeathMode::Streak, &mut rng);
-        apply_death_respawn(&mut state, &zero_deltas, &cfg, DeathMode::Streak, &mut rng);
+        apply_death_respawn(&mut state, &zero_deltas, &cfg, DeathMode::Streak, 999, &mut rng);
+        apply_death_respawn(&mut state, &zero_deltas, &cfg, DeathMode::Streak, 999, &mut rng);
 
         // Now improve: streak should reset.
         let good_deltas = vec![1.0_f32; 3];
         let deaths =
-            apply_death_respawn(&mut state, &good_deltas, &cfg, DeathMode::Streak, &mut rng);
+            apply_death_respawn(&mut state, &good_deltas, &cfg, DeathMode::Streak, 999, &mut rng);
         assert_eq!(deaths, 0, "no deaths after improvement");
 
         // Two more zero steps should not kill (streak only at 2, need 3).
-        apply_death_respawn(&mut state, &zero_deltas, &cfg, DeathMode::Streak, &mut rng);
+        apply_death_respawn(&mut state, &zero_deltas, &cfg, DeathMode::Streak, 999, &mut rng);
         let deaths2 =
-            apply_death_respawn(&mut state, &zero_deltas, &cfg, DeathMode::Streak, &mut rng);
+            apply_death_respawn(&mut state, &zero_deltas, &cfg, DeathMode::Streak, 999, &mut rng);
         assert_eq!(deaths2, 0, "streak should be 2, not enough to die");
+    }
+
+    #[test]
+    fn test_warmstart_relaxes_death_streak() {
+        let cfg = ErmConfig {
+            batch_size: 1,
+            num_ants: 3,
+            death_streak: 2,
+            leader_fraction: 0.0,
+            warmstart_steps: 100,
+            warmstart_death_mult: 4,
+            ..small_config()
+        };
+        let mut state = AntState::new(&cfg);
+        let mut rng = ChaCha8Rng::seed_from_u64(0);
+
+        let zero_deltas = vec![0.0_f32; 3];
+
+        // During warmstart (step=0), effective streak = 2*4 = 8.
+        // After 2 steps with no improvement, ants should NOT die.
+        apply_death_respawn(&mut state, &zero_deltas, &cfg, DeathMode::Streak, 0, &mut rng);
+        let d = apply_death_respawn(
+            &mut state,
+            &zero_deltas,
+            &cfg,
+            DeathMode::Streak,
+            1,
+            &mut rng,
+        );
+        assert_eq!(d, 0, "ants should not die during warmstart with only 2 zero steps");
+
+        // After warmstart ends (step=100), with fresh state, death_streak = 2.
+        let mut state2 = AntState::new(&cfg);
+        apply_death_respawn(&mut state2, &zero_deltas, &cfg, DeathMode::Streak, 100, &mut rng);
+        let d2 = apply_death_respawn(
+            &mut state2,
+            &zero_deltas,
+            &cfg,
+            DeathMode::Streak,
+            101,
+            &mut rng,
+        );
+        assert_eq!(d2, 3, "all ants should die after warmstart with death_streak=2");
     }
 }

@@ -98,6 +98,14 @@ pub struct ErmConfig {
     /// `U(e) = (1 - γ) * U(e) + γ * relu(Δ)`.
     pub leader_ema_gamma: f32,
 
+    // ── Warm-start ──────────────────────────────────────────────────────
+    /// Number of warm-start steps during which death/respawn is relaxed.
+    /// If > 0, `death_streak` is multiplied by `warmstart_death_mult`
+    /// for the first `warmstart_steps` training steps.
+    pub warmstart_steps: usize,
+    /// Death streak multiplier during warm-start (default 4).
+    pub warmstart_death_mult: usize,
+
     // ── Optimizer (for reference; consumed by erm-train) ───────────────
     /// Learning rate.
     pub learning_rate: f64,
@@ -153,6 +161,9 @@ impl Default for ErmConfig {
             max_edits_per_step: 0.15,
             leader_fraction: 0.10,
 
+            warmstart_steps: 0,
+            warmstart_death_mult: 4,
+
             learning_rate: 1e-3,
             weight_decay: 0.01,
             warmup_steps: 1000,
@@ -183,6 +194,20 @@ impl ErmConfig {
     #[must_use]
     pub fn num_followers(&self) -> usize {
         self.num_ants - self.num_leaders()
+    }
+
+    /// Effective death streak for a given training step.
+    ///
+    /// During warm-start (step < `warmstart_steps`), the death streak is
+    /// multiplied by `warmstart_death_mult` to reduce ant churn while the
+    /// scorer is still learning.
+    #[must_use]
+    pub fn effective_death_streak(&self, step: usize) -> usize {
+        if self.warmstart_steps > 0 && step < self.warmstart_steps {
+            self.death_streak * self.warmstart_death_mult
+        } else {
+            self.death_streak
+        }
     }
 
     /// Maximum edits per refinement step.

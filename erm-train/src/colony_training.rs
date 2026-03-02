@@ -79,6 +79,8 @@ pub struct ColonyTrainer<B: AutodiffBackend> {
     pub pheromone_config: PheromoneConfig,
     /// Running delta statistics for normalized pheromone deposit.
     pub delta_stats: RunningDeltaStats,
+    /// Current training step (monotonically increasing).
+    pub step: usize,
     /// Learning rate.
     lr: f64,
     /// Burn device.
@@ -112,6 +114,7 @@ impl<B: AutodiffBackend> ColonyTrainer<B> {
             config: config.clone(),
             pheromone_config,
             delta_stats: RunningDeltaStats::new(),
+            step: 0,
             lr: config.learning_rate,
             device,
         }
@@ -323,15 +326,17 @@ impl<B: AutodiffBackend> ColonyTrainer<B> {
             self.pheromone_config.route_lambda,
         );
 
-        // Death/respawn.
+        // Death/respawn (warmstart-aware).
         let deaths = apply_death_respawn(
             &mut self.ant_state,
             &ant_deltas,
             config,
             DeathMode::Streak,
+            self.step,
             rng,
         );
 
+        self.step += 1;
         let num_edits = total_edits;
 
         // ── Step 7: Compute loss on GPU and backprop ───────────────────

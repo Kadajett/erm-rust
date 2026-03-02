@@ -476,8 +476,8 @@ pub fn full_colony_step<R: Rng>(
         pheromone_config.route_lambda,
     );
 
-    // Step 10: Death/respawn.
-    let deaths = apply_death_respawn(ant_state, &ant_deltas, config, death_mode, rng);
+    // Step 10: Death/respawn (step=usize::MAX → past any warmstart).
+    let deaths = apply_death_respawn(ant_state, &ant_deltas, config, death_mode, usize::MAX, rng);
 
     Ok(ColonyStepResult {
         y_new,
