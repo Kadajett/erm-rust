@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 /// Instantiate with [`ErmConfig::default()`] for the recommended starting point,
 /// or deserialize from JSON/TOML.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct ErmConfig {
     // ── Vocabulary & sequence ───────────────────────────────────────────
     /// Vocabulary size (excluding MASK sentinel). MASK id = `vocab_size`.

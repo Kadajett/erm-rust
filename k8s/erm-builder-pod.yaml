@@ -24,8 +24,7 @@ spec:
       echo "=== ERM Builder (incremental rebuild) ==="
       echo "Rust: $(rustc --version)"
       cd /workspace/erm-rust-src
-      # Touch main.rs to force recompilation of erm-cli
-      touch erm-cli/src/main.rs
+      touch erm-core/src/graph.rs erm-train/src/streaming_dataset.rs erm-cli/src/main.rs
       echo "Building release binary..."
       cargo build --release --bin erm 2>&1
       echo "=== Build complete ==="

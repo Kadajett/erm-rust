@@ -1,0 +1,160 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: erm-alice-run
+  namespace: pcn-train
+  labels:
+    app: erm-diffusion
+    exp: alice-run
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: erm-diffusion
+        exp: alice-run
+    spec:
+      restartPolicy: Never
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: [theshire]
+      containers:
+      - name: erm-alice-run
+        image: ubuntu:24.04
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -e
+          echo "=== ERM Alice-in-Wonderland Dedicated Training ==="
+          echo "Host: $(hostname) | Start: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          apt-get update -qq 2>&1 | tail -1 || true
+          apt-get install -y -qq --no-install-recommends libvulkan1 mesa-vulkan-drivers ca-certificates 2>&1 | tail -3 || true
+          update-ca-certificates || true
+
+          # Prepare Alice-only corpus
+          ALICE_DIR=/workspace/erm-rust/data/alice-only
+          mkdir -p "$ALICE_DIR"
+          ALICE_SRC=$(ls /workspace/rust-pcn/data/books/*alice* -1 2>/dev/null | head -n 1 || true)
+          if [ -z "$ALICE_SRC" ]; then
+            echo "ERROR: Could not find Alice in Wonderland source under /workspace/rust-pcn/data/books" >&2; exit 1;
+          fi
+          cat "$ALICE_SRC" > "$ALICE_DIR/alice.txt"
+          echo "Alice data dir: $ALICE_DIR ($(stat -c '%s' "$ALICE_DIR/alice.txt") bytes, 1 file)"
+
+          # Build train config (batch=1 to avoid tail-batch mismatches, T=6)
+          CKPT_DIR=/workspace/erm-rust/data/experiments/alice-run/checkpoints
+          mkdir -p "$CKPT_DIR"
+          cat > /workspace/erm-rust/data/train_config.json <<'JSONEOF'
+          {
+            "vocab_size": 0,
+            "seq_len": 512,
+            "hidden_dim": 256,
+            "num_blocks": 3,
+            "num_heads": 8,
+            "mlp_expansion": 4,
+            "dropout": 0.0,
+            "emax": 16,
+            "num_ants": 128,
+            "topk": 6,
+            "pmax": 6,
+            "refinement_steps": 4,
+            "batch_size": 1,
+            "mask_rate_max": 0.8,
+            "mask_rate_min": 0.15,
+            "replace_rate_max": 0.1,
+            "replace_rate_min": 0.02,
+            "pheromone_evap": 0.1,
+            "pheromone_eta": 0.7,
+            "taint_zeta": 0.3,
+            "taint_max": 5.0,
+            "taint_decay": 0.05,
+            "phi_max": 100.0,
+            "phi_init": 0.05,
+            "route_epsilon": 1e-6,
+            "route_lambda": 1.0,
+            "route_mu": 0.01,
+            "prune_min_score": -1.0,
+            "prune_max_age": 1000,
+            "leader_ema_gamma": 0.3,
+            "death_streak": 5,
+            "max_edits_per_step": 0.18,
+            "leader_fraction": 0.12,
+            "learning_rate": 0.0005,
+            "weight_decay": 0.01,
+            "warmup_steps": 100,
+  "warmstart_steps": 0,
+            "T": 6
+          }
+          JSONEOF
+
+          echo "=== Starting alice-run training at $(date -u +%H:%M:%S) ==="
+          echo "Config: $(jq -c . /workspace/erm-rust/data/train_config.json 2>/dev/null || cat /workspace/erm-rust/data/train_config.json)"
+
+          # Launch diffusion training on GPU; write metrics and checkpoints frequently
+          /workspace/erm-rust/bin/erm diffusion-train \
+            --data "$ALICE_DIR/alice.txt" \
+            --steps 10000 \
+            --config /workspace/erm-rust/data/train_config.json \
+            --backend gpu \
+            --log-every 50 \
+            --checkpoint-every 250 \
+            --checkpoint-dir "$CKPT_DIR" \
+            2>&1 | tee /workspace/erm-rust/data/experiments/alice-run/console.log
+
+          EXIT=$?
+          echo "=== alice-run complete (exit=$EXIT) | $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+          exit $EXIT
+        resources:
+          requests:
+            memory: "8Gi"
+            cpu: "2"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: "16Gi"
+            cpu: "4"
+            nvidia.com/gpu: "1"
+        env:
+        - name: LD_LIBRARY_PATH
+          value: /usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: compute,utility
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: all
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: WGPU_BACKEND
+          value: vulkan
+        - name: RUST_BACKTRACE
+          value: "1"
+        volumeMounts:
+        - name: erm-rust
+          mountPath: /workspace/erm-rust
+        - name: rust-pcn
+          mountPath: /workspace/rust-pcn
+        - name: cuda-13-0
+          mountPath: /usr/local/cuda-13.0
+          readOnly: true
+        - name: cuda-13-1
+          mountPath: /usr/local/cuda
+          readOnly: true
+      volumes:
+      - name: erm-rust
+        hostPath:
+          path: /home/kadajett/dev/erm-rust
+          type: Directory
+      - name: rust-pcn
+        hostPath:
+          path: /home/kadajett/dev/rust-pcn
+          type: Directory
+      - name: cuda-13-0
+        hostPath:
+          path: /usr/local/cuda-13.0
+      - name: cuda-13-1
+        hostPath:
+          path: /usr/local/cuda-13.1
