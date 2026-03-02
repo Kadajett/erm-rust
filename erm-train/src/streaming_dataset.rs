@@ -209,16 +209,27 @@ fn producer_loop<T: TokenizerApi>(
             }
         }
 
-        // Emit any partial last batch (zero-padded to full batch).
+        // Emit any partial last batch, padded to full batch_size by repeating
+        // sequences (the graph/ant state expect a fixed batch_size).
         if !pending.is_empty() && pending.len() >= config.seq_len {
             let complete_seqs = pending.len() / config.seq_len;
             let batch_seqs = complete_seqs.min(config.batch_size);
             if batch_seqs > 0 {
-                let batch_tokens: Vec<u32> =
+                let mut batch_tokens: Vec<u32> =
                     pending.drain(..batch_seqs * config.seq_len).collect();
+
+                // Pad to full batch_size by repeating the first sequence.
+                while batch_tokens.len() < config.batch_size * config.seq_len {
+                    let pad_start = 0;
+                    let pad_end = config.seq_len.min(batch_tokens.len());
+                    let pad_seq: Vec<u32> = batch_tokens[pad_start..pad_end].to_vec();
+                    batch_tokens.extend_from_slice(&pad_seq);
+                }
+                batch_tokens.truncate(config.batch_size * config.seq_len);
+
                 let batch = TokenBatch {
                     tokens: batch_tokens,
-                    batch_size: batch_seqs,
+                    batch_size: config.batch_size,
                     seq_len: config.seq_len,
                 };
                 if tx.send(Ok(batch)).is_err() {
