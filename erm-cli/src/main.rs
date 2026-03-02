@@ -165,6 +165,29 @@ enum Commands {
         batch_idx: usize,
     },
 
+    /// Produce a live I/O example from a warmstart checkpoint.
+    IoExample {
+        /// Path to training data (plain text file).
+        #[arg(long)]
+        data: String,
+
+        /// Path to warmstart checkpoint directory.
+        #[arg(long)]
+        checkpoint: String,
+
+        /// Path to config file (JSON). Uses defaults if not provided.
+        #[arg(long)]
+        config: Option<String>,
+
+        /// Output JSON file path for the I/O example.
+        #[arg(long, default_value = "io_example.json")]
+        output: String,
+
+        /// Random seed.
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
+
     /// Generate a GIF animation from graph snapshots.
     GenerateGif {
         /// Directory containing snapshot JSON files.
@@ -256,6 +279,15 @@ fn main() {
                 log_every,
                 checkpoint_dir.as_deref(),
             );
+        }
+        Commands::IoExample {
+            data,
+            checkpoint,
+            config,
+            output,
+            seed,
+        } => {
+            run_io_example(&data, &checkpoint, config.as_deref(), &output, seed);
         }
         Commands::RenderGraph {
             snapshot,
@@ -745,6 +777,201 @@ fn colony_train_loop<B: burn::tensor::backend::AutodiffBackend>(
             std::process::exit(1);
         }
     }
+}
+
+/// Produce a live I/O example from warmstart checkpoint.
+fn run_io_example(
+    data_path: &str,
+    checkpoint_dir: &str,
+    config_path: Option<&str>,
+    output_path: &str,
+    seed: u64,
+) {
+    let erm_cfg = load_config(config_path);
+
+    let text = match std::fs::read_to_string(data_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("ERROR: cannot read data file '{data_path}': {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let tokenizer = erm_core::tokenizer::CharTokenizer::from_text(&text);
+    let vocab_size = tokenizer.vocab_size();
+    let mut cfg = erm_cfg;
+    cfg.vocab_size = vocab_size;
+
+    let dataset = match erm_train::dataset::TextDataset::from_text(&text, &tokenizer, cfg.seq_len) {
+        Ok(ds) => ds,
+        Err(e) => {
+            eprintln!("ERROR: cannot build dataset: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Run with CPU backend.
+    io_example_loop::<burn_autodiff::Autodiff<burn_ndarray::NdArray<f32>>>(
+        &cfg,
+        &dataset,
+        checkpoint_dir,
+        output_path,
+        seed,
+        &tokenizer,
+        Default::default(),
+    );
+}
+
+/// Generic I/O example loop parameterised by backend.
+fn io_example_loop<B: burn::tensor::backend::AutodiffBackend>(
+    cfg: &erm_core::ErmConfig,
+    dataset: &erm_train::dataset::TextDataset,
+    checkpoint_dir: &str,
+    output_path: &str,
+    seed: u64,
+    tokenizer: &erm_core::tokenizer::CharTokenizer,
+    device: B::Device,
+) {
+    use erm_train::bridge::{tensor_to_vec, tokens_to_tensor};
+    use erm_train::colony_training::ColonyTrainer;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+
+    let mut trainer = ColonyTrainer::<B>::new(cfg, device.clone());
+
+    // Load warmstart checkpoint.
+    if let Err(e) = trainer.load_warmstart(checkpoint_dir) {
+        eprintln!("ERROR: cannot load warmstart checkpoint: {e}");
+        std::process::exit(1);
+    }
+    println!("Loaded warmstart checkpoint from: {checkpoint_dir}");
+
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let batch = dataset.get_batch(cfg.batch_size, &mut rng);
+    let b = batch.batch_size;
+    let l = batch.seq_len;
+    let vocab_size = cfg.total_vocab_size();
+
+    // Corrupt the batch.
+    let t_val = 3.min(cfg.refinement_steps);
+    let x_i32: Vec<i32> = batch.tokens.iter().map(|&tk| tk as i32).collect();
+    let corruption = erm_core::corruption::corrupt(&x_i32, t_val, cfg, &mut rng)
+        .expect("corruption should succeed");
+    let y_t_flat = &corruption.y_t;
+    let y_t_u32: Vec<u32> = y_t_flat.iter().map(|&v| v as u32).collect();
+
+    // Forward pass to get logits.
+    let tokens_tensor =
+        tokens_to_tensor::<B>(&y_t_u32, b, l, &device).expect("token tensor creation");
+    let (logits_tensor, _) = trainer.scorer.forward(tokens_tensor);
+    let logits_cpu = tensor_to_vec(logits_tensor).expect("logits transfer");
+
+    // Run colony step for edits.
+    let colony_result = trainer
+        .colony_train_step(&batch, Some(t_val), &mut rng)
+        .expect("colony step");
+
+    // Build I/O example for batch_idx=0.
+    let batch_idx = 0;
+    let x_seq = &x_i32[batch_idx * l..(batch_idx + 1) * l];
+    let y_t_seq = &y_t_u32[batch_idx * l..(batch_idx + 1) * l];
+    let seq_logits = &logits_cpu[batch_idx * l * vocab_size..(batch_idx + 1) * l * vocab_size];
+
+    // Decode original clean string.
+    let clean_tokens: Vec<u32> = x_seq.iter().map(|&v| v as u32).collect();
+    let clean_string = tokenizer.decode(&clean_tokens);
+
+    // Build corrupted string with masks shown.
+    let corrupted_string = tokenizer.decode(y_t_seq);
+
+    // Find masked positions and top-3 predictions.
+    let mask_id = cfg.mask_token_id() as u32;
+    let mut masked_positions = Vec::new();
+
+    for pos in 0..l {
+        if y_t_seq[pos] == mask_id || y_t_seq[pos] != clean_tokens[pos] {
+            let pos_logits = &seq_logits[pos * vocab_size..(pos + 1) * vocab_size];
+
+            // Softmax.
+            let max_logit = pos_logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let exps: Vec<f32> = pos_logits.iter().map(|&v| (v - max_logit).exp()).collect();
+            let sum_exps: f32 = exps.iter().sum();
+            let probs: Vec<f32> = exps.iter().map(|&e| e / sum_exps).collect();
+
+            // Top-3.
+            let mut indexed: Vec<(usize, f32)> = probs.iter().copied().enumerate().collect();
+            indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let top3: Vec<serde_json::Value> = indexed
+                .iter()
+                .take(3)
+                .map(|(tok, prob)| {
+                    let ch = tokenizer.decode(&[*tok as u32]);
+                    serde_json::json!({
+                        "token_id": tok,
+                        "char": ch,
+                        "probability": format!("{:.4}", prob),
+                    })
+                })
+                .collect();
+
+            let ground_truth_char = tokenizer.decode(&[clean_tokens[pos]]);
+            let is_mask = y_t_seq[pos] == mask_id;
+
+            masked_positions.push(serde_json::json!({
+                "position": pos,
+                "corruption_type": if is_mask { "MASK" } else { "REPLACE" },
+                "ground_truth_token": clean_tokens[pos],
+                "ground_truth_char": ground_truth_char,
+                "corrupted_token": y_t_seq[pos],
+                "top_3_predictions": top3,
+            }));
+        }
+    }
+
+    // Build the full I/O example JSON.
+    let io_example = serde_json::json!({
+        "metadata": {
+            "checkpoint_dir": checkpoint_dir,
+            "seed": seed,
+            "batch_size": b,
+            "seq_len": l,
+            "vocab_size": vocab_size,
+            "corruption_step_t": t_val,
+            "model_loss": colony_result.loss,
+        },
+        "batch_item_0": {
+            "clean_string": clean_string,
+            "corrupted_string": corrupted_string,
+            "clean_tokens": clean_tokens,
+            "corrupted_tokens": y_t_seq,
+            "num_corrupted_positions": masked_positions.len(),
+            "masked_position_predictions": masked_positions,
+        },
+        "colony_result": {
+            "num_edits": colony_result.num_edits,
+            "edges_pruned": colony_result.edges_pruned,
+            "edges_inserted": colony_result.edges_inserted,
+            "deaths": colony_result.deaths,
+            "mean_phi": colony_result.pheromone_stats.mean_phi,
+            "ant_deltas_sample": colony_result.ant_deltas.iter().take(10).copied().collect::<Vec<f32>>(),
+        },
+    });
+
+    // Write output.
+    let json_str = serde_json::to_string_pretty(&io_example).expect("JSON serialization");
+    std::fs::write(output_path, &json_str).expect("write output file");
+    println!("I/O example saved to: {output_path}");
+    println!(
+        "  Clean:     {}",
+        clean_string.chars().take(80).collect::<String>()
+    );
+    println!(
+        "  Corrupted: {}",
+        corrupted_string.chars().take(80).collect::<String>()
+    );
+    println!("  Masked positions: {}", masked_positions.len());
+    println!("  Colony edits: {}", colony_result.num_edits);
+    println!("  Loss: {:.4}", colony_result.loss);
 }
 
 /// Render a graph snapshot to SVG file.
