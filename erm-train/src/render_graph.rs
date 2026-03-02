@@ -1,11 +1,125 @@
 //! Graph renderer for visualizing RouteGraph snapshots.
 //!
-//! Renders graph structure as SVG for animation frames.
+//! Renders graph structure as SVG for animation frames using a 2D
+//! force-directed layout (deterministic Fruchterman-Reingold approximation).
 
 use crate::graph_snapshot::GraphSnapshot;
 use erm_core::error::{ErmError, ErmResult};
 
-/// Render a graph snapshot to SVG string.
+/// Compute 2D positions for nodes using a deterministic force-directed layout.
+///
+/// Nodes are initially placed on a circle (deterministic). A simplified
+/// Fruchterman-Reingold is run for a fixed number of iterations using only
+/// the edges present in the graph for attractions and all-pairs repulsion
+/// (quadratic, but L is typically ≤ 128 so this is fine).
+///
+/// Returns `(xs, ys)` in pixel coordinates within `[margin, width-margin]`
+/// and `[margin, height-margin]`.
+fn compute_2d_layout(
+    snapshot: &GraphSnapshot,
+    batch_idx: usize,
+    width: i32,
+    height: i32,
+    margin: i32,
+) -> (Vec<f32>, Vec<f32>) {
+    let l = snapshot.graph.seq_len;
+    let e = snapshot.graph.emax;
+    let graph_w = (width - 2 * margin) as f32;
+    let graph_h = (height - 2 * margin) as f32;
+    let cx = width as f32 / 2.0;
+    let cy = height as f32 / 2.0;
+
+    // Initial placement: nodes on a circle (deterministic).
+    let radius = graph_w.min(graph_h) * 0.35;
+    let mut xs = vec![0.0_f32; l];
+    let mut ys = vec![0.0_f32; l];
+    for i in 0..l {
+        let angle = 2.0 * std::f32::consts::PI * (i as f32) / (l as f32);
+        xs[i] = cx + radius * angle.cos();
+        ys[i] = cy + radius * angle.sin();
+    }
+
+    // Collect adjacency for attraction forces (undirected).
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); l];
+    #[allow(clippy::needless_range_loop)]
+    for li in 0..l {
+        for ei in 0..e {
+            let idx = snapshot.graph.idx(batch_idx, li, ei);
+            let nbr = snapshot.graph.nbr_idx[idx];
+            if nbr >= 0 && (nbr as usize) < l {
+                adj[li].push(nbr as usize);
+            }
+        }
+    }
+
+    // Fruchterman-Reingold parameters.
+    let area = graph_w * graph_h;
+    let k = (area / l.max(1) as f32).sqrt(); // ideal edge length
+    let iterations = 50;
+    let mut temperature = graph_w.min(graph_h) * 0.1;
+    let cooling = temperature / iterations as f32;
+
+    let min_x = margin as f32;
+    let max_x = (width - margin) as f32;
+    let min_y = (margin + 40) as f32; // leave room for title
+    let max_y = (height - margin - 50) as f32; // leave room for legend
+
+    for _ in 0..iterations {
+        let mut dx = vec![0.0_f32; l];
+        let mut dy = vec![0.0_f32; l];
+
+        // Repulsive forces (all pairs).
+        for i in 0..l {
+            for j in (i + 1)..l {
+                let diffx = xs[i] - xs[j];
+                let diffy = ys[i] - ys[j];
+                let dist = (diffx * diffx + diffy * diffy).sqrt().max(0.01);
+                let force = (k * k) / dist;
+                let fx = (diffx / dist) * force;
+                let fy = (diffy / dist) * force;
+                dx[i] += fx;
+                dy[i] += fy;
+                dx[j] -= fx;
+                dy[j] -= fy;
+            }
+        }
+
+        // Attractive forces (edges).
+        #[allow(clippy::needless_range_loop)]
+        for i in 0..l {
+            for &j in &adj[i] {
+                let diffx = xs[i] - xs[j];
+                let diffy = ys[i] - ys[j];
+                let dist = (diffx * diffx + diffy * diffy).sqrt().max(0.01);
+                let force = (dist * dist) / k;
+                let fx = (diffx / dist) * force;
+                let fy = (diffy / dist) * force;
+                dx[i] -= fx;
+                dy[i] -= fy;
+            }
+        }
+
+        // Apply displacements, clamped by temperature.
+        for i in 0..l {
+            let disp = (dx[i] * dx[i] + dy[i] * dy[i]).sqrt().max(0.01);
+            let scale = temperature.min(disp) / disp;
+            xs[i] += dx[i] * scale;
+            ys[i] += dy[i] * scale;
+            // Clamp to bounds.
+            xs[i] = xs[i].clamp(min_x, max_x);
+            ys[i] = ys[i].clamp(min_y, max_y);
+        }
+
+        temperature -= cooling;
+        if temperature < 0.0 {
+            temperature = 0.0;
+        }
+    }
+
+    (xs, ys)
+}
+
+/// Render a graph snapshot to SVG string using a 2D force-directed layout.
 ///
 /// # Arguments
 /// * `snapshot` — The graph snapshot to render
@@ -26,14 +140,11 @@ pub fn render_snapshot_to_svg(snapshot: &GraphSnapshot, batch_idx: usize) -> Erm
 
     // Canvas dimensions
     let width = 1200;
-    let height = 400;
+    let height = 800;
     let margin = 50;
-    let graph_width = width - 2 * margin;
-    let _graph_height = height - 2 * margin;
 
-    // Position nodes horizontally
-    let node_y = height / 2;
-    let node_spacing = graph_width as f32 / (l as f32 - 1.0).max(1.0);
+    // Compute 2D positions via force-directed layout.
+    let (node_x, node_y) = compute_2d_layout(snapshot, batch_idx, width, height, margin);
 
     // Calculate incoming pheromone per node for node sizing
     let mut node_incoming_phi = vec![0.0_f32; l];
@@ -52,7 +163,7 @@ pub fn render_snapshot_to_svg(snapshot: &GraphSnapshot, batch_idx: usize) -> Erm
     // Build SVG
     let mut svg = String::new();
 
-    // Header with proper escaping
+    // Header
     svg.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     svg.push_str(&format!(
         "<svg width=\"{}\" height=\"{}\" xmlns=\"http://www.w3.org/2000/svg\">\n",
@@ -82,9 +193,10 @@ pub fn render_snapshot_to_svg(snapshot: &GraphSnapshot, batch_idx: usize) -> Erm
     ));
     svg.push_str("</text>\n");
 
-    // Draw edges first (so they're behind nodes)
+    // Draw edges first (behind nodes).
     for li in 0..l {
-        let dest_x = margin + (li as f32 * node_spacing) as i32;
+        let dx = node_x[li];
+        let dy = node_y[li];
 
         for ei in 0..e {
             let idx = snapshot.graph.idx(batch_idx, li, ei);
@@ -92,82 +204,77 @@ pub fn render_snapshot_to_svg(snapshot: &GraphSnapshot, batch_idx: usize) -> Erm
 
             if src >= 0 && src < l as i32 {
                 let src_idx = src as usize;
-                let src_x = margin + (src_idx as f32 * node_spacing) as i32;
+                let sx = node_x[src_idx];
+                let sy = node_y[src_idx];
                 let phi = snapshot.graph.phi[idx];
                 let is_leader = snapshot.graph.leader_edge[idx];
 
-                // Color based on pheromone (blue=low, red=high)
+                // Color based on pheromone (blue=low, red=high).
                 let intensity = (phi / 2.0).min(1.0);
                 let r = (intensity * 255.0) as u8;
                 let g = ((1.0 - intensity) * 100.0) as u8;
                 let b = ((1.0 - intensity) * 255.0) as u8;
                 let color = format!("#{:02x}{:02x}{:02x}", r, g, b);
 
-                // Stroke width based on pheromone
+                // Stroke width based on pheromone.
                 let stroke_width = 1.0 + phi * 2.0;
-
-                // Draw edge as curved line
-                let control_y = if src_idx < li {
-                    node_y - 50 - (li - src_idx) as i32 * 2
-                } else {
-                    node_y + 50 + (src_idx - li) as i32 * 2
-                };
-
                 let opacity = 0.3 + intensity * 0.7;
 
-                if is_leader {
-                    svg.push_str(&format!(
-                        "<path d=\"M {} {} Q {} {}, {} {}\" stroke=\"{}\" stroke-width=\"{}\" fill=\"none\" marker-end=\"url(#arrowhead)\" stroke-dasharray=\"5,3\" opacity=\"{}\"/>\n",
-                        src_x, node_y,
-                        (src_x + dest_x) / 2, control_y,
-                        dest_x, node_y,
-                        color,
-                        stroke_width,
-                        opacity
-                    ));
+                // Quadratic Bezier with control point offset perpendicular to the edge.
+                let mx = (sx + dx) / 2.0;
+                let my = (sy + dy) / 2.0;
+                let edge_dx = dx - sx;
+                let edge_dy = dy - sy;
+                let edge_len = (edge_dx * edge_dx + edge_dy * edge_dy).sqrt().max(1.0);
+                // Perpendicular offset proportional to edge length (capped).
+                let perp_scale = (edge_len * 0.15).min(30.0);
+                let cx = mx + (-edge_dy / edge_len) * perp_scale;
+                let cy = my + (edge_dx / edge_len) * perp_scale;
+
+                let dash = if is_leader {
+                    " stroke-dasharray=\"5,3\""
                 } else {
-                    svg.push_str(&format!(
-                        "<path d=\"M {} {} Q {} {}, {} {}\" stroke=\"{}\" stroke-width=\"{}\" fill=\"none\" marker-end=\"url(#arrowhead)\" opacity=\"{}\"/>\n",
-                        src_x, node_y,
-                        (src_x + dest_x) / 2, control_y,
-                        dest_x, node_y,
-                        color,
-                        stroke_width,
-                        opacity
-                    ));
-                }
+                    ""
+                };
+
+                svg.push_str(&format!(
+                    "<path d=\"M {:.1} {:.1} Q {:.1} {:.1}, {:.1} {:.1}\" stroke=\"{}\" stroke-width=\"{:.1}\" fill=\"none\" marker-end=\"url(#arrowhead)\"{} opacity=\"{:.2}\"/>\n",
+                    sx, sy, cx, cy, dx, dy,
+                    color, stroke_width, dash, opacity
+                ));
             }
         }
     }
 
-    // Draw nodes
+    // Draw nodes.
     #[allow(clippy::needless_range_loop)]
     for li in 0..l {
-        let x = margin + (li as f32 * node_spacing) as i32;
+        let x = node_x[li];
+        let y = node_y[li];
         let incoming = node_incoming_phi[li];
 
-        // Node radius based on incoming pheromone
+        // Node radius based on incoming pheromone.
         let radius = 3.0 + (incoming / max_incoming.max(1.0)) * 10.0;
 
-        // Node color based on position (gradient from blue to purple)
+        // Node color based on position (gradient from blue to purple).
         let hue = 220 + (li * 40 / l.max(1));
         let color = format!("hsl({}, 70%, 60%)", hue);
 
         svg.push_str(&format!(
-            "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{}\" stroke=\"#fff\" stroke-width=\"1\"/>\n",
-            x, node_y, radius, color
+            "<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"{:.1}\" fill=\"{}\" stroke=\"#fff\" stroke-width=\"1\"/>\n",
+            x, y, radius, color
         ));
 
-        // Position label for every 10th node
+        // Position label for every 10th node or last node.
         if li % 10 == 0 || li == l - 1 {
             svg.push_str(&format!(
-                "<text x=\"{}\" y=\"{}\" font-family=\"sans-serif\" font-size=\"10\" fill=\"#aaa\" text-anchor=\"middle\">{}</text>\n",
-                x, node_y + 25, li
+                "<text x=\"{:.1}\" y=\"{:.1}\" font-family=\"sans-serif\" font-size=\"10\" fill=\"#aaa\" text-anchor=\"middle\">{}</text>\n",
+                x, y + radius + 12.0, li
             ));
         }
     }
 
-    // Legend
+    // Legend.
     svg.push_str(&format!(
         "<g transform=\"translate({}, {})\">\n",
         margin,
@@ -179,7 +286,7 @@ pub fn render_snapshot_to_svg(snapshot: &GraphSnapshot, batch_idx: usize) -> Erm
     );
     svg.push_str("<text x=\"0\" y=\"20\" font-family=\"sans-serif\" font-size=\"12\" fill=\"#aaa\">- - Leader edge</text>\n");
     svg.push_str("<line x1=\"100\" y1=\"16\" x2=\"140\" y2=\"16\" stroke=\"#888\" stroke-width=\"2\" stroke-dasharray=\"5,3\"/>\n");
-    svg.push_str("<text x=\"0\" y=\"40\" font-family=\"sans-serif\" font-size=\"12\" fill=\"#888\">Color = pheromone φ (blue→red)</text>\n");
+    svg.push_str("<text x=\"0\" y=\"40\" font-family=\"sans-serif\" font-size=\"12\" fill=\"#888\">Color = pheromone φ (blue→red) | 2D force-directed layout</text>\n");
     svg.push_str("</g>\n");
     svg.push_str("</svg>\n");
 
@@ -223,7 +330,6 @@ pub fn render_summary(snapshot: &GraphSnapshot) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph_snapshot::GraphSnapshot;
     use erm_core::ants::AntState;
     use erm_core::config::ErmConfig;
     use erm_core::graph::RouteGraph;
