@@ -18,6 +18,7 @@
 use burn::optim::decay::WeightDecayConfig;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::prelude::*;
+use burn::record::{BinFileRecorder, FullPrecisionSettings, Recorder};
 use burn::tensor::backend::AutodiffBackend;
 
 use rand::Rng;
@@ -29,7 +30,7 @@ use erm_core::ants::{
 use erm_core::burn_scorer::{BurnScorer, BurnScorerConfig};
 use erm_core::config::{ErmConfig, PheromoneConfig};
 use erm_core::corruption::corrupt;
-use erm_core::error::ErmResult;
+use erm_core::error::{ErmError, ErmResult};
 use erm_core::graph::RouteGraph;
 use erm_core::merge::{compute_ant_deltas, merge_proposals};
 use erm_core::pheromone::{build_edge_traces, prune_edges, update_pheromones, PheromoneStats};
@@ -374,6 +375,80 @@ impl<B: AutodiffBackend> ColonyTrainer<B> {
             edges_inserted,
             deaths,
         })
+    }
+
+    /// Save scorer weights to a directory using burn's binary file recorder.
+    ///
+    /// The scorer record is saved as `scorer.bin` in the specified directory.
+    /// Graph and ant state are saved as JSON alongside it.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if directory creation or file writes fail.
+    pub fn save_warmstart(&self, dir: &str) -> ErmResult<()> {
+        std::fs::create_dir_all(dir).map_err(|e| {
+            ErmError::InvalidConfig(format!("cannot create warmstart dir {dir}: {e}"))
+        })?;
+
+        // Save scorer weights via burn recorder.
+        let recorder = BinFileRecorder::<FullPrecisionSettings>::default();
+        let scorer_path = format!("{dir}/scorer");
+        recorder
+            .record(
+                self.scorer.clone().into_record(),
+                scorer_path.clone().into(),
+            )
+            .map_err(|e| ErmError::InvalidConfig(format!("cannot save scorer weights: {e}")))?;
+
+        // Save graph.
+        let graph_json = serde_json::to_string_pretty(&self.graph)?;
+        std::fs::write(format!("{dir}/graph.json"), graph_json)
+            .map_err(|e| ErmError::InvalidConfig(format!("cannot write graph.json: {e}")))?;
+
+        // Save ant state.
+        let ant_json = serde_json::to_string_pretty(&self.ant_state)?;
+        std::fs::write(format!("{dir}/ant_state.json"), ant_json)
+            .map_err(|e| ErmError::InvalidConfig(format!("cannot write ant_state.json: {e}")))?;
+
+        // Save config.
+        let config_json = serde_json::to_string_pretty(&self.config)?;
+        std::fs::write(format!("{dir}/config.json"), config_json)
+            .map_err(|e| ErmError::InvalidConfig(format!("cannot write config.json: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Load scorer weights from a warmstart checkpoint directory.
+    ///
+    /// Loads the burn scorer record from `scorer.bin`, the graph from
+    /// `graph.json`, and the ant state from `ant_state.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if files cannot be read or parsed.
+    pub fn load_warmstart(&mut self, dir: &str) -> ErmResult<()> {
+        // Load scorer weights via burn recorder.
+        let recorder = BinFileRecorder::<FullPrecisionSettings>::default();
+        let scorer_path = format!("{dir}/scorer");
+        let record = recorder
+            .load::<<BurnScorer<B> as burn::module::Module<B>>::Record>(
+                scorer_path.into(),
+                &self.device,
+            )
+            .map_err(|e| ErmError::InvalidConfig(format!("cannot load scorer weights: {e}")))?;
+        self.scorer = self.scorer.clone().load_record(record);
+
+        // Load graph.
+        let graph_json = std::fs::read_to_string(format!("{dir}/graph.json"))
+            .map_err(|e| ErmError::InvalidConfig(format!("cannot read graph.json: {e}")))?;
+        self.graph = serde_json::from_str(&graph_json)?;
+
+        // Load ant state.
+        let ant_json = std::fs::read_to_string(format!("{dir}/ant_state.json"))
+            .map_err(|e| ErmError::InvalidConfig(format!("cannot read ant_state.json: {e}")))?;
+        self.ant_state = serde_json::from_str(&ant_json)?;
+
+        Ok(())
     }
 }
 

@@ -730,6 +730,15 @@ fn colony_train_loop<B: burn::tensor::backend::AutodiffBackend>(
                     last.loss, last.num_edits, last.mean_phi
                 );
             }
+
+            // Save warmstart checkpoint if checkpoint_dir is set.
+            if let Some(dir) = checkpoint_dir {
+                let warmstart_dir = format!("{dir}/warmstart");
+                match orch.trainer.save_warmstart(&warmstart_dir) {
+                    Ok(()) => println!("Warmstart checkpoint saved to: {warmstart_dir}"),
+                    Err(e) => eprintln!("WARNING: failed to save warmstart checkpoint: {e}"),
+                }
+            }
         }
         Err(e) => {
             eprintln!("ERROR during colony training: {e}");
