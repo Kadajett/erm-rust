@@ -12,6 +12,9 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+burn = { workspace = true }
+burn-ndarray = { workspace = true }
+burn-autodiff = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

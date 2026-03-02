@@ -14,6 +14,7 @@
 //! - [`bench`] — throughput and memory benchmarking harness
 
 pub mod bench;
+pub mod burn_training;
 pub mod comparison;
 pub mod dataset;
 pub mod eval;

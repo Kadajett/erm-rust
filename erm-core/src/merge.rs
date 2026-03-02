@@ -407,7 +407,7 @@ mod tests {
         let logits_before = vec![0.0_f32; seq_len * vocab_size];
         let mut logits_after = vec![0.0_f32; seq_len * vocab_size];
         // logits_after[pos=1, token=5] = 2.0
-        logits_after[1 * vocab_size + 5] = 2.0;
+        logits_after[vocab_size + 5] = 2.0;
 
         let deltas = compute_ant_deltas(
             &proposals,

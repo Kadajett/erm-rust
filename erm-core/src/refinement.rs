@@ -951,9 +951,9 @@ mod tests {
         let result = refine_step(&y_t, &scorer, &graph, 0, &cfg, &editable, &mut rng).unwrap();
 
         // Non-editable positions must be unchanged.
-        for i in 2..cfg.seq_len {
+        for (i, (new_val, old_val)) in result.y_new.iter().zip(y_t.iter()).enumerate().skip(2) {
             assert_eq!(
-                result.y_new[i], y_t[i],
+                *new_val, *old_val,
                 "position {i} should be unchanged (non-editable)"
             );
         }

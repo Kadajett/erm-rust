@@ -250,7 +250,9 @@ impl Orchestrator {
 
         if let Some(dir) = checkpoint_dir {
             if self.config.checkpoint_every > 0
-                && self.global_step.is_multiple_of(self.config.checkpoint_every)
+                && self
+                    .global_step
+                    .is_multiple_of(self.config.checkpoint_every)
             {
                 self.save_checkpoint(dir, phase)?;
             }

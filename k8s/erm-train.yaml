@@ -1,0 +1,86 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: erm-train-v1
+  namespace: pcn-train
+  labels:
+    app: erm-train
+spec:
+  # No runtimeClassName: nvidia — ERM is CPU-only (Vec<f32>), no GPU needed yet.
+  # GPU time-sharing can be enabled later when burn/CUDA tensors are added.
+  restartPolicy: Never
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/hostname
+            operator: In
+            values:
+            - theshire
+  containers:
+  - name: erm-train
+    image: debian:bookworm-slim
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      set -e
+      echo "=== ERM Training Pod Starting ==="
+      echo "Host: $(hostname)"
+      echo "CPUs: $(nproc)"
+      echo "Memory: $(free -h | head -2)"
+      echo ""
+
+      # Verify binary exists and is executable
+      if [ ! -x /workspace/erm-rust/bin/erm ]; then
+        echo "ERROR: /workspace/erm-rust/bin/erm not found or not executable"
+        ls -la /workspace/erm-rust/bin/ 2>/dev/null || echo "bin dir missing"
+        exit 1
+      fi
+
+      echo "Binary: $(file /workspace/erm-rust/bin/erm 2>/dev/null || echo 'file cmd not available')"
+      echo ""
+
+      # Verify training data
+      CORPUS=/workspace/erm-rust/data/text/corpus.txt
+      if [ ! -f "$CORPUS" ]; then
+        echo "ERROR: Training corpus not found at $CORPUS"
+        exit 1
+      fi
+      echo "Corpus: $(wc -c < $CORPUS) bytes, $(wc -l < $CORPUS) lines"
+      echo ""
+
+      echo "=== Starting Training ==="
+      echo "Steps: 10000 (warmstart: 1000, colony: 9000)"
+      echo ""
+
+      # Run training
+      /workspace/erm-rust/bin/erm train \
+        --data "$CORPUS" \
+        --steps 10000 \
+        --warmstart 1000 \
+        2>&1 | tee /workspace/erm-rust/data/train-log.txt
+
+      echo ""
+      echo "=== Training Complete ==="
+      echo "Log saved to /workspace/erm-rust/data/train-log.txt"
+    resources:
+      requests:
+        memory: "2Gi"
+        cpu: "2"
+      limits:
+        memory: "4Gi"
+        cpu: "4"
+    volumeMounts:
+    - name: workspace
+      mountPath: /workspace
+    - name: bulk-storage
+      mountPath: /bulk-storage
+      readOnly: true
+  volumes:
+  - name: workspace
+    hostPath:
+      path: /home/kadajett/dev
+  - name: bulk-storage
+    hostPath:
+      path: /bulk-storage

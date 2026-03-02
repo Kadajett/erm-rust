@@ -618,7 +618,7 @@ mod tests {
         ];
 
         // edge_weights: [B=1, L=4, Emax=3]
-        let mut edge_weights = vec![0.0_f32; 1 * 4 * 3];
+        let mut edge_weights = vec![0.0_f32; 4 * 3];
         // Position 0: slot 0 has weight 0.6, slot 1 has weight 0.4
         edge_weights[0] = 0.6;
         edge_weights[1] = 0.4;

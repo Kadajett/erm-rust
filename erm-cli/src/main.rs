@@ -6,7 +6,7 @@
 //! - `eval` — evaluate a checkpoint (scorer forward + loss)
 //! - `bench` — throughput and memory benchmarks
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 /// Emergent Route Model — CLI entrypoint.
 #[derive(Parser, Debug)]
@@ -98,6 +98,38 @@ enum Commands {
         #[arg(long, default_value = "10")]
         iters: usize,
     },
+
+    /// Train the model using burn tensors (GPU-accelerated).
+    BurnTrain {
+        /// Path to training data (plain text file).
+        #[arg(long)]
+        data: String,
+
+        /// Number of training steps.
+        #[arg(long, default_value = "1000")]
+        steps: usize,
+
+        /// Path to config file (JSON). Uses defaults if not provided.
+        #[arg(long)]
+        config: Option<String>,
+
+        /// Backend to use for burn training.
+        #[arg(long, default_value = "cpu")]
+        backend: BackendChoice,
+
+        /// Log every N steps.
+        #[arg(long, default_value = "100")]
+        log_every: usize,
+    },
+}
+
+/// Backend choice for burn-based training.
+#[derive(Debug, Clone, ValueEnum)]
+enum BackendChoice {
+    /// CPU backend (NdArray — portable, no GPU required).
+    Cpu,
+    /// GPU backend (wgpu — requires Vulkan/Metal/DX12).
+    Gpu,
 }
 
 fn main() {
@@ -136,6 +168,15 @@ fn main() {
             iters,
         } => {
             run_bench(batch_size, seq_len, steps, iters);
+        }
+        Commands::BurnTrain {
+            data,
+            steps,
+            config,
+            backend,
+            log_every,
+        } => {
+            run_burn_train(&data, steps, config.as_deref(), &backend, log_every);
         }
     }
 }
@@ -383,6 +424,109 @@ fn run_bench(batch_size: usize, seq_len: usize, steps: usize, iters: usize) {
     erm_train::bench::run_benchmarks(batch_size, seq_len, steps, iters);
 }
 
+fn run_burn_train(
+    data_path: &str,
+    total_steps: usize,
+    config_path: Option<&str>,
+    backend: &BackendChoice,
+    log_every: usize,
+) {
+    let erm_cfg = load_config(config_path);
+
+    // Read training text.
+    let text = match std::fs::read_to_string(data_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("ERROR: cannot read data file '{data_path}': {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let tokenizer = erm_core::tokenizer::CharTokenizer::from_text(&text);
+    let vocab_size = tokenizer.vocab_size();
+    let mut cfg = erm_cfg;
+    cfg.vocab_size = vocab_size;
+
+    let dataset = match erm_train::dataset::TextDataset::from_text(&text, &tokenizer, cfg.seq_len) {
+        Ok(ds) => ds,
+        Err(e) => {
+            eprintln!("ERROR: cannot build dataset: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match backend {
+        BackendChoice::Cpu => {
+            burn_train_loop::<burn_autodiff::Autodiff<burn_ndarray::NdArray<f32>>>(
+                &cfg,
+                &dataset,
+                total_steps,
+                log_every,
+                Default::default(),
+            );
+        }
+        BackendChoice::Gpu => {
+            let device = burn_wgpu::WgpuDevice::default();
+            burn_train_loop::<burn_autodiff::Autodiff<burn_wgpu::Wgpu>>(
+                &cfg,
+                &dataset,
+                total_steps,
+                log_every,
+                device,
+            );
+        }
+    }
+}
+
+/// Generic burn training loop parameterised by backend.
+fn burn_train_loop<B: burn::tensor::backend::AutodiffBackend>(
+    cfg: &erm_core::ErmConfig,
+    dataset: &erm_train::dataset::TextDataset,
+    total_steps: usize,
+    log_every: usize,
+    device: B::Device,
+) {
+    use erm_train::burn_training::BurnTrainer;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+
+    let mut trainer = BurnTrainer::<B>::new(cfg, device);
+    let mut rng = ChaCha8Rng::seed_from_u64(42);
+
+    println!(
+        "Burn training: steps={total_steps}, vocab={}, hidden={}, backend={}",
+        cfg.vocab_size,
+        cfg.hidden_dim,
+        std::any::type_name::<B>(),
+    );
+
+    let mut recent_losses = Vec::new();
+    for step in 0..total_steps {
+        let batch = dataset.get_batch(cfg.batch_size, &mut rng);
+        match trainer.train_step(&batch, None, cfg, &mut rng) {
+            Ok(loss) => {
+                recent_losses.push(loss);
+                if (step + 1) % log_every == 0 || step == total_steps - 1 {
+                    let avg_loss: f32 =
+                        recent_losses.iter().sum::<f32>() / recent_losses.len() as f32;
+                    println!(
+                        "  step {}/{total_steps} — avg loss: {avg_loss:.4} (last {}: {loss:.4})",
+                        step + 1,
+                        recent_losses.len(),
+                    );
+                    recent_losses.clear();
+                }
+            }
+            Err(e) => {
+                eprintln!("ERROR at step {step}: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    println!("Burn training complete.");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,5 +605,39 @@ mod tests {
         let cfg = load_config(None);
         assert_eq!(cfg.seq_len, 128);
         assert_eq!(cfg.vocab_size, 16_384);
+    }
+
+    #[test]
+    fn test_cli_parse_burn_train_cpu() {
+        let cli = Cli::try_parse_from([
+            "erm",
+            "burn-train",
+            "--data",
+            "test.txt",
+            "--steps",
+            "100",
+            "--backend",
+            "cpu",
+        ]);
+        assert!(cli.is_ok(), "burn-train cpu should parse");
+    }
+
+    #[test]
+    fn test_cli_parse_burn_train_gpu() {
+        let cli = Cli::try_parse_from([
+            "erm",
+            "burn-train",
+            "--data",
+            "test.txt",
+            "--backend",
+            "gpu",
+        ]);
+        assert!(cli.is_ok(), "burn-train gpu should parse");
+    }
+
+    #[test]
+    fn test_cli_parse_burn_train_defaults() {
+        let cli = Cli::try_parse_from(["erm", "burn-train", "--data", "test.txt"]);
+        assert!(cli.is_ok(), "burn-train with defaults should parse");
     }
 }

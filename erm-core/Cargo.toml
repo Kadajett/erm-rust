@@ -11,6 +11,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+burn = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+burn-ndarray = { workspace = true }

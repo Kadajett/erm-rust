@@ -17,6 +17,7 @@
 //! - [`refinement`] — one-step refinement pipeline
 
 pub mod ants;
+pub mod burn_scorer;
 pub mod config;
 pub mod corruption;
 pub mod error;

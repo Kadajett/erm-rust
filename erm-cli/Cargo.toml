@@ -18,3 +18,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+burn = { workspace = true }
+burn-ndarray = { workspace = true }
+burn-autodiff = { workspace = true }
+burn-wgpu = { workspace = true }
