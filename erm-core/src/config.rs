@@ -176,7 +176,7 @@ impl Default for ErmConfig {
             taint_zeta: 0.3,
             taint_max: 5.0,
             taint_decay: 0.05,
-            phi_max: 100.0,
+            phi_max: 10.0,
             phi_init: 0.05,
 
             route_epsilon: 1e-6,
@@ -354,7 +354,7 @@ impl Default for PheromoneConfig {
             taint_rate: 0.3,
             taint_decay: 0.05,
             taint_max: 5.0,
-            phi_max: 100.0,
+            phi_max: 10.0,
             prune_min_score: -1.0,
             prune_max_age: 1000,
             route_lambda: 1.0,
