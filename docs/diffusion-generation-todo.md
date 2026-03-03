@@ -13,9 +13,9 @@ Status legend: `[ ]` pending, `[-]` in progress, `[x]` done.
 
 3. [x] Fix inference path to use checkpoint-trained weights and proper tokenizer decode.
 
-4. [-] Make inference perform true iterative diffusion refinement (not one-way mask fill).
+4. [x] Make inference perform true iterative diffusion refinement (not one-way mask fill).
 
-5. [ ] Add automatic training-time sample dumps (`clean/corrupted/predicted`) every N steps.
+5. [-] Add automatic training-time sample dumps (`clean/corrupted/predicted`) every N steps.
 
 6. [ ] Define and run longer training milestones on existing corpus:
    - [ ] 100k steps

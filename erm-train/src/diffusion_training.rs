@@ -83,12 +83,7 @@ enum ErmOptimizer<B: AutodiffBackend> {
 }
 
 impl<B: AutodiffBackend> ErmOptimizer<B> {
-    fn step(
-        &mut self,
-        lr: f64,
-        scorer: BurnScorer<B>,
-        grads: GradientsParams,
-    ) -> BurnScorer<B> {
+    fn step(&mut self, lr: f64, scorer: BurnScorer<B>, grads: GradientsParams) -> BurnScorer<B> {
         match self {
             Self::Adam(opt) => opt.step(lr, scorer, grads),
             Self::MuonAdam(opt) => opt.step(lr, scorer, grads),
@@ -143,9 +138,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
         } else {
             ErmOptimizer::Adam(
                 AdamConfig::new()
-                    .with_weight_decay(Some(WeightDecayConfig::new(
-                        config.weight_decay as f32,
-                    )))
+                    .with_weight_decay(Some(WeightDecayConfig::new(config.weight_decay as f32)))
                     .with_grad_clipping(Some(GradientClippingConfig::Norm(
                         config.grad_clip_norm as f32,
                     )))
@@ -235,7 +228,9 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             let z_t_u32: Vec<u32> = corruption.y_t.iter().map(|&v| v as u32).collect();
 
             // Build corruption mask: 1.0 for positions changed by corrupt(), 0.0 for clean.
-            let mask_vec: Vec<f32> = corruption.y_t.iter()
+            let mask_vec: Vec<f32> = corruption
+                .y_t
+                .iter()
                 .zip(x_i32.iter())
                 .map(|(y, x)| if y != x { 1.0f32 } else { 0.0f32 })
                 .collect();
@@ -364,8 +359,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 let z_t_seq = &z_t_u32[batch_idx * l..(batch_idx + 1) * l];
 
                 // Editable mask: positions corrupted from clean tokens.
-                let editable: Vec<bool> = corruption.y_t
-                    [batch_idx * l..(batch_idx + 1) * l]
+                let editable: Vec<bool> = corruption.y_t[batch_idx * l..(batch_idx + 1) * l]
                     .iter()
                     .zip(x_i32[batch_idx * l..(batch_idx + 1) * l].iter())
                     .map(|(y, x)| y != x)
@@ -400,19 +394,13 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                     rng,
                 )?;
 
-                let mut batch_proposals = Vec::with_capacity(
-                    follower_proposals.len() + leader_proposals.len(),
-                );
+                let mut batch_proposals =
+                    Vec::with_capacity(follower_proposals.len() + leader_proposals.len());
                 batch_proposals.extend(follower_proposals);
                 batch_proposals.extend(leader_proposals);
 
-                let y_new = merge_proposals(
-                    &batch_proposals,
-                    z_t_seq,
-                    &editable,
-                    l,
-                    effective_max_edits,
-                )?;
+                let y_new =
+                    merge_proposals(&batch_proposals, z_t_seq, &editable, l, effective_max_edits)?;
 
                 let edits = z_t_seq
                     .iter()
@@ -432,7 +420,11 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             let logits_new_cpu = tensor_to_vec(logits_new_tensor)?;
 
             // Derive v_rt_new from actual logits_new tensor.
-            let actual_v_new = if bl > 0 { logits_new_cpu.len() / bl } else { v_rt };
+            let actual_v_new = if bl > 0 {
+                logits_new_cpu.len() / bl
+            } else {
+                v_rt
+            };
 
             let mut ant_deltas = vec![0.0_f32; cfg.num_ants];
             let mut position_deltas = vec![0.0_f32; b * l];
@@ -443,8 +435,14 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 let ln_end = (batch_idx + 1) * l * actual_v_new;
                 if lo_end > logits_cpu.len() || ln_end > logits_new_cpu.len() {
                     return Err(ErmError::ShapeMismatch {
-                        expected: format!("logits slice [{lo_start}..{lo_end}] and new [{ln_start}..{ln_end}]"),
-                        got: format!("logits.len()={} new.len()={}", logits_cpu.len(), logits_new_cpu.len()),
+                        expected: format!(
+                            "logits slice [{lo_start}..{lo_end}] and new [{ln_start}..{ln_end}]"
+                        ),
+                        got: format!(
+                            "logits.len()={} new.len()={}",
+                            logits_cpu.len(),
+                            logits_new_cpu.len()
+                        ),
                     });
                 }
                 let logits_b = &logits_cpu[lo_start..lo_end];
@@ -466,13 +464,8 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 }
 
                 // Per-position deltas for this batch element.
-                let pos_deltas_b = compute_position_deltas(
-                    z_t_b,
-                    y_new_b,
-                    logits_b,
-                    logits_new_b,
-                    v_rt,
-                )?;
+                let pos_deltas_b =
+                    compute_position_deltas(z_t_b, y_new_b, logits_b, logits_new_b, v_rt)?;
                 let pd_start = batch_idx * l;
                 position_deltas[pd_start..pd_start + l].copy_from_slice(&pos_deltas_b);
             }
@@ -484,13 +477,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             }
 
             // 6. Pheromone update (CPU).
-            let traces = build_edge_traces(
-                &all_proposals,
-                &edge_weights,
-                b,
-                l,
-                cfg.emax,
-            );
+            let traces = build_edge_traces(&all_proposals, &edge_weights, b, l, cfg.emax);
             let pstats = update_pheromones_with_position_credit(
                 &mut self.graph,
                 &traces,
@@ -529,11 +516,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             total_deaths += deaths;
 
             // Insert leader edges into graph.
-            let inserted = insert_leader_edges(
-                &mut self.graph,
-                &all_edge_proposals,
-                cfg,
-            );
+            let inserted = insert_leader_edges(&mut self.graph, &all_edge_proposals, cfg);
             total_inserted += inserted;
 
             // Keep final-level stats.
@@ -554,7 +537,9 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             let norm_loss = loss_tensor.mean() / (big_t as f32);
             let grads = norm_loss.backward();
             let grad_params = GradientsParams::from_grads(grads, &self.scorer);
-            self.scorer = self.optimizer.step(self.lr, self.scorer.clone(), grad_params);
+            self.scorer = self
+                .optimizer
+                .step(self.lr, self.scorer.clone(), grad_params);
 
             raw_loss / big_t as f32
         } else {
@@ -674,7 +659,7 @@ fn diffusion_ce_loss<B: AutodiffBackend>(
     // gather log-prob at each target position
     let targets_idx = targets_flat.unsqueeze_dim::<2>(1); // [B*L, 1]
     let log_prob = log_sm.clone().gather(1, targets_idx).reshape([bl]); // [B*L]
-    // Sum NLL only at corrupted positions, normalize by count.
+                                                                        // Sum NLL only at corrupted positions, normalize by count.
     let masked_nll = (-log_prob * mask.clone()).sum() * (1.0 / num_corrupted as f32);
     let nll_term = masked_nll * gamma;
 
@@ -683,7 +668,7 @@ fn diffusion_ce_loss<B: AutodiffBackend>(
         // entropy per position = -Σ_v softmax(v) * log_softmax(v)  [B*L]
         let softmax = burn::tensor::activation::softmax(logits_flat, 1);
         let entropy_per_pos = -(softmax * log_sm).sum_dim(1).reshape([bl]); // [B*L]
-        // Average entropy only at corrupted positions.
+                                                                            // Average entropy only at corrupted positions.
         let masked_entropy = (entropy_per_pos * mask).sum() * (1.0 / num_corrupted as f32);
         // Subtract entropy bonus: lower loss when entropy is high (diverse predictions).
         nll_term - masked_entropy * entropy_weight
@@ -701,7 +686,10 @@ fn insert_leader_edges(
 ) -> usize {
     let mut inserted = 0;
     for ep in edge_proposals {
-        if graph.add_edge(ep.batch_idx, ep.dst, ep.src, cfg.phi_init).is_ok() {
+        if graph
+            .add_edge(ep.batch_idx, ep.dst, ep.src, cfg.phi_init)
+            .is_ok()
+        {
             inserted += 1;
         }
     }
@@ -756,57 +744,62 @@ pub fn diffusion_infer<B: burn::tensor::backend::Backend>(
         // Map step to noise level: first step = heaviest, last = lightest.
         let t_frac = (k_steps - step_idx) as f32 / k_steps as f32;
         let edit_scale = t_frac.max(0.05);
-
-        // How many positions to fill this round.
-        let to_fill =
-            ((cfg.max_edits() as f32 * edit_scale).ceil() as usize).max(1);
-
-        // Count remaining masks.
-        let masked: Vec<usize> = y[prompt_len..]
-            .iter()
-            .enumerate()
-            .filter(|(_, &t)| t == mask_id)
-            .map(|(i, _)| i + prompt_len)
-            .collect();
-        if masked.is_empty() {
+        let edit_budget = ((cfg.max_edits() as f32 * edit_scale).ceil() as usize).max(1);
+        if prompt_len >= l {
             break;
         }
 
-        // Forward pass — derive V from actual tensor shape.
+        // Pass A: score current sequence and select least-confident editable positions.
         let y_tensor = tokens_to_tensor::<B>(&y, b, l, device)?;
         let (logits_tensor, _unc, _hidden) = scorer.forward_with_hidden(y_tensor);
         let logits_cpu = tensor_to_vec(logits_tensor)?;
         let v_rt = if l > 0 { logits_cpu.len() / l } else { 0 };
-
-        // Fill top `to_fill` masked positions greedily.
-        let mut candidates: Vec<(usize, u32, f32)> = masked
-            .iter()
-            .filter_map(|&pos| {
-                let start = pos * v_rt;
-                let end = start + v_rt;
-                if end > logits_cpu.len() || v_rt == 0 {
-                    return None;
-                }
-                let pos_logits = &logits_cpu[start..end];
-                let best_tok = pos_logits
-                    .iter()
-                    .enumerate()
-                    .max_by(|(_, a), (_, b)| {
-                        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .map(|(i, &v)| (i, v))
-                    .unwrap_or((0, 0.0));
-                Some((pos, best_tok.0 as u32, best_tok.1))
-            })
-            .collect();
-
-        // Sort by confidence descending, fill top `to_fill`.
-        candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-        for (pos, tok, _) in candidates.iter().take(to_fill) {
-            y[*pos] = *tok;
+        if v_rt == 0 {
+            break;
         }
 
-        let _ = rng; // rng available for future stochastic sampling
+        let mut refine_candidates: Vec<(usize, f32)> = Vec::with_capacity(l - prompt_len);
+        for pos in prompt_len..l {
+            let start = pos * v_rt;
+            let end = start + v_rt;
+            if end > logits_cpu.len() {
+                continue;
+            }
+            let pos_logits = &logits_cpu[start..end];
+            let confidence = pos_logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            refine_candidates.push((pos, confidence));
+        }
+
+        // Remask least-confident positions so they can be re-denoised this step.
+        refine_candidates
+            .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        for (pos, _) in refine_candidates.into_iter().take(edit_budget) {
+            y[pos] = mask_id;
+        }
+
+        // Pass B: refill all masked positions from current scorer predictions.
+        let y_tensor = tokens_to_tensor::<B>(&y, b, l, device)?;
+        let (logits_tensor, _, _) = scorer.forward_with_hidden(y_tensor);
+        let logits_cpu = tensor_to_vec(logits_tensor)?;
+        let v_rt = if l > 0 { logits_cpu.len() / l } else { 0 };
+        for pos in prompt_len..l {
+            if y[pos] != mask_id || v_rt == 0 {
+                continue;
+            }
+            let start = pos * v_rt;
+            let end = start + v_rt;
+            if end > logits_cpu.len() {
+                continue;
+            }
+            let pos_logits = &logits_cpu[start..end];
+            let best = pos_logits
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            y[pos] = best as u32;
+        }
     }
 
     // Fill any remaining masks with greedy decode.
@@ -831,6 +824,8 @@ pub fn diffusion_infer<B: burn::tensor::backend::Backend>(
             y[pos] = best as u32;
         }
     }
+
+    let _ = rng; // stochastic sampling hook for future inference variants
 
     Ok(y)
 }
