@@ -117,6 +117,78 @@ pub struct BpeTokenizer {
 }
 
 impl BpeTokenizer {
+    /// Validate internal vocabulary map consistency.
+    ///
+    /// Ensures:
+    /// - `vocab_size > 0`
+    /// - `vocab.len() == id_to_token.len() == vocab_size`
+    /// - every `vocab[token] = id` has matching reverse mapping
+    /// - token ids are contiguous in `[0, vocab_size)`
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErmError::InvalidConfig`] if any invariant is violated.
+    fn validate_integrity(&self) -> ErmResult<()> {
+        if self.vocab_size == 0 {
+            return Err(ErmError::InvalidConfig(
+                "BPE vocab integrity check failed: vocab_size must be > 0".to_string(),
+            ));
+        }
+
+        if self.vocab.len() != self.id_to_token.len() {
+            return Err(ErmError::InvalidConfig(format!(
+                "BPE vocab integrity check failed: vocab.len()={} != id_to_token.len()={}",
+                self.vocab.len(),
+                self.id_to_token.len()
+            )));
+        }
+
+        if self.vocab.len() != self.vocab_size {
+            return Err(ErmError::InvalidConfig(format!(
+                "BPE vocab integrity check failed: vocab_size={} but vocab.len()={}",
+                self.vocab_size,
+                self.vocab.len()
+            )));
+        }
+
+        for (tok, &id) in &self.vocab {
+            match self.id_to_token.get(&id) {
+                Some(back) if back == tok => {}
+                Some(back) => {
+                    return Err(ErmError::InvalidConfig(format!(
+                        "BPE vocab integrity check failed: id_to_token[{id}]='{back}' but vocab maps to '{tok}'"
+                    )));
+                }
+                None => {
+                    return Err(ErmError::InvalidConfig(format!(
+                        "BPE vocab integrity check failed: missing reverse mapping for id={id}"
+                    )));
+                }
+            }
+        }
+
+        let mut seen = vec![false; self.vocab_size];
+        for &id in self.id_to_token.keys() {
+            let idx = id as usize;
+            if idx >= self.vocab_size {
+                return Err(ErmError::InvalidConfig(format!(
+                    "BPE vocab integrity check failed: id={id} out of range for vocab_size={}",
+                    self.vocab_size
+                )));
+            }
+            seen[idx] = true;
+        }
+
+        if let Some((missing_idx, _)) = seen.iter().enumerate().find(|(_, present)| !**present) {
+            return Err(ErmError::InvalidConfig(format!(
+                "BPE vocab integrity check failed: missing id={missing_idx} in [0, {})",
+                self.vocab_size
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Detect dominant whitespace marker style in the loaded vocabulary.
     ///
     /// - `Prefix`: tokens like `Ġword` / `▁word` (GPT/SentencePiece-like).
@@ -467,8 +539,10 @@ impl BpeTokenizer {
     ///
     /// Returns `ErmError::InvalidConfig` if parsing fails.
     pub fn from_json(json: &str) -> ErmResult<Self> {
-        serde_json::from_str(json)
-            .map_err(|e| ErmError::InvalidConfig(format!("BPE deserialization failed: {e}")))
+        let tok: Self = serde_json::from_str(json)
+            .map_err(|e| ErmError::InvalidConfig(format!("BPE deserialization failed: {e}")))?;
+        tok.validate_integrity()?;
+        Ok(tok)
     }
 
     /// Save to a file path.
@@ -678,6 +752,41 @@ mod tests {
         let ids1 = bpe.encode_text("the fox");
         let ids2 = bpe2.encode_text("the fox");
         assert_eq!(ids1, ids2);
+    }
+
+    #[test]
+    fn test_bpe_from_json_rejects_vocab_size_mismatch() {
+        let bpe = BpeTokenizer::train(small_corpus(), 15);
+        let mut v = serde_json::to_value(&bpe).unwrap();
+        let bad_size = bpe.vocab_size() + 1;
+        v["vocab_size"] = serde_json::Value::from(bad_size as u64);
+        let bad_json = serde_json::to_string(&v).unwrap();
+        let err = BpeTokenizer::from_json(&bad_json).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("vocab_size"),
+            "expected vocab_size mismatch error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_bpe_from_json_rejects_missing_id() {
+        let bpe = BpeTokenizer::train(small_corpus(), 15);
+        let mut v = serde_json::to_value(&bpe).unwrap();
+
+        let id_map = v
+            .get_mut("id_to_token")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap();
+        id_map.remove("3");
+
+        let bad_json = serde_json::to_string(&v).unwrap();
+        let err = BpeTokenizer::from_json(&bad_json).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("missing id") || msg.contains("vocab.len()"),
+            "expected integrity error for missing id mapping, got: {msg}"
+        );
     }
 
     #[test]
