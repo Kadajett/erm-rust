@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aim-watcher
+  namespace: pcn-train
+  labels:
+    app: aim-watcher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aim-watcher
+  template:
+    metadata:
+      labels:
+        app: aim-watcher
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: theshire
+      initContainers:
+        - name: backfill
+          image: python:3.11-slim
+          command: ["sh", "-c"]
+          args:
+            - pip install --quiet aim numpy && python /scripts/aim-watcher-v2.py backfill
+          env:
+            - name: AIM_SERVER_HOST
+              value: aim-server.pcn-train.svc.cluster.local
+            - name: AIM_SERVER_PORT
+              value: "43800"
+            - name: AIM_EXPERIMENT
+              value: erm-training
+            - name: EXPERIMENT_DIR
+              value: /data/experiments/curriculum-run
+          volumeMounts:
+            - name: experiments
+              mountPath: /data/experiments
+              readOnly: true
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      containers:
+        - name: aim-watcher
+          image: python:3.11-slim
+          command: ["sh", "-c"]
+          args:
+            - pip install --quiet aim numpy && python /scripts/aim-watcher-v2.py watch
+          env:
+            - name: AIM_SERVER_HOST
+              value: aim-server.pcn-train.svc.cluster.local
+            - name: AIM_SERVER_PORT
+              value: "43800"
+            - name: AIM_EXPERIMENT
+              value: erm-training
+            - name: EXPERIMENT_DIR
+              value: /data/experiments/curriculum-run
+            - name: POLL_INTERVAL
+              value: "5"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: experiments
+              mountPath: /data/experiments
+              readOnly: true
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: experiments
+          hostPath:
+            path: /home/kadajett/dev/erm-rust/data/experiments
+            type: Directory
+        - name: scripts
+          hostPath:
+            path: /home/kadajett/.openclaw/workspace/erm-rust/scripts
+            type: Directory
