@@ -28,6 +28,7 @@ pub mod eval;
 pub mod graph_snapshot;
 pub mod image_dataset;
 pub mod metrics;
+pub mod muon_adam;
 pub mod orchestrator;
 pub mod render_graph;
 pub mod streaming_dataset;

@@ -29,6 +29,8 @@ use burn::prelude::*;
 use burn::record::{BinFileRecorder, FullPrecisionSettings, Recorder};
 use burn::tensor::backend::AutodiffBackend;
 
+use crate::muon_adam::{MuonAdam, MuonAdamConfig};
+
 use rand_chacha::ChaCha8Rng;
 
 use erm_core::ants::{
@@ -74,6 +76,26 @@ pub struct DiffusionStepResult {
     pub leader_temp: f32,
 }
 
+/// Optimizer choice: Adam or MuonAdam, gated by `config.use_muon`.
+enum ErmOptimizer<B: AutodiffBackend> {
+    Adam(burn::optim::adaptor::OptimizerAdaptor<burn::optim::Adam, BurnScorer<B>, B>),
+    MuonAdam(burn::optim::adaptor::OptimizerAdaptor<MuonAdam, BurnScorer<B>, B>),
+}
+
+impl<B: AutodiffBackend> ErmOptimizer<B> {
+    fn step(
+        &mut self,
+        lr: f64,
+        scorer: BurnScorer<B>,
+        grads: GradientsParams,
+    ) -> BurnScorer<B> {
+        match self {
+            Self::Adam(opt) => opt.step(lr, scorer, grads),
+            Self::MuonAdam(opt) => opt.step(lr, scorer, grads),
+        }
+    }
+}
+
 /// Diffusion colony trainer.
 ///
 /// Runs a T-step coarse-to-fine diffusion loop per training iteration:
@@ -81,8 +103,8 @@ pub struct DiffusionStepResult {
 pub struct DiffusionTrainer<B: AutodiffBackend> {
     /// The burn scorer model with autodiff.
     pub scorer: BurnScorer<B>,
-    /// Adam optimizer.
-    optimizer: burn::optim::adaptor::OptimizerAdaptor<burn::optim::Adam, BurnScorer<B>, B>,
+    /// Optimizer (Adam or MuonAdam depending on config.use_muon).
+    optimizer: ErmOptimizer<B>,
     /// Route graph for colony pheromone routing.
     pub graph: RouteGraph,
     /// Ant lifecycle state.
@@ -116,12 +138,20 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
         let scorer_cfg = BurnScorerConfig::from_erm(&config);
         let scorer = scorer_cfg.init::<B>(&device);
 
-        let optimizer = AdamConfig::new()
-            .with_weight_decay(Some(WeightDecayConfig::new(config.weight_decay as f32)))
-            .with_grad_clipping(Some(GradientClippingConfig::Norm(
-                config.grad_clip_norm as f32,
-            )))
-            .init();
+        let optimizer = if config.use_muon {
+            ErmOptimizer::MuonAdam(MuonAdamConfig::from_erm(&config).init())
+        } else {
+            ErmOptimizer::Adam(
+                AdamConfig::new()
+                    .with_weight_decay(Some(WeightDecayConfig::new(
+                        config.weight_decay as f32,
+                    )))
+                    .with_grad_clipping(Some(GradientClippingConfig::Norm(
+                        config.grad_clip_norm as f32,
+                    )))
+                    .init(),
+            )
+        };
 
         let graph = RouteGraph::new(&config);
         let ant_state = AntState::new(&config);

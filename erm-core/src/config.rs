@@ -114,6 +114,10 @@ pub struct ErmConfig {
     pub weight_decay: f64,
     /// LR warmup steps.
     pub warmup_steps: usize,
+    /// Use Muon optimizer (Newton-Schulz + SGD) instead of AdamW.
+    /// Muon uses 1× parameter memory vs AdamW's 2× and preserves
+    /// gradient matrix structure to help break out of mode collapse.
+    pub use_muon: bool,
 
     // ── Diffusion schedule ─────────────────────────────────────────────
     /// Number of diffusion denoising steps `T` per training iteration.
@@ -207,6 +211,7 @@ impl Default for ErmConfig {
             learning_rate: 1e-3,
             weight_decay: 0.01,
             warmup_steps: 1000,
+            use_muon: true,
 
             diffusion_steps: 6,
             noise_schedule: "cosine".to_string(),

@@ -94,6 +94,7 @@ spec:
             "entropy_weight": 0.01,
             "grad_clip_norm": 1.0,
             "use_spectral_corruption": false,
+            "use_muon": true,
             "bpe_vocab_path": "/workspace/erm-rust/data/tokenizers/merged/merged_vocab.json"
           }
           JSONEOF
