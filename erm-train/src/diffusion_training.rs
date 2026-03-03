@@ -31,7 +31,8 @@ use burn::tensor::backend::AutodiffBackend;
 use rand_chacha::ChaCha8Rng;
 
 use erm_core::ants::{
-    apply_death_respawn, AntColony, AntState, DeathMode, FollowerConfig, LeaderConfig,
+    apply_death_respawn, follower_temperature_schedule, leader_temperature_schedule, AntColony,
+    AntState, DeathMode, FollowerConfig, LeaderConfig,
 };
 use erm_core::burn_scorer::{BurnScorer, BurnScorerConfig};
 use erm_core::config::{ErmConfig, PheromoneConfig};
@@ -91,6 +92,8 @@ pub struct DiffusionTrainer<B: AutodiffBackend> {
     lr: f64,
     /// Burn device.
     device: B::Device,
+    /// Total planned training steps (for temperature schedule). 0 = use fixed temps.
+    pub total_steps: usize,
 }
 
 impl<B: AutodiffBackend> DiffusionTrainer<B> {
@@ -126,6 +129,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             step: 0,
             lr,
             device,
+            total_steps: 0,
         }
     }
 
@@ -258,9 +262,28 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
 
             let num_followers = cfg.num_followers();
             let first_follower_id = cfg.num_leaders();
-            let follower_cfg = FollowerConfig::from_config(cfg);
-            let leader_cfg = LeaderConfig::from_config(cfg);
             let num_leaders = cfg.num_leaders();
+
+            // Temperature scheduling: decay follower temp over training,
+            // scale leader temp with uncertainty.
+            let follower_cfg = if self.total_steps > 0 {
+                let ft = follower_temperature_schedule(self.step, self.total_steps);
+                FollowerConfig::from_config(cfg).with_temperature(ft)
+            } else {
+                FollowerConfig::from_config(cfg)
+            };
+            // Compute mean uncertainty for leader temperature.
+            let mean_unc: f32 = if !uncertainty_cpu.is_empty() {
+                uncertainty_cpu.iter().sum::<f32>() / uncertainty_cpu.len() as f32
+            } else {
+                0.5
+            };
+            let leader_cfg = if self.total_steps > 0 {
+                let lt = leader_temperature_schedule(mean_unc);
+                LeaderConfig::from_config(cfg).with_temperature(lt)
+            } else {
+                LeaderConfig::from_config(cfg)
+            };
 
             let mut y_new_batch = Vec::with_capacity(b * l);
             let mut all_proposals = Vec::new();

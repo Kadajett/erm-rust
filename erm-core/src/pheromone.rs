@@ -342,6 +342,25 @@ fn update_pheromones_full(
     // Compute sigma from running stats (if provided).
     let sigma = delta_stats.as_ref().map_or(0.0_f32, |s| s.sigma());
     let norm_eps = 1e-6_f32;
+    let use_log = config.use_log_deposit;
+
+    // Deposit bounding function: log1p or tanh.
+    // log1p(|Δ|/σ) has better dynamic range than tanh(Δ/σ):
+    //   - small deltas get proportional credit
+    //   - large deltas get diminishing but nonzero credit (never saturates to 1)
+    let bounded_deposit = |positive_delta: f32| -> f32 {
+        if use_log {
+            if sigma > norm_eps {
+                (1.0 + positive_delta / (sigma + norm_eps)).ln()
+            } else {
+                (1.0 + positive_delta).ln()
+            }
+        } else if sigma > norm_eps {
+            (positive_delta / (sigma + norm_eps)).tanh()
+        } else {
+            positive_delta.tanh()
+        }
+    };
 
     // Step 1: Evaporation — φ *= (1 - ρ) for all valid edges.
     for flat in 0..total {
@@ -350,7 +369,7 @@ fn update_pheromones_full(
         }
     }
 
-    // Step 2: Deposit — normalized tanh-bounded for edges used by ant k.
+    // Step 2: Deposit — bounded (log1p or tanh) for edges used by ant k.
     // Step 3: Taint — τ += ζ * max(-Δ_k, 0.0) for edges used by ant k.
     //
     // When position_deltas is Some, deposit uses per-position delta at
@@ -380,11 +399,7 @@ fn update_pheromones_full(
             }
         }
 
-        let ant_deposit_base = if sigma > norm_eps {
-            (ant_positive_delta / (sigma + norm_eps)).tanh()
-        } else {
-            ant_positive_delta.tanh()
-        };
+        let ant_deposit_base = bounded_deposit(ant_positive_delta);
 
         for &(b, dst, e, _weight) in &trace.entries {
             if b >= graph.batch_size || dst >= graph.seq_len || e >= graph.emax {
@@ -400,11 +415,7 @@ fn update_pheromones_full(
                 let pos_idx = b * seq_len + dst;
                 if pos_idx < pos_deltas.len() {
                     let pos_delta = pos_deltas[pos_idx].max(0.0);
-                    if sigma > norm_eps {
-                        (pos_delta / (sigma + norm_eps)).tanh()
-                    } else {
-                        pos_delta.tanh()
-                    }
+                    bounded_deposit(pos_delta)
                 } else {
                     ant_deposit_base
                 }
@@ -684,6 +695,7 @@ mod tests {
             route_lambda: 1.0,
             diversity_threshold: 0.9,
             diversity_penalty: 0.8,
+            use_log_deposit: false, // tests were written for tanh mode
         }
     }
 
@@ -763,6 +775,66 @@ mod tests {
         assert!(
             (graph.phi[flat] - expected).abs() < 1e-4,
             "expected {expected}, got {}",
+            graph.phi[flat]
+        );
+    }
+
+    #[test]
+    fn test_log_deposit_small_delta() {
+        let cfg = small_config();
+        let mut graph = RouteGraph::new_empty(&cfg);
+        graph.add_edge(0, 0, 1, 0.5).expect("add edge");
+
+        let traces = vec![EdgeTrace {
+            ant_id: 0,
+            entries: vec![(0, 0, 0, 1.0)],
+        }];
+        let ant_deltas = vec![0.1_f32];
+        let mut pconfig = small_pheromone_config();
+        pconfig.use_log_deposit = true;
+
+        let _stats =
+            update_pheromones(&mut graph, &traces, &ant_deltas, &pconfig).expect("update");
+
+        let flat = graph.idx(0, 0, 0);
+        // After evap: 0.45, deposit: 0.5 * ln(1 + 0.1) ≈ 0.5 * 0.0953 ≈ 0.0477
+        let expected = 0.45 + 0.5 * (1.0 + 0.1_f32).ln();
+        assert!(
+            (graph.phi[flat] - expected).abs() < 1e-4,
+            "expected {expected}, got {}",
+            graph.phi[flat]
+        );
+    }
+
+    #[test]
+    fn test_log_deposit_large_delta_no_saturation() {
+        let cfg = small_config();
+        let mut graph = RouteGraph::new_empty(&cfg);
+        graph.add_edge(0, 0, 1, 0.5).expect("add edge");
+
+        let traces = vec![EdgeTrace {
+            ant_id: 0,
+            entries: vec![(0, 0, 0, 1.0)],
+        }];
+        let ant_deltas = vec![100.0_f32];
+        let mut pconfig = small_pheromone_config();
+        pconfig.use_log_deposit = true;
+
+        let _stats =
+            update_pheromones(&mut graph, &traces, &ant_deltas, &pconfig).expect("update");
+
+        let flat = graph.idx(0, 0, 0);
+        // log1p never saturates to 1 — unlike tanh(100) ≈ 1.0, log(101) ≈ 4.62
+        let deposit_base = (1.0 + 100.0_f32).ln();
+        assert!(
+            deposit_base > 1.0,
+            "log deposit should exceed 1.0 for large delta, got {}",
+            deposit_base
+        );
+        // phi should be > evap(0.5) + eta*1.0 = 0.45 + 0.5 = 0.95
+        assert!(
+            graph.phi[flat] > 0.95,
+            "log deposit for large delta should exceed tanh-equivalent, got {}",
             graph.phi[flat]
         );
     }

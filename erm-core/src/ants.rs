@@ -323,6 +323,37 @@ impl FollowerConfig {
             topk: config.topk,
         }
     }
+
+    /// Return a copy with the given temperature.
+    #[must_use]
+    pub fn with_temperature(mut self, t: f32) -> Self {
+        self.temperature = t;
+        self
+    }
+}
+
+/// Compute follower temperature that decays with training progress.
+///
+/// `T_follower(step) = max(0.3, 1.0 - step / total_steps)`
+///
+/// Early training: high temperature (explore). Late: low temperature (exploit).
+#[must_use]
+pub fn follower_temperature_schedule(step: usize, total_steps: usize) -> f32 {
+    if total_steps == 0 {
+        return 0.7;
+    }
+    let progress = step as f32 / total_steps as f32;
+    (1.0 - progress).max(0.3)
+}
+
+/// Compute leader temperature that scales with uncertainty.
+///
+/// `T_leader(step, mean_uncertainty) = max(0.5, 2.0 * mean_uncertainty)`
+///
+/// Leaders always explore, but more aggressively at uncertain positions.
+#[must_use]
+pub fn leader_temperature_schedule(mean_uncertainty: f32) -> f32 {
+    (2.0 * mean_uncertainty).max(0.5)
 }
 
 /// Ant colony that produces edit proposals from follower ants.
@@ -601,6 +632,13 @@ impl LeaderConfig {
             pmax: config.pmax,
             topk: config.topk,
         }
+    }
+
+    /// Return a copy with the given temperature.
+    #[must_use]
+    pub fn with_temperature(mut self, t: f32) -> Self {
+        self.temperature = t;
+        self
     }
 }
 
@@ -1659,5 +1697,55 @@ mod tests {
             d2, 3,
             "all ants should die after warmstart with death_streak=2"
         );
+    }
+
+    #[test]
+    fn test_follower_temperature_schedule() {
+        use super::follower_temperature_schedule;
+
+        // At step 0, temperature = max(0.3, 1.0) = 1.0
+        let t0 = follower_temperature_schedule(0, 1000);
+        assert!((t0 - 1.0).abs() < 1e-5, "step 0 should be 1.0, got {t0}");
+
+        // At halfway, temperature = max(0.3, 0.5) = 0.5
+        let t500 = follower_temperature_schedule(500, 1000);
+        assert!((t500 - 0.5).abs() < 1e-5, "step 500 should be 0.5, got {t500}");
+
+        // At end, temperature = max(0.3, 0.0) = 0.3
+        let t1000 = follower_temperature_schedule(1000, 1000);
+        assert!((t1000 - 0.3).abs() < 1e-5, "step 1000 should be 0.3, got {t1000}");
+
+        // total_steps=0 returns default 0.7
+        let td = follower_temperature_schedule(50, 0);
+        assert!((td - 0.7).abs() < 1e-5, "total_steps=0 should be 0.7, got {td}");
+    }
+
+    #[test]
+    fn test_leader_temperature_schedule() {
+        use super::leader_temperature_schedule;
+
+        // Low uncertainty → floor at 0.5
+        let tl = leader_temperature_schedule(0.1);
+        assert!((tl - 0.5).abs() < 1e-5, "low unc should be 0.5, got {tl}");
+
+        // Moderate uncertainty → 2 * 0.4 = 0.8
+        let tm = leader_temperature_schedule(0.4);
+        assert!((tm - 0.8).abs() < 1e-5, "mid unc should be 0.8, got {tm}");
+
+        // High uncertainty → 2 * 1.0 = 2.0
+        let th = leader_temperature_schedule(1.0);
+        assert!((th - 2.0).abs() < 1e-5, "high unc should be 2.0, got {th}");
+    }
+
+    #[test]
+    fn test_follower_config_with_temperature() {
+        let cfg = FollowerConfig::default().with_temperature(0.42);
+        assert!((cfg.temperature - 0.42).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_leader_config_with_temperature() {
+        let cfg = LeaderConfig::default().with_temperature(1.23);
+        assert!((cfg.temperature - 1.23).abs() < 1e-5);
     }
 }

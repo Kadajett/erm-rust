@@ -350,6 +350,10 @@ pub struct PheromoneConfig {
     /// Pheromone multiplier for the weaker of two redundant edges.
     /// e.g. 0.8 means "reduce by 20%".
     pub diversity_penalty: f32,
+    /// Use log-bounded deposit instead of tanh.
+    /// `log1p(|Δ|/σ)` has better dynamic range: small improvements get
+    /// proportional credit, large improvements get diminishing-but-nonzero credit.
+    pub use_log_deposit: bool,
 }
 
 impl Default for PheromoneConfig {
@@ -366,6 +370,7 @@ impl Default for PheromoneConfig {
             route_lambda: 1.0,
             diversity_threshold: 0.9,
             diversity_penalty: 0.8,
+            use_log_deposit: true,
         }
     }
 }
@@ -386,6 +391,7 @@ impl PheromoneConfig {
             route_lambda: config.route_lambda,
             diversity_threshold: 0.9,
             diversity_penalty: 0.8,
+            use_log_deposit: true,
         }
     }
 }
