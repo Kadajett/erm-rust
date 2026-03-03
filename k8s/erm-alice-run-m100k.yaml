@@ -108,31 +108,30 @@ spec:
           trap cleanup_backgrounds EXIT
 
           io_helper_loop() {
+            local last_processed_step="-1"
             while true; do
-              for step_dir in $(ls -d "${CKPT_DIR}"/step_* 2>/dev/null | sort -r); do
-                [[ -d "${step_dir}" ]] || continue
-                [[ -f "${step_dir}/scorer.bin" ]] || continue
-                [[ -f "${step_dir}/io_example.json" ]] && continue
-                step_name="$(basename "${step_dir}")"
-                echo "[io-helper] generating io samples for ${step_name}"
-                /workspace/erm-rust/bin/erm io-example \
-                  --data /workspace/rust-pcn/data/books \
-                  --checkpoint "${step_dir}" \
-                  --output "${step_dir}/io_example.json" \
-                  --num-examples 3 \
-                  --seed 42 \
-                  >"/tmp/io-helper-${step_name}.log" 2>&1 || true
-
-                if [[ -f "${step_dir}/io_example.json" ]]; then
-                  cp "${step_dir}/io_example.json" "${CKPT_DIR}/latest/io_example.json" 2>/dev/null || true
-                  echo "[io-helper] published ${step_name} -> ${CKPT_DIR}/latest/io_example.json"
-                else
-                  echo "[io-helper] failed for ${step_name} (see /tmp/io-helper-${step_name}.log)"
+              latest_step_file="${CKPT_DIR}/latest/step.json"
+              if [[ -f "${latest_step_file}" ]]; then
+                current_step=$(grep -o '"step"[[:space:]]*:[[:space:]]*[0-9]*' "${latest_step_file}" \
+                  | grep -o '[0-9]*' | head -1 || echo "")
+                if [[ -n "${current_step}" ]] && [[ "${current_step}" != "${last_processed_step}" ]]; then
+                  echo "[io-helper] generating io samples for latest step=${current_step}"
+                  /workspace/erm-rust/bin/erm io-example \
+                    --data /workspace/rust-pcn/data/books \
+                    --checkpoint "${CKPT_DIR}/latest" \
+                    --output "${CKPT_DIR}/latest/io_example.json" \
+                    --num-examples 3 \
+                    --seed 42 \
+                    >"/tmp/io-helper-latest.log" 2>&1 || true
+                  if [[ -f "${CKPT_DIR}/latest/io_example.json" ]]; then
+                    echo "[io-helper] published latest step=${current_step}"
+                    last_processed_step="${current_step}"
+                  else
+                    echo "[io-helper] failed for latest step=${current_step} (see /tmp/io-helper-latest.log)"
+                  fi
                 fi
-                # Process one checkpoint per pass to keep helper CPU tame.
-                break
-              done
-              sleep 20
+              fi
+              sleep 10
             done
           }
 
