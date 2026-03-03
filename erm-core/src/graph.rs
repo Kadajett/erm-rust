@@ -63,12 +63,18 @@ pub struct RouteGraph {
 }
 
 impl RouteGraph {
-    /// Create a route graph pre-seeded with short skip-connections.
+    /// Create a route graph pre-seeded with short skip-connections and
+    /// small-world long-range edges.
     ///
     /// For each node `i` in each batch, edges from `i±1`, `i±2`, `i±4`
     /// (within bounds) are inserted with `phi_init` pheromone. This gives
     /// the colony immediate local structure to build on, reducing cold-start
-    /// iterations. Remaining slots are left empty (`EMPTY_SLOT`).
+    /// iterations.
+    ///
+    /// Additionally, 2 random long-range edges are added per position
+    /// (inspired by small-world networks) to accelerate discovery of
+    /// distant positional dependencies. These start at half `phi_init`
+    /// to let the colony confirm or prune them.
     ///
     /// - `nbr_idx` initialized to [`EMPTY_SLOT`] (-1), then seeded
     /// - `phi` initialized to `phi_init` for seeded edges
@@ -76,7 +82,9 @@ impl RouteGraph {
     /// - `age` initialized to `0`
     #[must_use]
     pub fn new(config: &ErmConfig) -> Self {
+        use rand::Rng;
         let mut graph = Self::new_empty(config);
+        let mut rng = rand::thread_rng();
 
         // Seed short skip-connections: offsets ±1, ±2, ±4.
         let offsets: &[isize] = &[-4, -2, -1, 1, 2, 4];
@@ -87,6 +95,23 @@ impl RouteGraph {
                     if src >= 0 && (src as usize) < graph.seq_len && src as usize != i {
                         // Silently ignore if slots are full (emax may be small).
                         let _ = graph.add_edge(bi, i, src as usize, config.phi_init);
+                    }
+                }
+
+                // Small-world long-range edges: 2 random positions per node.
+                // These accelerate discovery of distant dependencies that
+                // leaders would otherwise take many steps to find.
+                if graph.seq_len > 8 {
+                    for _ in 0..2 {
+                        let src = rng.gen_range(0..graph.seq_len);
+                        if src != i {
+                            let _ = graph.add_edge(
+                                bi,
+                                i,
+                                src,
+                                config.phi_init * 0.5,
+                            );
+                        }
                     }
                 }
             }
