@@ -9,13 +9,15 @@
 //! ```text
 //! y_t: [B, L]  ──→  token_emb [B, L, d]
 //!                        + fourier_pos_emb [L, d] (fixed sinusoidal + learned projection)
-//!                    ──→ 6 feed-forward blocks:
-//!                        linear(d → 4d) → ReLU → linear(4d → d) + residual
+//!                    ──→ interleaved blocks (num_blocks total):
+//!                        even: linear(d → 4d) → ReLU → linear(4d → d) + residual
+//!                        odd:  multi-head self-attention(d, num_heads) + residual
 //!                    ──→ logit_head: linear(d → V)  → logits [B, L, V]
 //!                    ──→ uncertainty_head: linear(d → 1) → sigmoid → u [B, L]
 //! ```
 
 use burn::nn;
+use burn::nn::attention::{MhaInput, MultiHeadAttention, MultiHeadAttentionConfig};
 use burn::prelude::*;
 use burn::tensor::TensorData;
 
@@ -36,8 +38,13 @@ pub struct BurnScorerConfig {
     pub seq_len: usize,
     /// Number of feed-forward blocks.
     pub num_blocks: usize,
+    /// Number of attention heads for self-attention layers.
+    pub num_heads: usize,
     /// MLP expansion factor (inner dim = expansion * d).
     pub mlp_expansion: usize,
+    /// Dropout probability for attention layers.
+    #[config(default = 0.0)]
+    pub dropout: f64,
 }
 
 impl BurnScorerConfig {
@@ -49,11 +56,17 @@ impl BurnScorerConfig {
             hidden_dim: config.hidden_dim,
             seq_len: config.seq_len,
             num_blocks: config.num_blocks,
+            num_heads: config.num_heads,
             mlp_expansion: config.mlp_expansion,
+            dropout: config.dropout,
         }
     }
 
     /// Initialize the [`BurnScorer`] module on the given device.
+    ///
+    /// Creates `num_blocks` interleaved layers: even-indexed layers are
+    /// feed-forward blocks, odd-indexed layers are self-attention blocks.
+    /// This gives roughly half FF and half attention layers.
     pub fn init<B: Backend>(&self, device: &B::Device) -> BurnScorer<B> {
         let d = self.hidden_dim;
         let d_inner = d * self.mlp_expansion;
@@ -68,12 +81,29 @@ impl BurnScorerConfig {
         // Learned projection from Fourier features to hidden dim
         let pos_proj = nn::LinearConfig::new(d, d).init(device);
 
-        let blocks: Vec<FeedForwardBlock<B>> = (0..self.num_blocks)
-            .map(|_| FeedForwardBlock {
-                linear1: nn::LinearConfig::new(d, d_inner).init(device),
-                linear2: nn::LinearConfig::new(d_inner, d).init(device),
-            })
-            .collect();
+        // Interleaved blocks: even = FF, odd = self-attention.
+        let mut ff_blocks = Vec::new();
+        let mut attn_blocks = Vec::new();
+        let mut block_order = Vec::new(); // false = FF, true = attention
+
+        for i in 0..self.num_blocks {
+            if i % 2 == 0 {
+                // Feed-forward block
+                ff_blocks.push(FeedForwardBlock {
+                    linear1: nn::LinearConfig::new(d, d_inner).init(device),
+                    linear2: nn::LinearConfig::new(d_inner, d).init(device),
+                });
+                block_order.push(false);
+            } else {
+                // Self-attention block
+                attn_blocks.push(
+                    MultiHeadAttentionConfig::new(d, self.num_heads)
+                        .with_dropout(self.dropout)
+                        .init(device),
+                );
+                block_order.push(true);
+            }
+        }
 
         let logit_head = nn::LinearConfig::new(d, self.vocab_size).init(device);
         let uncertainty_head = nn::LinearConfig::new(d, 1).init(device);
@@ -82,7 +112,9 @@ impl BurnScorerConfig {
             token_embed,
             fourier_pos_embed,
             pos_proj,
-            blocks,
+            ff_blocks,
+            attn_blocks,
+            block_order,
             logit_head,
             uncertainty_head,
             hidden_dim: d,
@@ -147,7 +179,8 @@ impl<B: Backend> FeedForwardBlock<B> {
 ///
 /// Drop-in replacement for [`crate::scorer::Scorer`] that uses burn tensors
 /// for GPU acceleration. Uses fixed Fourier position embeddings with a
-/// learned projection to overcome spectral bias.
+/// learned projection to overcome spectral bias. Interleaves feed-forward
+/// and self-attention blocks for both local and global pattern learning.
 #[derive(Module, Debug)]
 pub struct BurnScorer<B: Backend> {
     /// Token embedding table. Shape: `[V_total, d]`.
@@ -158,8 +191,13 @@ pub struct BurnScorer<B: Backend> {
     fourier_pos_embed: Tensor<B, 2>,
     /// Learned projection from Fourier position features to hidden dim.
     pos_proj: nn::Linear<B>,
-    /// Feed-forward blocks with residual connections.
-    blocks: Vec<FeedForwardBlock<B>>,
+    /// Feed-forward blocks (even-indexed layers).
+    ff_blocks: Vec<FeedForwardBlock<B>>,
+    /// Self-attention blocks (odd-indexed layers).
+    attn_blocks: Vec<MultiHeadAttention<B>>,
+    /// Block execution order: `false` = FF, `true` = attention.
+    #[module(skip)]
+    block_order: Vec<bool>,
     /// Logit output head: `d → V`.
     logit_head: nn::Linear<B>,
     /// Uncertainty output head: `d → 1`.
@@ -215,9 +253,20 @@ impl<B: Backend> BurnScorer<B> {
         // h = tok_emb + pos_emb : [B, L, d]
         let mut h = tok_emb + pos_emb;
 
-        // Feed-forward blocks
-        for block in &self.blocks {
-            h = block.forward(h);
+        // Interleaved feed-forward and self-attention blocks
+        let mut ff_idx = 0;
+        let mut attn_idx = 0;
+        for &is_attn in &self.block_order {
+            if is_attn {
+                // Self-attention with residual connection
+                let input = MhaInput::self_attn(h.clone());
+                let output = self.attn_blocks[attn_idx].forward(input);
+                h = h + output.context; // residual
+                attn_idx += 1;
+            } else {
+                h = self.ff_blocks[ff_idx].forward(h);
+                ff_idx += 1;
+            }
         }
 
         // Logit head: [B, L, d] → [B, L, V]
