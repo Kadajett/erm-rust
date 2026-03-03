@@ -40,8 +40,8 @@ use erm_core::error::{ErmError, ErmResult};
 use erm_core::graph::RouteGraph;
 use erm_core::merge::{compute_ant_deltas, compute_position_deltas, merge_proposals};
 use erm_core::pheromone::{
-    build_edge_traces, prune_edges, update_pheromones_with_position_credit, PheromoneStats,
-    RunningDeltaStats,
+    build_edge_traces, pheromone_rescale, prune_edges, update_pheromones_with_position_credit,
+    PheromoneStats, RunningDeltaStats,
 };
 
 use crate::bridge::{tensor2d_to_vec, tensor_to_vec, tokens_to_tensor};
@@ -425,6 +425,12 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 d,
                 &position_deltas,
             )?;
+
+            // Pheromone rescaling (MuonClip analog): prevent φ from growing
+            // large enough to collapse softmax into hard argmax.
+            // Threshold = 80% of phi_max to give headroom.
+            let rescale_threshold = self.pheromone_config.phi_max * 0.8;
+            pheromone_rescale(&mut self.graph, rescale_threshold);
 
             // Prune edges.
             let pruned = prune_edges(

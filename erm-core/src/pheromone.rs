@@ -574,6 +574,47 @@ pub fn prune_edges(graph: &mut RouteGraph, min_score: f32, max_age: u32, lambda:
     pruned
 }
 
+/// Rescale pheromone values to prevent runaway growth (MuonClip analog).
+///
+/// If the maximum φ across all valid edges exceeds `threshold`, all φ
+/// values are multiplied by `sqrt(threshold / max_phi)`. This keeps the
+/// softmax in route aggregation from collapsing into a hard argmax while
+/// preserving the relative ordering of edge strengths.
+///
+/// Analogous to QK-Clip in the Muon optimizer, which rescales query/key
+/// projection weights when attention logits grow too large.
+///
+/// # Arguments
+///
+/// - `graph`: mutable route graph.
+/// - `threshold`: maximum allowed φ before rescaling kicks in (e.g., 8.0).
+///
+/// # Returns
+///
+/// `true` if rescaling was applied, `false` otherwise.
+pub fn pheromone_rescale(graph: &mut RouteGraph, threshold: f32) -> bool {
+    let total = graph.total_elements();
+    let mut max_phi = 0.0_f32;
+
+    for flat in 0..total {
+        if graph.nbr_idx[flat] != EMPTY_SLOT && graph.phi[flat] > max_phi {
+            max_phi = graph.phi[flat];
+        }
+    }
+
+    if max_phi > threshold {
+        let gamma = (threshold / max_phi).sqrt();
+        for flat in 0..total {
+            if graph.nbr_idx[flat] != EMPTY_SLOT {
+                graph.phi[flat] *= gamma;
+            }
+        }
+        true
+    } else {
+        false
+    }
+}
+
 /// Compute summary statistics of the pheromone graph.
 fn compute_stats(graph: &RouteGraph) -> PheromoneStats {
     let total = graph.total_elements();
@@ -1296,5 +1337,88 @@ mod tests {
             graph_a.phi[flat],
             graph_b.phi[flat]
         );
+    }
+
+    // ── Pheromone rescaling (MuonClip analog) tests ───────────────────────
+
+    #[test]
+    fn test_rescale_reduces_max_phi() {
+        let cfg = small_config();
+        let mut graph = RouteGraph::new_empty(&cfg);
+        graph.add_edge(0, 0, 1, 9.0).expect("add edge");
+        graph.add_edge(0, 1, 2, 3.0).expect("add edge");
+
+        // Threshold = 4.0, max = 9.0 → should rescale.
+        let rescaled = pheromone_rescale(&mut graph, 4.0);
+        assert!(rescaled, "should rescale when max > threshold");
+
+        let flat0 = graph.idx(0, 0, 0);
+        let flat1 = graph.idx(0, 1, 0);
+
+        // gamma = sqrt(4.0 / 9.0) = 2/3 ≈ 0.6667
+        // phi[0] = 9.0 * 0.6667 ≈ 6.0
+        // phi[1] = 3.0 * 0.6667 ≈ 2.0
+        let gamma = (4.0_f32 / 9.0).sqrt();
+        assert!(
+            (graph.phi[flat0] - 9.0 * gamma).abs() < 1e-4,
+            "expected {}, got {}",
+            9.0 * gamma,
+            graph.phi[flat0]
+        );
+        assert!(
+            (graph.phi[flat1] - 3.0 * gamma).abs() < 1e-4,
+            "expected {}, got {}",
+            3.0 * gamma,
+            graph.phi[flat1]
+        );
+
+        // sqrt rescaling reduces max but doesn't clamp to threshold in one pass.
+        // 9.0 * sqrt(4/9) = 9 * 2/3 = 6.0, which is less than original 9.0
+        assert!(
+            graph.phi[flat0] < 9.0,
+            "max phi should be reduced after rescale, got {}",
+            graph.phi[flat0]
+        );
+    }
+
+    #[test]
+    fn test_rescale_preserves_relative_order() {
+        let cfg = small_config();
+        let mut graph = RouteGraph::new_empty(&cfg);
+        graph.add_edge(0, 0, 1, 8.0).expect("add edge");
+        graph.add_edge(0, 0, 2, 4.0).expect("add edge");
+        graph.add_edge(0, 1, 3, 2.0).expect("add edge");
+
+        pheromone_rescale(&mut graph, 5.0);
+
+        let flat0 = graph.idx(0, 0, 0);
+        let flat1 = graph.idx(0, 0, 1);
+        let flat2 = graph.idx(0, 1, 0);
+
+        assert!(
+            graph.phi[flat0] > graph.phi[flat1],
+            "relative order should be preserved"
+        );
+        assert!(
+            graph.phi[flat1] > graph.phi[flat2],
+            "relative order should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_rescale_noop_below_threshold() {
+        let cfg = small_config();
+        let mut graph = RouteGraph::new_empty(&cfg);
+        graph.add_edge(0, 0, 1, 3.0).expect("add edge");
+        graph.add_edge(0, 1, 2, 2.0).expect("add edge");
+
+        let rescaled = pheromone_rescale(&mut graph, 5.0);
+        assert!(!rescaled, "should not rescale when max < threshold");
+
+        // Values should be unchanged.
+        let flat0 = graph.idx(0, 0, 0);
+        let flat1 = graph.idx(0, 1, 0);
+        assert!((graph.phi[flat0] - 3.0).abs() < 1e-6);
+        assert!((graph.phi[flat1] - 2.0).abs() < 1e-6);
     }
 }
