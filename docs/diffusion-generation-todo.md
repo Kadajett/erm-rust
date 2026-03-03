@@ -2,12 +2,12 @@
 
 Status legend: `[ ]` pending, `[-]` in progress, `[x]` done.
 
-1. [ ] Fix tokenizer whitespace behavior and vocab compatibility.
-   - [ ] Support vocab marker conventions used in `merged_vocab.json` (`Ġ`/`▁`).
-   - [ ] Stop collapsing text boundaries in BPE encode path.
-   - [ ] Preserve sentence/paragraph whitespace better in streaming dataset path.
+1. [x] Fix tokenizer whitespace behavior and vocab compatibility.
+   - [x] Support vocab marker conventions used in `merged_vocab.json` (`Ġ`/`▁`).
+   - [x] Stop collapsing text boundaries in BPE encode path.
+   - [x] Preserve sentence/paragraph whitespace better in streaming dataset path.
 
-2. [ ] Add tokenizer regression tests before retraining.
+2. [-] Add tokenizer regression tests before retraining.
    - [ ] Round-trip tests covering spaces/newlines.
    - [ ] Compatibility tests for current merged vocab marker style.
 

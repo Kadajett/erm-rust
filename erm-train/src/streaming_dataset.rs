@@ -278,22 +278,17 @@ fn tokenize_sliding_window<T: TokenizerApi>(text: &str, tokenizer: &T, seq_len: 
 /// Splits the text at double-newlines (paragraphs) and single newlines
 /// (sentences), producing spans that are at most `seq_len` tokens long.
 /// Spans shorter than `seq_len` are concatenated until they fill a window.
-fn tokenize_by_paragraphs<T: TokenizerApi>(
-    text: &str,
-    tokenizer: &T,
-    seq_len: usize,
-) -> Vec<u32> {
+fn tokenize_by_paragraphs<T: TokenizerApi>(text: &str, tokenizer: &T, seq_len: usize) -> Vec<u32> {
     // Split into paragraphs first, then sentences within each.
     let mut all_tokens: Vec<u32> = Vec::new();
     let mut buffer: Vec<u32> = Vec::new();
 
-    for para in text.split("\n\n") {
-        for sentence in para.split('\n') {
-            let trimmed = sentence.trim();
-            if trimmed.is_empty() {
+    for para in text.split_inclusive("\n\n") {
+        for sentence in para.split_inclusive('\n') {
+            if sentence.chars().all(char::is_whitespace) {
                 continue;
             }
-            let tokens = tokenizer.encode_text(trimmed);
+            let tokens = tokenizer.encode_text(sentence);
             if tokens.is_empty() {
                 continue;
             }
@@ -339,8 +334,7 @@ fn collect_txt_paths_rec(dir: &Path, out: &mut Vec<PathBuf>) -> ErmResult<()> {
     let entries = std::fs::read_dir(dir)
         .map_err(|e| ErmError::InvalidConfig(format!("cannot read dir {}: {e}", dir.display())))?;
     for entry in entries {
-        let entry = entry
-            .map_err(|e| ErmError::InvalidConfig(format!("dir entry error: {e}")))?;
+        let entry = entry.map_err(|e| ErmError::InvalidConfig(format!("dir entry error: {e}")))?;
         let path = entry.path();
         if path.is_dir() {
             collect_txt_paths_rec(&path, out)?;
@@ -426,7 +420,9 @@ mod tests {
     fn test_paragraph_spans() {
         let dir = "/tmp/erm_streaming_test_3";
         let _ = std::fs::create_dir_all(dir);
-        let corpus = "First paragraph sentence one.\nFirst paragraph sentence two.\n\nSecond paragraph.\n\n".repeat(20);
+        let corpus =
+            "First paragraph sentence one.\nFirst paragraph sentence two.\n\nSecond paragraph.\n\n"
+                .repeat(20);
         std::fs::write(format!("{dir}/d.txt"), &corpus).unwrap();
 
         let bpe = BpeTokenizer::train(&corpus, 20);
@@ -440,7 +436,10 @@ mod tests {
             got_batch = true;
             break;
         }
-        assert!(got_batch, "paragraph spans should produce at least one batch");
+        assert!(
+            got_batch,
+            "paragraph spans should produce at least one batch"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
