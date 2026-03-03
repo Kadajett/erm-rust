@@ -46,10 +46,22 @@ spec:
           NEW_EXP="alice-run-b2-m100k"
           BASE_EXP="alice-run-b2"
           TARGET_STEP=100000
+          TARGET_BATCH=2
+          TARGET_DIFFUSION_T=2
+          TARGET_SEQ_LEN=128
+          TARGET_NUM_ANTS=64
+          TARGET_DEATH_STREAK=24
+          TARGET_DROPOUT=0.1
+          TARGET_PHEROMONE_EVAP=0.03
+          TARGET_LEARNING_RATE=0.0004
+          TARGET_MAX_EDITS_PER_STEP=0.14
+          TARGET_LEADER_FRACTION=0.08
           PRIMARY_RESUME="/workspace/erm-rust/data/experiments/${NEW_EXP}/checkpoints/latest"
           FALLBACK_RESUME="/workspace/erm-rust/data/experiments/${BASE_EXP}/checkpoints/latest"
           CKPT_DIR="/workspace/erm-rust/data/experiments/${NEW_EXP}/checkpoints"
           EXP_DIR="/workspace/erm-rust/data/experiments/${NEW_EXP}"
+          RUN_CONFIG="${EXP_DIR}/resume-b2-config.json"
+          ERM_BIN="/workspace/erm-rust/bin/erm.new"
 
           mkdir -p "${CKPT_DIR}"
 
@@ -75,14 +87,24 @@ spec:
             exit 0
           fi
 
+          if [[ ! -f "${RESUME_DIR}/config.json" ]]; then
+            echo "ERROR: resume config missing at ${RESUME_DIR}/config.json"
+            exit 1
+          fi
+
+          python3 -c "import json,sys; src,dst,batch,diff_t,seq_len,num_ants,death,dropout,evap,lr,max_edits,leader_frac=sys.argv[1:]; cfg=json.load(open(src)); cfg['batch_size']=int(batch); cfg['diffusion_steps']=int(diff_t); cfg['seq_len']=int(seq_len); cfg['num_ants']=int(num_ants); cfg['death_streak']=int(death); cfg['dropout']=float(dropout); cfg['pheromone_evap']=float(evap); cfg['learning_rate']=float(lr); cfg['max_edits_per_step']=float(max_edits); cfg['leader_fraction']=float(leader_frac); json.dump(cfg, open(dst, 'w'), indent=2)" \
+            "${RESUME_DIR}/config.json" "${RUN_CONFIG}" \
+            "${TARGET_BATCH}" "${TARGET_DIFFUSION_T}" "${TARGET_SEQ_LEN}" "${TARGET_NUM_ANTS}" "${TARGET_DEATH_STREAK}" \
+            "${TARGET_DROPOUT}" "${TARGET_PHEROMONE_EVAP}" "${TARGET_LEARNING_RATE}" "${TARGET_MAX_EDITS_PER_STEP}" "${TARGET_LEADER_FRACTION}"
+
           # Make vocab discoverable next to experiment outputs for io-example tooling.
           cp /workspace/erm-rust/data/tokenizers/merged/merged_vocab.json "${EXP_DIR}/bpe_vocab.json" || true
 
           echo "Resume: ${RESUME_DIR}"
           echo "Current step: ${CURRENT_STEP} | Target: ${TARGET_STEP} | Remaining: ${REMAINING_STEPS}"
-          echo "Config: default runtime config + checkpoint resume"
+          echo "Config: ${RUN_CONFIG} (batch=${TARGET_BATCH}, T=${TARGET_DIFFUSION_T}, seq_len=${TARGET_SEQ_LEN}, ants=${TARGET_NUM_ANTS}, death_streak=${TARGET_DEATH_STREAK}, dropout=${TARGET_DROPOUT}, pheromone_evap=${TARGET_PHEROMONE_EVAP}, lr=${TARGET_LEARNING_RATE}, max_edits=${TARGET_MAX_EDITS_PER_STEP}, leader_fraction=${TARGET_LEADER_FRACTION})"
           echo "Checkpoint output: ${CKPT_DIR}"
-          echo "Binary: /workspace/erm-rust/bin/erm"
+          echo "Binary: ${ERM_BIN}"
           echo "=== Starting +${REMAINING_STEPS} steps at $(date -u +%H:%M:%S) ==="
 
           # Background helper: generate io_example.json for each new checkpoint.
@@ -116,7 +138,7 @@ spec:
                   | grep -o '[0-9]*' | head -1 || echo "")
                 if [[ -n "${current_step}" ]] && [[ "${current_step}" != "${last_processed_step}" ]]; then
                   echo "[io-helper] generating io samples for latest step=${current_step}"
-                  /workspace/erm-rust/bin/erm io-example \
+                  "${ERM_BIN}" io-example \
                     --data /workspace/rust-pcn/data/books \
                     --checkpoint "${CKPT_DIR}/latest" \
                     --output "${CKPT_DIR}/latest/io_example.json" \
@@ -144,18 +166,30 @@ spec:
           export AIM_EXPERIMENT="erm-training"
           export EXPERIMENT_DIR="${EXP_DIR}"
           export POLL_INTERVAL="1"
-          /tmp/aim-watcher-venv/bin/python -u /scripts/aim-watcher-v2.py watch >"${EXP_DIR}/aim-watcher.log" 2>&1 &
+          aim_watcher_loop() {
+            while true; do
+              /tmp/aim-watcher-venv/bin/python -u /scripts/aim-watcher-v2.py watch >>"${EXP_DIR}/aim-watcher.log" 2>&1 || true
+              echo "[aim-watcher] watcher exited; restarting in 5s"
+              sleep 5
+            done
+          }
+          aim_watcher_loop &
           AIM_WATCHER_PID=$!
           echo "[aim-watcher] started pid=${AIM_WATCHER_PID}"
 
-          /workspace/erm-rust/bin/erm diffusion-train \
+          "${ERM_BIN}" diffusion-train \
             --data /workspace/rust-pcn/data/books \
             --steps "${REMAINING_STEPS}" \
+            --config "${RUN_CONFIG}" \
             --backend cuda \
             --log-every 10 \
             --checkpoint-every 250 \
             --checkpoint-dir "${CKPT_DIR}" \
             --exp-id "${NEW_EXP}" \
+            --seq-len "${TARGET_SEQ_LEN}" \
+            --num-ants "${TARGET_NUM_ANTS}" \
+            --batch "${TARGET_BATCH}" \
+            --diffusion-t "${TARGET_DIFFUSION_T}" \
             --resume "${RESUME_DIR}" \
             2>&1 | tee "${EXP_DIR}/console.log"
 

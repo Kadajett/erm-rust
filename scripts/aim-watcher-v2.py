@@ -258,13 +258,17 @@ def create_experiment_run(repo: str, mode: str) -> tuple[Run, str]:
         # Aim can refuse stale softlocks. Fall back to a unique hash but keep same tags.
         if "softlock" in str(e).lower() or "file lock" in str(e).lower():
             ts_hash = hashlib.sha1(f"{run_hash}|{int(time.time())}".encode("utf-8")).hexdigest()[:24]
-            run = Run(run_hash=ts_hash, repo=repo, experiment=AIM_EXPERIMENT)
+            # Do not pass run_hash here: an explicit hash expects an existing run.
+            # Create a new run, then record the intended fallback hash for traceability.
+            run = Run(repo=repo, experiment=AIM_EXPERIMENT)
             write_pinned_run_hash(run.hash)
             run["run_hash_fallback_from"] = run_hash
+            run["run_hash_fallback_target"] = ts_hash
             try_add_tag(run, "lock-fallback")
             log.warning(
-                "Lock conflict for hash=%s; created fallback run hash=%s",
+                "Lock conflict for hash=%s; created fallback run hash=%s (target=%s)",
                 run_hash,
+                run.hash,
                 ts_hash,
             )
         else:

@@ -162,10 +162,7 @@ pub fn corrupt_spectral<R: Rng>(
     };
 
     // Compute per-position priority.
-    let max_s = surprisal
-        .iter()
-        .copied()
-        .fold(0.0_f32, f32::max);
+    let max_s = surprisal.iter().copied().fold(0.0_f32, f32::max);
     let n = x.len();
     let mut priority = Vec::with_capacity(n);
     let mut sum_p = 0.0_f32;
@@ -262,7 +259,10 @@ mod tests {
     use rand_chacha::ChaCha20Rng;
 
     fn default_config() -> ErmConfig {
-        ErmConfig::default()
+        ErmConfig {
+            vocab_size: 16_384,
+            ..ErmConfig::default()
+        }
     }
 
     /// Helper: create a simple ground-truth token vector.
@@ -328,7 +328,7 @@ mod tests {
         let mask_id = cfg.mask_token_id();
         let mut rng = ChaCha20Rng::seed_from_u64(7);
 
-        let result = corrupt(&x, 6, &cfg, &mut rng).unwrap();
+        let result = corrupt(&x, cfg.refinement_steps, &cfg, &mut rng).unwrap();
         for &tok in &result.y_t {
             assert!(
                 tok >= 0 && tok <= mask_id,
@@ -341,18 +341,19 @@ mod tests {
 
     #[test]
     fn test_mask_rate_at_t_max() {
-        // At t=T=6: α_T = 0.8. With large N the empirical rate should be close.
+        // At t=T: α_T = 0.8. With large N the empirical rate should be close.
         let cfg = ErmConfig {
             batch_size: 64,
             seq_len: 256,
+            vocab_size: 16_384,
             ..ErmConfig::default()
         };
         let x = make_gt(cfg.batch_size, cfg.seq_len, cfg.vocab_size);
         let mut rng = ChaCha20Rng::seed_from_u64(123);
 
-        let result = corrupt(&x, 6, &cfg, &mut rng).unwrap();
+        let result = corrupt(&x, cfg.refinement_steps, &cfg, &mut rng).unwrap();
         let emp = result.empirical_mask_rate();
-        let expected = cfg.mask_rate(6);
+        let expected = cfg.mask_rate(cfg.refinement_steps);
         let tol = 0.03; // ±3%
         assert!(
             (emp - expected).abs() < tol,
@@ -366,6 +367,7 @@ mod tests {
         let cfg = ErmConfig {
             batch_size: 64,
             seq_len: 256,
+            vocab_size: 16_384,
             ..ErmConfig::default()
         };
         let x = make_gt(cfg.batch_size, cfg.seq_len, cfg.vocab_size);
@@ -383,18 +385,19 @@ mod tests {
 
     #[test]
     fn test_replace_rate_at_t_max() {
-        // At t=T=6: β_T = 0.1.
+        // At t=T: β_T = 0.1.
         let cfg = ErmConfig {
             batch_size: 64,
             seq_len: 256,
+            vocab_size: 16_384,
             ..ErmConfig::default()
         };
         let x = make_gt(cfg.batch_size, cfg.seq_len, cfg.vocab_size);
         let mut rng = ChaCha20Rng::seed_from_u64(789);
 
-        let result = corrupt(&x, 6, &cfg, &mut rng).unwrap();
+        let result = corrupt(&x, cfg.refinement_steps, &cfg, &mut rng).unwrap();
         let emp = result.empirical_replace_rate();
-        let expected = cfg.replace_rate(6);
+        let expected = cfg.replace_rate(cfg.refinement_steps);
         let tol = 0.03;
         assert!(
             (emp - expected).abs() < tol,
@@ -408,6 +411,7 @@ mod tests {
         let cfg = ErmConfig {
             batch_size: 32,
             seq_len: 512,
+            vocab_size: 16_384,
             ..ErmConfig::default()
         };
         let x = make_gt(cfg.batch_size, cfg.seq_len, cfg.vocab_size);
@@ -460,6 +464,7 @@ mod tests {
         // Edge case: T=1, only one step.
         let cfg = ErmConfig {
             refinement_steps: 1,
+            vocab_size: 16_384,
             ..ErmConfig::default()
         };
         let x = make_gt(1, 32, cfg.vocab_size);

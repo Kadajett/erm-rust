@@ -611,8 +611,9 @@ fn run_generate(
     let mut cfg = load_config(config_path);
     cfg.seq_len = length;
     cfg.refinement_steps = steps;
-    // Use a small vocab for demo generation without a real model.
-    if cfg.vocab_size > 256 {
+    // `vocab_size=0` means "auto-detect from tokenizer" in training configs.
+    // This command has no tokenizer, so use a safe demo fallback.
+    if cfg.vocab_size == 0 || cfg.vocab_size > 256 {
         cfg.vocab_size = 256;
     }
 

@@ -349,12 +349,12 @@ pub fn follower_temperature_schedule(step: usize, total_steps: usize) -> f32 {
 
 /// Compute leader temperature that scales with uncertainty.
 ///
-/// `T_leader(step, mean_uncertainty) = max(0.5, 2.0 * mean_uncertainty)`
+/// `T_leader(step, mean_uncertainty) = max(0.8, 1.6 * mean_uncertainty)`
 ///
 /// Leaders always explore, but more aggressively at uncertain positions.
 #[must_use]
 pub fn leader_temperature_schedule(mean_uncertainty: f32) -> f32 {
-    (2.0 * mean_uncertainty).max(0.5)
+    (1.6 * mean_uncertainty).max(0.8)
 }
 
 /// Ant colony that produces edit proposals from follower ants.
@@ -1710,32 +1710,41 @@ mod tests {
 
         // At halfway, temperature = min(1.0, 0.7 + 0.15) = 0.85
         let t500 = follower_temperature_schedule(500, 1000);
-        assert!((t500 - 0.85).abs() < 1e-5, "step 500 should be 0.85, got {t500}");
+        assert!(
+            (t500 - 0.85).abs() < 1e-5,
+            "step 500 should be 0.85, got {t500}"
+        );
 
         // At end, temperature = min(1.0, 0.7 + 0.3) = 1.0
         let t1000 = follower_temperature_schedule(1000, 1000);
-        assert!((t1000 - 1.0).abs() < 1e-5, "step 1000 should be 1.0, got {t1000}");
+        assert!(
+            (t1000 - 1.0).abs() < 1e-5,
+            "step 1000 should be 1.0, got {t1000}"
+        );
 
         // total_steps=0 returns default 0.7
         let td = follower_temperature_schedule(50, 0);
-        assert!((td - 0.7).abs() < 1e-5, "total_steps=0 should be 0.7, got {td}");
+        assert!(
+            (td - 0.7).abs() < 1e-5,
+            "total_steps=0 should be 0.7, got {td}"
+        );
     }
 
     #[test]
     fn test_leader_temperature_schedule() {
         use super::leader_temperature_schedule;
 
-        // Low uncertainty → floor at 0.5
+        // Low uncertainty → floor at 0.8
         let tl = leader_temperature_schedule(0.1);
-        assert!((tl - 0.5).abs() < 1e-5, "low unc should be 0.5, got {tl}");
+        assert!((tl - 0.8).abs() < 1e-5, "low unc should be 0.8, got {tl}");
 
-        // Moderate uncertainty → 2 * 0.4 = 0.8
+        // Moderate uncertainty → 1.6 * 0.4 = 0.64, floored to 0.8
         let tm = leader_temperature_schedule(0.4);
         assert!((tm - 0.8).abs() < 1e-5, "mid unc should be 0.8, got {tm}");
 
-        // High uncertainty → 2 * 1.0 = 2.0
+        // High uncertainty → 1.6 * 1.0 = 1.6
         let th = leader_temperature_schedule(1.0);
-        assert!((th - 2.0).abs() < 1e-5, "high unc should be 2.0, got {th}");
+        assert!((th - 1.6).abs() < 1e-5, "high unc should be 1.6, got {th}");
     }
 
     #[test]

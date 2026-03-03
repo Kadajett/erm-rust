@@ -162,22 +162,22 @@ pub struct ErmConfig {
 impl Default for ErmConfig {
     fn default() -> Self {
         Self {
-            vocab_size: 16_384,
-            seq_len: 128,
+            vocab_size: 0, // auto-detected from tokenizer
+            seq_len: 256,
 
-            hidden_dim: 256,
-            num_blocks: 6,
-            num_heads: 4,
+            hidden_dim: 512,
+            num_blocks: 3,
+            num_heads: 8,
             mlp_expansion: 4,
-            dropout: 0.1,
+            dropout: 0.3,
 
             emax: 16,
 
-            num_ants: 256,
-            topk: 8,
-            pmax: 8,
-            refinement_steps: 6,
-            batch_size: 8,
+            num_ants: 128,
+            topk: 32,
+            pmax: 6,
+            refinement_steps: 4,
+            batch_size: 1,
 
             mask_rate_max: 0.8,
             mask_rate_min: 0.15,
@@ -185,11 +185,11 @@ impl Default for ErmConfig {
             replace_rate_min: 0.02,
 
             pheromone_evap: 0.1,
-            pheromone_eta: 0.5,
+            pheromone_eta: 0.7,
             taint_zeta: 0.3,
             taint_max: 5.0,
             taint_decay: 0.05,
-            phi_max: 10.0,
+            phi_max: 100.0,
             phi_init: 0.05,
 
             route_epsilon: 1e-6,
@@ -202,15 +202,15 @@ impl Default for ErmConfig {
             leader_ema_gamma: 0.3,
 
             death_streak: 5,
-            max_edits_per_step: 0.15,
-            leader_fraction: 0.10,
+            max_edits_per_step: 0.18,
+            leader_fraction: 0.12,
 
             warmstart_steps: 0,
             warmstart_death_mult: 4,
 
-            learning_rate: 1e-3,
+            learning_rate: 5e-4,
             weight_decay: 0.01,
-            warmup_steps: 1000,
+            warmup_steps: 100,
             use_muon: true,
 
             diffusion_steps: 6,
@@ -221,7 +221,8 @@ impl Default for ErmConfig {
             use_paragraph_spans: true,
             tokenizer_type: "bpe".to_string(),
             bpe_vocab_size: 4096,
-            bpe_vocab_path: String::new(),
+            bpe_vocab_path: "/workspace/erm-rust/data/tokenizers/merged/merged_vocab.json"
+                .to_string(),
 
             entropy_weight: 0.01,
             grad_clip_norm: 1.0,
@@ -313,9 +314,7 @@ impl ErmConfig {
                 let cos_s = 0.5 * (1.0 - (std::f32::consts::PI * s).cos());
                 self.gamma_min + (self.gamma_max - self.gamma_min) * cos_s
             }
-            "sqrt" => {
-                self.gamma_min + (self.gamma_max - self.gamma_min) * s.sqrt()
-            }
+            "sqrt" => self.gamma_min + (self.gamma_max - self.gamma_min) * s.sqrt(),
             _ => {
                 // "linear" (default)
                 self.gamma_min + (self.gamma_max - self.gamma_min) * s
@@ -378,11 +377,11 @@ impl Default for PheromoneConfig {
     fn default() -> Self {
         Self {
             evaporation_rate: 0.1,
-            deposit_rate: 0.5,
+            deposit_rate: 0.7,
             taint_rate: 0.3,
             taint_decay: 0.05,
             taint_max: 5.0,
-            phi_max: 10.0,
+            phi_max: 100.0,
             prune_min_score: -1.0,
             prune_max_age: 1000,
             route_lambda: 1.0,
@@ -429,35 +428,36 @@ mod tests {
     #[test]
     fn test_default_values() {
         let cfg = ErmConfig::default();
-        assert_eq!(cfg.vocab_size, 16_384);
-        assert_eq!(cfg.seq_len, 128);
-        assert_eq!(cfg.hidden_dim, 256);
-        assert_eq!(cfg.num_blocks, 6);
+        assert_eq!(cfg.vocab_size, 0);
+        assert_eq!(cfg.seq_len, 256);
+        assert_eq!(cfg.hidden_dim, 512);
+        assert_eq!(cfg.num_blocks, 3);
         assert_eq!(cfg.emax, 16);
-        assert_eq!(cfg.mask_token_id(), 16_384);
-        assert_eq!(cfg.total_vocab_size(), 16_385);
+        assert_eq!(cfg.mask_token_id(), 0);
+        assert_eq!(cfg.total_vocab_size(), 1);
     }
 
     #[test]
     fn test_leader_follower_counts() {
         let cfg = ErmConfig::default();
-        assert_eq!(cfg.num_leaders(), 26);
-        assert_eq!(cfg.num_followers(), 230);
+        // ceil(128 * 0.12) = ceil(15.36) = 16
+        assert_eq!(cfg.num_leaders(), 16);
+        assert_eq!(cfg.num_followers(), 112);
         assert_eq!(cfg.num_leaders() + cfg.num_followers(), cfg.num_ants);
     }
 
     #[test]
     fn test_max_edits() {
         let cfg = ErmConfig::default();
-        // ceil(0.15 * 128) = ceil(19.2) = 20
-        assert_eq!(cfg.max_edits(), 20);
+        // ceil(0.18 * 256) = ceil(46.08) = 47
+        assert_eq!(cfg.max_edits(), 47);
     }
 
     #[test]
     fn test_mask_rate_schedule() {
         let cfg = ErmConfig::default();
-        // At t=T=6 (heaviest): α_T = 0.8
-        let rate_t = cfg.mask_rate(6);
+        // At t=T=4 (heaviest): α_T = 0.8
+        let rate_t = cfg.mask_rate(4);
         assert!((rate_t - 0.8).abs() < 1e-6, "at t=T: {rate_t}");
 
         // At t=1 (lightest): α_1 = 0.15
@@ -465,7 +465,7 @@ mod tests {
         assert!((rate_1 - 0.15).abs() < 1e-6, "at t=1: {rate_1}");
 
         // Monotonically decreasing from t=T to t=1
-        for t in 2..=6 {
+        for t in 2..=4 {
             assert!(cfg.mask_rate(t) >= cfg.mask_rate(t - 1));
         }
     }
@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn test_replace_rate_schedule() {
         let cfg = ErmConfig::default();
-        let rate_t = cfg.replace_rate(6);
+        let rate_t = cfg.replace_rate(4);
         assert!((rate_t - 0.1).abs() < 1e-6);
         let rate_1 = cfg.replace_rate(1);
         assert!((rate_1 - 0.02).abs() < 1e-6);
