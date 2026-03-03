@@ -272,7 +272,7 @@ enum Commands {
     /// Run diffusion colony training (tokens-in → tokens-out, T refinement steps).
     DiffusionTrain {
         /// Path to training data directory (containing .txt files).
-        #[arg(long)]
+        #[arg(long, default_value = "/workspace/rust-pcn/data/books")]
         data: String,
 
         /// Number of training steps.
@@ -284,19 +284,22 @@ enum Commands {
         config: Option<String>,
 
         /// Backend to use.
-        #[arg(long, default_value = "gpu")]
+        #[arg(long, default_value = "cuda")]
         backend: BackendChoice,
 
         /// Log every N steps.
-        #[arg(long, default_value = "50")]
+        #[arg(long, default_value = "25")]
         log_every: usize,
 
         /// Save checkpoint every N steps (0 = disabled).
-        #[arg(long, default_value = "500")]
+        #[arg(long, default_value = "250")]
         checkpoint_every: usize,
 
         /// Checkpoint output directory.
-        #[arg(long)]
+        #[arg(
+            long,
+            default_value = "/workspace/erm-rust/data/experiments/default/checkpoints"
+        )]
         checkpoint_dir: Option<String>,
 
         /// Experiment id (used in metrics.jsonl).
@@ -411,7 +414,14 @@ fn main() {
             num_examples,
             seed,
         } => {
-            run_io_example(&data, &checkpoint, config.as_deref(), &output, num_examples, seed);
+            run_io_example(
+                &data,
+                &checkpoint,
+                config.as_deref(),
+                &output,
+                num_examples,
+                seed,
+            );
         }
         Commands::RenderGraph {
             snapshot,
@@ -428,10 +438,7 @@ fn main() {
         } => {
             run_generate_gif(&snapshots_dir, &output, fps, batch_idx);
         }
-        Commands::SaveScorer {
-            checkpoint,
-            output,
-        } => {
+        Commands::SaveScorer { checkpoint, output } => {
             run_save_scorer(&checkpoint, output.as_deref());
         }
         Commands::Infer {
@@ -1039,7 +1046,9 @@ fn run_io_example(
     eprintln!(
         "[io-example] Config hints: seq_len={} hidden_dim={} vocab_size={} \
          (actual dims derived from scorer/tensor at runtime)",
-        cfg.seq_len, cfg.hidden_dim, cfg.total_vocab_size()
+        cfg.seq_len,
+        cfg.hidden_dim,
+        cfg.total_vocab_size()
     );
 
     // ── Step 2: Find and load BPE vocabulary ──────────────────────────
@@ -1260,7 +1269,11 @@ fn io_example_loop_bpe<B: burn::tensor::backend::AutodiffBackend>(
         };
 
         // Derive V from actual logits buffer: len == 1*L*V → V = len/L.
-        let vocab_size = if l > 0 { logits_cpu.len() / l } else { cfg_vocab };
+        let vocab_size = if l > 0 {
+            logits_cpu.len() / l
+        } else {
+            cfg_vocab
+        };
         if logits_cpu.len() != l * vocab_size {
             eprintln!(
                 "ERROR: logits buffer size {} is not divisible by L={l}. Cannot derive V.",
@@ -1294,8 +1307,7 @@ fn io_example_loop_bpe<B: burn::tensor::backend::AutodiffBackend>(
 
                 // Top-3.
                 let mut indexed: Vec<(usize, f32)> = probs.iter().copied().enumerate().collect();
-                indexed
-                    .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                 let top3: Vec<serde_json::Value> = indexed
                     .iter()
                     .take(3)
@@ -1342,7 +1354,10 @@ fn io_example_loop_bpe<B: burn::tensor::backend::AutodiffBackend>(
                             top1_hits += 1;
                         }
                     }
-                    if top3.iter().any(|p| p["token_id"].as_u64().unwrap_or(0) as u32 == ground_truth) {
+                    if top3
+                        .iter()
+                        .any(|p| p["token_id"].as_u64().unwrap_or(0) as u32 == ground_truth)
+                    {
                         top3_hits += 1;
                     }
                 }
@@ -1395,7 +1410,10 @@ fn io_example_loop_bpe<B: burn::tensor::backend::AutodiffBackend>(
         std::fs::create_dir_all(parent).ok();
     }
     std::fs::write(output_path, &json_str).expect("write output file");
-    eprintln!("[io-example] Wrote {} examples to: {output_path}", examples.len());
+    eprintln!(
+        "[io-example] Wrote {} examples to: {output_path}",
+        examples.len()
+    );
 
     // Print first 3 examples summary.
     for ex in examples.iter().take(3) {
@@ -1445,9 +1463,7 @@ fn io_example_loop_char<B: burn::tensor::backend::AutodiffBackend>(
         eprintln!("ERROR: cannot load warmstart checkpoint: {e}");
         std::process::exit(1);
     }
-    eprintln!(
-        "[io-example] Loaded colony checkpoint from: {checkpoint_dir}"
-    );
+    eprintln!("[io-example] Loaded colony checkpoint from: {checkpoint_dir}");
 
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let l = cfg.seq_len;
@@ -1484,7 +1500,11 @@ fn io_example_loop_char<B: burn::tensor::backend::AutodiffBackend>(
         };
 
         // Derive vocab_size from actual logits buffer.
-        let vocab_size = if l > 0 { logits_cpu.len() / l } else { cfg.total_vocab_size() };
+        let vocab_size = if l > 0 {
+            logits_cpu.len() / l
+        } else {
+            cfg.total_vocab_size()
+        };
 
         let clean_tokens: Vec<u32> = x_i32.iter().map(|&v| v as u32).collect();
         let clean_string = tokenizer.decode(&clean_tokens);
@@ -1506,8 +1526,7 @@ fn io_example_loop_char<B: burn::tensor::backend::AutodiffBackend>(
                 let probs: Vec<f32> = exps.iter().map(|&e| e / sum_exps).collect();
 
                 let mut indexed: Vec<(usize, f32)> = probs.iter().copied().enumerate().collect();
-                indexed
-                    .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                 let top3: Vec<serde_json::Value> = indexed
                     .iter()
                     .take(3)
@@ -1565,7 +1584,10 @@ fn io_example_loop_char<B: burn::tensor::backend::AutodiffBackend>(
         std::fs::create_dir_all(parent).ok();
     }
     std::fs::write(output_path, &json_str).expect("write output file");
-    eprintln!("[io-example] Wrote {} examples to: {output_path}", examples.len());
+    eprintln!(
+        "[io-example] Wrote {} examples to: {output_path}",
+        examples.len()
+    );
 }
 
 /// Render a graph snapshot to SVG file.
@@ -1710,9 +1732,7 @@ fn run_save_scorer(checkpoint_dir: &str, output_dir: Option<&str>) {
         // Try scorer/ directory (burn's default recorder format).
         let scorer_dir = format!("{checkpoint_dir}/scorer");
         if !std::path::Path::new(&scorer_dir).exists() {
-            eprintln!(
-                "ERROR: scorer not found at '{scorer_src}' or '{scorer_dir}'"
-            );
+            eprintln!("ERROR: scorer not found at '{scorer_src}' or '{scorer_dir}'");
             std::process::exit(1);
         }
         println!("Scorer found at: {scorer_dir}");
@@ -1837,6 +1857,7 @@ fn infer_loop<B: burn::tensor::backend::AutodiffBackend>(
     use erm_train::diffusion_training::DiffusionTrainer;
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
+    use std::path::Path;
 
     let mut cfg = cfg.clone();
     cfg.seq_len = length;
@@ -1847,34 +1868,73 @@ fn infer_loop<B: burn::tensor::backend::AutodiffBackend>(
         eprintln!("WARNING: could not load checkpoint '{checkpoint_dir}': {e}");
         eprintln!("  (running inference with freshly initialized weights)");
     } else {
-        println!("Loaded checkpoint from: {checkpoint_dir} (step={})", trainer.step);
+        println!(
+            "Loaded checkpoint from: {checkpoint_dir} (step={})",
+            trainer.step
+        );
     }
 
-    let prompt_tokens: Option<Vec<u32>> = prompt.map(|p| {
-        // Simple char-level encoding for prompt.
-        p.chars()
-            .map(|c| (c as u32) % cfg.total_vocab_size() as u32)
-            .collect()
-    });
+    // Load tokenizer for proper prompt encoding/decoding in inference.
+    let bpe_tokenizer = if cfg.tokenizer_type == "bpe" {
+        let bpe_candidates = [
+            format!("{checkpoint_dir}/bpe_vocab.json"),
+            Path::new(checkpoint_dir)
+                .parent()
+                .map(|p| format!("{}/bpe_vocab.json", p.display()))
+                .unwrap_or_default(),
+            Path::new(checkpoint_dir)
+                .parent()
+                .and_then(|p| p.parent())
+                .map(|p| format!("{}/bpe_vocab.json", p.display()))
+                .unwrap_or_default(),
+            cfg.bpe_vocab_path.clone(),
+        ];
+        let found = bpe_candidates
+            .iter()
+            .find(|p| !p.is_empty() && Path::new(p).exists());
+        match found {
+            Some(path) => match erm_core::BpeTokenizer::load(path) {
+                Ok(tok) => Some(tok),
+                Err(e) => {
+                    eprintln!("WARNING: failed to load BPE vocab from '{path}': {e}");
+                    None
+                }
+            },
+            None => {
+                eprintln!(
+                    "WARNING: tokenizer_type=bpe but bpe_vocab.json was not found; \
+                     prompt will use fallback char encoding"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let prompt_tokens: Option<Vec<u32>> = match (prompt, bpe_tokenizer.as_ref()) {
+        (Some(p), Some(tok)) => Some(tok.encode_text(p)),
+        (Some(p), None) => Some(
+            p.chars()
+                .map(|c| (c as u32) % cfg.total_vocab_size() as u32)
+                .collect(),
+        ),
+        (None, _) => None,
+    };
 
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
 
-    // Use non-autodiff backend for inference.
-    let scorer_cfg = erm_core::burn_scorer::BurnScorerConfig::from_erm(&cfg);
-    let inf_device: <B::InnerBackend as burn::tensor::backend::Backend>::Device =
-        Default::default();
-    let inf_scorer = scorer_cfg.init::<B::InnerBackend>(&inf_device);
     let mut graph = erm_core::graph::RouteGraph::new(&cfg);
 
     let result = erm_train::diffusion_training::diffusion_infer(
-        &inf_scorer,
+        &trainer.scorer,
         &mut graph,
         &cfg,
         k_steps,
         prompt_tokens.as_deref(),
         length,
         &mut rng,
-        &inf_device,
+        &device,
     );
 
     match result {
@@ -1882,14 +1942,13 @@ fn infer_loop<B: burn::tensor::backend::AutodiffBackend>(
             println!("=== Diffusion Inference Output ===");
             println!("Steps: {k_steps}, Length: {length}");
             println!("Tokens: {:?}", &tokens[..tokens.len().min(64)]);
-            // Decode with char tokenizer as fallback.
-            let chars: String = tokens
-                .iter()
-                .map(|&t| {
-                    char::from_u32(t + 32).unwrap_or('?')
-                })
-                .collect();
-            println!("Decoded (approx): {}", &chars[..chars.len().min(200)]);
+            if let Some(tok) = bpe_tokenizer {
+                let decoded = tok.decode_text(&tokens);
+                let preview: String = decoded.chars().take(400).collect();
+                println!("Decoded: {preview}");
+            } else {
+                eprintln!("INFO: no tokenizer decode available; showing token ids only");
+            }
         }
         Err(e) => {
             eprintln!("ERROR: inference failed: {e}");
@@ -1958,33 +2017,32 @@ fn run_diffusion_train(
     };
 
     // Build BPE tokenizer from a sample of the corpus or load from path.
-    let tokenizer = if !cfg.bpe_vocab_path.is_empty()
-        && std::path::Path::new(&cfg.bpe_vocab_path).exists()
-    {
-        println!("Loading BPE vocabulary from: {}", cfg.bpe_vocab_path);
-        match erm_core::BpeTokenizer::load(&cfg.bpe_vocab_path) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("ERROR: cannot load BPE vocab: {e}");
-                std::process::exit(1);
+    let tokenizer =
+        if !cfg.bpe_vocab_path.is_empty() && std::path::Path::new(&cfg.bpe_vocab_path).exists() {
+            println!("Loading BPE vocabulary from: {}", cfg.bpe_vocab_path);
+            match erm_core::BpeTokenizer::load(&cfg.bpe_vocab_path) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("ERROR: cannot load BPE vocab: {e}");
+                    std::process::exit(1);
+                }
             }
-        }
-    } else {
-        // Train BPE on sample text.
-        println!("Training BPE vocabulary ({} merges)...", cfg.bpe_vocab_size);
-        let sample_text = collect_sample_text(&data_dir, 1_000_000);
-        let bpe = erm_core::BpeTokenizer::train(&sample_text, cfg.bpe_vocab_size);
-        println!("BPE vocabulary trained: {} tokens", bpe.vocab_size());
+        } else {
+            // Train BPE on sample text.
+            println!("Training BPE vocabulary ({} merges)...", cfg.bpe_vocab_size);
+            let sample_text = collect_sample_text(&data_dir, 1_000_000);
+            let bpe = erm_core::BpeTokenizer::train(&sample_text, cfg.bpe_vocab_size);
+            println!("BPE vocabulary trained: {} tokens", bpe.vocab_size());
 
-        // Save vocabulary alongside checkpoint if possible.
-        if let Some(dir) = checkpoint_dir {
-            let vocab_path = format!("{dir}/bpe_vocab.json");
-            if let Ok(()) = bpe.save(&vocab_path) {
-                println!("BPE vocabulary saved to: {vocab_path}");
+            // Save vocabulary alongside checkpoint if possible.
+            if let Some(dir) = checkpoint_dir {
+                let vocab_path = format!("{dir}/bpe_vocab.json");
+                if let Ok(()) = bpe.save(&vocab_path) {
+                    println!("BPE vocabulary saved to: {vocab_path}");
+                }
             }
-        }
-        bpe
-    };
+            bpe
+        };
 
     let vocab_size = tokenizer.vocab_size();
     cfg.vocab_size = vocab_size;
@@ -2073,12 +2131,7 @@ fn collect_sample_text(data_dir: &str, max_bytes: usize) -> String {
     if let Ok(entries) = std::fs::read_dir(data_dir) {
         let mut paths: Vec<_> = entries
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .and_then(|x| x.to_str())
-                    == Some("txt")
-            })
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("txt"))
             .map(|e| e.path())
             .collect();
         paths.sort();
@@ -2183,8 +2236,7 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
 
         // Log.
         if step % log_every == 0 || step == total_steps {
-            let avg_loss: f32 =
-                recent_losses.iter().sum::<f32>() / recent_losses.len() as f32;
+            let avg_loss: f32 = recent_losses.iter().sum::<f32>() / recent_losses.len() as f32;
             println!(
                 "[diffusion step {:6}] loss={:.4} lr={:.6} f_temp={:.2} l_temp={:.2} edits={} mean_φ={:.4} deaths={} pruned={} inserted={}",
                 step,
@@ -2223,10 +2275,7 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
         }
 
         // Checkpoint.
-        if checkpoint_every > 0
-            && step % checkpoint_every == 0
-            && checkpoint_dir.is_some()
-        {
+        if checkpoint_every > 0 && step % checkpoint_every == 0 && checkpoint_dir.is_some() {
             let dir = checkpoint_dir.unwrap();
             let ckpt_dir = format!("{dir}/step_{step:08}");
             if let Err(e) = trainer.save_checkpoint(&ckpt_dir) {
@@ -2332,8 +2381,8 @@ mod tests {
     #[test]
     fn test_load_config_default() {
         let cfg = load_config(None);
-        assert_eq!(cfg.seq_len, 128);
-        assert_eq!(cfg.vocab_size, 16_384);
+        assert_eq!(cfg.seq_len, 256);
+        assert_eq!(cfg.vocab_size, 0);
     }
 
     #[test]

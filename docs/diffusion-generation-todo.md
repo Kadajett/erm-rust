@@ -11,9 +11,9 @@ Status legend: `[ ]` pending, `[-]` in progress, `[x]` done.
    - [x] Round-trip tests covering spaces/newlines.
    - [x] Compatibility tests for current merged vocab marker style.
 
-3. [-] Fix inference path to use checkpoint-trained weights and proper tokenizer decode.
+3. [x] Fix inference path to use checkpoint-trained weights and proper tokenizer decode.
 
-4. [ ] Make inference perform true iterative diffusion refinement (not one-way mask fill).
+4. [-] Make inference perform true iterative diffusion refinement (not one-way mask fill).
 
 5. [ ] Add automatic training-time sample dumps (`clean/corrupted/predicted`) every N steps.
 
