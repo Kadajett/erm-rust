@@ -2152,6 +2152,140 @@ fn collect_sample_text(data_dir: &str, max_bytes: usize) -> String {
     sample
 }
 
+#[derive(serde::Serialize)]
+struct DiffusionSampleRecord {
+    step: usize,
+    corruption_step_t: usize,
+    num_corrupted_positions: usize,
+    clean_string: String,
+    corrupted_string: String,
+    predicted_string: String,
+    clean_tokens: Vec<u32>,
+    corrupted_tokens: Vec<u32>,
+    predicted_tokens: Vec<u32>,
+}
+
+fn open_diffusion_sample_writer(
+    checkpoint_dir: Option<&str>,
+) -> Option<std::io::BufWriter<std::fs::File>> {
+    use std::io::BufWriter;
+
+    let dir = checkpoint_dir?;
+    let path = format!("{dir}/samples.jsonl");
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!(
+                "WARNING: cannot create sample output dir '{}': {e}",
+                parent.display()
+            );
+            return None;
+        }
+    }
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(file) => {
+            println!("Samples → {path}");
+            Some(BufWriter::new(file))
+        }
+        Err(e) => {
+            eprintln!("WARNING: cannot open sample output file '{path}': {e}");
+            None
+        }
+    }
+}
+
+fn write_diffusion_sample<B: burn::tensor::backend::AutodiffBackend>(
+    writer: &mut std::io::BufWriter<std::fs::File>,
+    trainer: &erm_train::diffusion_training::DiffusionTrainer<B>,
+    tokenizer: &erm_core::BpeTokenizer,
+    batch: &erm_train::streaming_dataset::TokenBatch,
+    step: usize,
+    device: &B::Device,
+) -> Result<(), String> {
+    use erm_train::bridge::{tensor_to_vec, tokens_to_tensor};
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+    use std::io::Write;
+
+    if batch.batch_size == 0 || batch.seq_len == 0 {
+        return Ok(());
+    }
+    let l = batch.seq_len;
+    if batch.tokens.len() < l {
+        return Err(format!(
+            "batch too small for sample: tokens={} seq_len={l}",
+            batch.tokens.len()
+        ));
+    }
+
+    let clean_tokens: Vec<u32> = batch.tokens[..l].to_vec();
+    let x_i32: Vec<i32> = clean_tokens.iter().map(|&t| t as i32).collect();
+    let t_val = ((trainer.config.diffusion_steps.max(1)) + 1) / 2;
+    let mut sample_rng = ChaCha8Rng::seed_from_u64(0xD1FF_u64 ^ step as u64);
+
+    let corruption = erm_core::corruption::corrupt(&x_i32, t_val, &trainer.config, &mut sample_rng)
+        .map_err(|e| format!("sample corruption failed: {e}"))?;
+    let corrupted_tokens: Vec<u32> = corruption.y_t.iter().map(|&t| t as u32).collect();
+    let num_corrupted_positions = clean_tokens
+        .iter()
+        .zip(corrupted_tokens.iter())
+        .filter(|(a, b)| a != b)
+        .count();
+
+    let tokens_tensor = tokens_to_tensor::<B>(&corrupted_tokens, 1, l, device)
+        .map_err(|e| format!("sample tensor conversion failed: {e}"))?;
+    let (logits_tensor, _) = trainer.scorer.forward(tokens_tensor);
+    let logits_cpu =
+        tensor_to_vec(logits_tensor).map_err(|e| format!("sample logits transfer failed: {e}"))?;
+    let v_rt = if l > 0 { logits_cpu.len() / l } else { 0 };
+    if v_rt == 0 || logits_cpu.len() < l * v_rt {
+        return Err(format!(
+            "invalid logits shape for sample: len={} L={l} V={v_rt}",
+            logits_cpu.len()
+        ));
+    }
+
+    let mut predicted_tokens = Vec::with_capacity(l);
+    for pos in 0..l {
+        let start = pos * v_rt;
+        let end = start + v_rt;
+        if end > logits_cpu.len() {
+            predicted_tokens.push(0);
+            continue;
+        }
+        let pos_logits = &logits_cpu[start..end];
+        let best = pos_logits
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i as u32)
+            .unwrap_or(0);
+        predicted_tokens.push(best);
+    }
+
+    let record = DiffusionSampleRecord {
+        step,
+        corruption_step_t: t_val,
+        num_corrupted_positions,
+        clean_string: tokenizer.decode_text(&clean_tokens),
+        corrupted_string: tokenizer.decode_text(&corrupted_tokens),
+        predicted_string: tokenizer.decode_text(&predicted_tokens),
+        clean_tokens,
+        corrupted_tokens,
+        predicted_tokens,
+    };
+    let line = serde_json::to_string(&record)
+        .map_err(|e| format!("sample JSON serialization failed: {e}"))?;
+    writeln!(writer, "{line}").map_err(|e| format!("sample write failed: {e}"))?;
+    writer
+        .flush()
+        .map_err(|e| format!("sample flush failed: {e}"))?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
     cfg: &erm_core::ErmConfig,
@@ -2170,7 +2304,7 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
 
-    let mut trainer = DiffusionTrainer::<B>::new(cfg, device);
+    let mut trainer = DiffusionTrainer::<B>::new(cfg, device.clone());
     trainer.total_steps = total_steps;
 
     if let Some(resume_dir) = resume {
@@ -2185,6 +2319,7 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
             }
         }
     }
+    let sample_tokenizer = tokenizer.clone();
     let mut dataset = StreamingDataset::new(streaming_cfg, tokenizer);
     let mut rng = ChaCha8Rng::seed_from_u64(42);
 
@@ -2201,6 +2336,7 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
             }
         }
     }
+    let mut sample_writer = open_diffusion_sample_writer(checkpoint_dir);
 
     println!(
         "Starting diffusion training: {} steps, log_every={}, checkpoint_every={}",
@@ -2270,6 +2406,15 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
                 };
                 if let Err(e) = mw.write(&record) {
                     eprintln!("WARNING: metrics write failed: {e}");
+                }
+            }
+
+            // Write one sample I/O record from this step.
+            if let Some(ref mut sw) = sample_writer {
+                if let Err(e) =
+                    write_diffusion_sample(sw, &trainer, &sample_tokenizer, &batch, step, &device)
+                {
+                    eprintln!("WARNING: sample write failed: {e}");
                 }
             }
         }

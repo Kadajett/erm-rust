@@ -15,9 +15,9 @@ Status legend: `[ ]` pending, `[-]` in progress, `[x]` done.
 
 4. [x] Make inference perform true iterative diffusion refinement (not one-way mask fill).
 
-5. [-] Add automatic training-time sample dumps (`clean/corrupted/predicted`) every N steps.
+5. [x] Add automatic training-time sample dumps (`clean/corrupted/predicted`) every N steps.
 
-6. [ ] Define and run longer training milestones on existing corpus:
+6. [-] Define and run longer training milestones on existing corpus:
    - [ ] 100k steps
    - [ ] 400k steps
    - [ ] 1M steps
