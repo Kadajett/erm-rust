@@ -7,11 +7,11 @@ Status legend: `[ ]` pending, `[-]` in progress, `[x]` done.
    - [x] Stop collapsing text boundaries in BPE encode path.
    - [x] Preserve sentence/paragraph whitespace better in streaming dataset path.
 
-2. [-] Add tokenizer regression tests before retraining.
-   - [ ] Round-trip tests covering spaces/newlines.
-   - [ ] Compatibility tests for current merged vocab marker style.
+2. [x] Add tokenizer regression tests before retraining.
+   - [x] Round-trip tests covering spaces/newlines.
+   - [x] Compatibility tests for current merged vocab marker style.
 
-3. [ ] Fix inference path to use checkpoint-trained weights and proper tokenizer decode.
+3. [-] Fix inference path to use checkpoint-trained weights and proper tokenizer decode.
 
 4. [ ] Make inference perform true iterative diffusion refinement (not one-way mask fill).
 

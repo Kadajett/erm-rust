@@ -601,6 +601,31 @@ fn apply_merge(tokens: &[String], pair: &(String, String), merged: &str) -> Vec<
 mod tests {
     use super::*;
 
+    fn prefix_marker_tokenizer() -> BpeTokenizer {
+        let mut vocab: HashMap<String, u32> = HashMap::new();
+        let mut id_to_token: HashMap<u32, String> = HashMap::new();
+        for (id, tok) in [
+            (PAD_ID, "<pad>"),
+            (MASK_ID, "<mask>"),
+            (UNK_ID, "<unk>"),
+            (3, "hello"),
+            (4, "Ġworld"),
+            (5, "world"),
+            (6, "Ġ"),
+            (7, "▁moon"),
+            (8, "moon"),
+        ] {
+            vocab.insert(tok.to_string(), id);
+            id_to_token.insert(id, tok.to_string());
+        }
+        BpeTokenizer {
+            merges: Vec::new(),
+            vocab,
+            id_to_token,
+            vocab_size: 9,
+        }
+    }
+
     fn small_corpus() -> &'static str {
         "the quick brown fox jumps over the lazy dog the fox"
     }
@@ -669,5 +694,31 @@ mod tests {
         let bpe = BpeTokenizer::train("abcde abcde", 5);
         // vocab_size should not change after construction.
         assert_eq!(bpe.vocab_size(), TokenizerApi::vocab_size(&bpe));
+    }
+
+    #[test]
+    fn test_prefix_vocab_encodes_with_boundary_markers() {
+        let bpe = prefix_marker_tokenizer();
+        let ids = bpe.encode_text("hello world");
+        assert_eq!(
+            ids,
+            vec![3, 4],
+            "prefix marker vocab should emit Ġword token"
+        );
+    }
+
+    #[test]
+    fn test_prefix_vocab_preserves_multi_whitespace_runs() {
+        let bpe = prefix_marker_tokenizer();
+        let ids = bpe.encode_text("hello  world\nmoon");
+        let decoded = bpe.decode_text(&ids);
+        assert_eq!(decoded, "hello  world moon");
+    }
+
+    #[test]
+    fn test_decode_replaces_sentencepiece_whitespace_marker() {
+        let bpe = prefix_marker_tokenizer();
+        let decoded = bpe.decode_text(&[3, 7]);
+        assert_eq!(decoded, "hello moon");
     }
 }
