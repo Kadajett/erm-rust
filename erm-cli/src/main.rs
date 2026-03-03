@@ -2343,18 +2343,18 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
         total_steps, log_every, checkpoint_every
     );
 
-    let mut step = 0;
+    let mut local_step = 0usize;
     let mut recent_losses: Vec<f32> = Vec::new();
 
-    while step < total_steps {
+    while local_step < total_steps {
         let batch = match dataset.next_batch() {
             Ok(Some(b)) => b,
             Ok(None) => {
-                eprintln!("Dataset exhausted at step {step}");
+                eprintln!("Dataset exhausted at local_step={local_step}");
                 break;
             }
             Err(e) => {
-                eprintln!("Dataset error at step {step}: {e}");
+                eprintln!("Dataset error at local_step={local_step}: {e}");
                 break;
             }
         };
@@ -2362,20 +2362,21 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
         let result: DiffusionStepResult = match trainer.diffusion_step(&batch, &mut rng) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("ERROR at step {step}: {e}");
+                eprintln!("ERROR at local_step={local_step}: {e}");
                 break;
             }
         };
 
-        step += 1;
+        local_step += 1;
+        let global_step = trainer.step;
         recent_losses.push(result.loss);
 
         // Log.
-        if step % log_every == 0 || step == total_steps {
+        if local_step % log_every == 0 || local_step == total_steps {
             let avg_loss: f32 = recent_losses.iter().sum::<f32>() / recent_losses.len() as f32;
             println!(
                 "[diffusion step {:6}] loss={:.4} lr={:.6} f_temp={:.2} l_temp={:.2} edits={} mean_φ={:.4} deaths={} pruned={} inserted={}",
-                step,
+                global_step,
                 avg_loss,
                 result.lr,
                 result.follower_temp,
@@ -2392,7 +2393,7 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
             if let Some(ref mut mw) = metrics_writer {
                 let record = MetricsRecord {
                     exp_id: cfg.exp_id.clone(),
-                    step,
+                    step: global_step,
                     loss: avg_loss,
                     edits: result.total_edits,
                     mean_phi: result.pheromone_stats.mean_phi,
@@ -2411,18 +2412,23 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
 
             // Write one sample I/O record from this step.
             if let Some(ref mut sw) = sample_writer {
-                if let Err(e) =
-                    write_diffusion_sample(sw, &trainer, &sample_tokenizer, &batch, step, &device)
-                {
+                if let Err(e) = write_diffusion_sample(
+                    sw,
+                    &trainer,
+                    &sample_tokenizer,
+                    &batch,
+                    global_step,
+                    &device,
+                ) {
                     eprintln!("WARNING: sample write failed: {e}");
                 }
             }
         }
 
         // Checkpoint.
-        if checkpoint_every > 0 && step % checkpoint_every == 0 && checkpoint_dir.is_some() {
+        if checkpoint_every > 0 && local_step % checkpoint_every == 0 && checkpoint_dir.is_some() {
             let dir = checkpoint_dir.unwrap();
-            let ckpt_dir = format!("{dir}/step_{step:08}");
+            let ckpt_dir = format!("{dir}/step_{global_step:08}");
             if let Err(e) = trainer.save_checkpoint(&ckpt_dir) {
                 eprintln!("WARNING: checkpoint save failed: {e}");
             }
@@ -2446,7 +2452,7 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
 
     println!(
         "Diffusion training complete. Steps: {} (batches consumed: {})",
-        step, dataset.batches_consumed
+        trainer.step, dataset.batches_consumed
     );
 }
 
