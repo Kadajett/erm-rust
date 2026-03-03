@@ -60,6 +60,7 @@ POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
 
 AIM_REPO = f"aim://{AIM_SERVER}:{AIM_PORT}"
 AIM_EXPERIMENT = os.environ.get("AIM_EXPERIMENT", "erm-training")
+RUN_HASH_FILE = os.path.join(EXPERIMENT_DIR, ".aim_run_hash")
 
 TRACKED_METRICS = [
     "loss",
@@ -145,6 +146,27 @@ def build_run_hash(experiment_id: str) -> str:
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:24]
 
 
+def read_pinned_run_hash() -> str | None:
+    """Read previously pinned run hash from experiment directory."""
+    try:
+        with open(RUN_HASH_FILE, "r") as f:
+            value = f.read().strip()
+            if len(value) == 24:
+                return value
+    except OSError:
+        pass
+    return None
+
+
+def write_pinned_run_hash(run_hash: str):
+    """Persist run hash so watcher restarts reuse the same Aim run."""
+    try:
+        with open(RUN_HASH_FILE, "w") as f:
+            f.write(run_hash)
+    except OSError as e:
+        log.warning("Could not persist run hash to %s: %s", RUN_HASH_FILE, e)
+
+
 def try_add_tag(run: Run, tag: str):
     """Best-effort Aim tag writer."""
     if not tag:
@@ -220,11 +242,12 @@ def set_run_params(run: Run):
 def create_experiment_run(repo: str, mode: str) -> tuple[Run, str]:
     """Create or resume one Aim run per EXPERIMENT_DIR/exp_id."""
     experiment_id = infer_experiment_id()
-    run_hash = build_run_hash(experiment_id)
+    run_hash = read_pinned_run_hash() or build_run_hash(experiment_id)
     run_name = Path(EXPERIMENT_DIR).name
 
     try:
         run = Run(run_hash=run_hash, repo=repo, experiment=AIM_EXPERIMENT)
+        write_pinned_run_hash(run.hash)
         log.info(
             "Resumed Aim run for exp_id=%s (name=%s hash=%s)",
             experiment_id,
@@ -236,6 +259,7 @@ def create_experiment_run(repo: str, mode: str) -> tuple[Run, str]:
         if "softlock" in str(e).lower() or "file lock" in str(e).lower():
             ts_hash = hashlib.sha1(f"{run_hash}|{int(time.time())}".encode("utf-8")).hexdigest()[:24]
             run = Run(run_hash=ts_hash, repo=repo, experiment=AIM_EXPERIMENT)
+            write_pinned_run_hash(run.hash)
             run["run_hash_fallback_from"] = run_hash
             try_add_tag(run, "lock-fallback")
             log.warning(
@@ -246,6 +270,7 @@ def create_experiment_run(repo: str, mode: str) -> tuple[Run, str]:
         else:
             log.warning("Could not open deterministic run %s: %s. Creating new.", run_hash, e)
             run = Run(repo=repo, experiment=AIM_EXPERIMENT)
+            write_pinned_run_hash(run.hash)
 
     run.name = run_name
     run["training_type"] = "diffusion"
