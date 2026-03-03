@@ -1,0 +1,163 @@
+[
+  {
+    "id": "alice-run-b2-m100k-2026-03-03T21-20-00Z-b2-stability-profile",
+    "created_at_utc": "2026-03-03T21:20:00Z",
+    "experiment_id": "alice-run-b2-m100k",
+    "tags": [
+      "theory",
+      "batch2",
+      "stability",
+      "resume"
+    ],
+    "decision": {
+      "model": "claude-opus-4-6",
+      "type": "config_change",
+      "summary": "Resume from existing checkpoint with memory-safe batch-2 profile and safe colony regularization tweaks.",
+      "changes": [
+        {
+          "field": "batch_size",
+          "from": 1,
+          "to": 2
+        },
+        {
+          "field": "seq_len",
+          "from": 256,
+          "to": 128
+        },
+        {
+          "field": "diffusion_steps",
+          "from": 6,
+          "to": 2
+        },
+        {
+          "field": "num_ants",
+          "from": 128,
+          "to": 64
+        },
+        {
+          "field": "death_streak",
+          "from": 5,
+          "to": 15
+        },
+        {
+          "field": "dropout",
+          "from": 0.3,
+          "to": 0.1
+        },
+        {
+          "field": "pheromone_evap",
+          "from": 0.1,
+          "to": 0.03
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 10,
+      "status": "running",
+      "stop_reason": "early-observation-window-requested"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 10,
+        "resume_local_end": 3540
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": 3.1758,
+          "end_mean": 2.4015,
+          "last_100_mean": 2.2221,
+          "min": 1.4324,
+          "max": 5.0707
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": 3839,
+          "used_max": 3839
+        },
+        "host_ram_bytes": 4226752512,
+        "oom": false
+      },
+      "notes": "No OOM observed during sampled interval. Training advanced continuously with checkpoint writes and stable VRAM."
+    }
+  },
+  {
+    "id": "alice-run-b2-m100k-2026-03-03T21-22-00Z-next-numeric-tuning-set-a",
+    "created_at_utc": "2026-03-03T21:22:00Z",
+    "experiment_id": "alice-run-b2-m100k",
+    "tags": [
+      "theory",
+      "tuning",
+      "numeric-only",
+      "next-test"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "config_change",
+      "summary": "Test conservative numeric changes to reduce high-loss spikes while keeping batch=2 stable.",
+      "changes": [
+        {
+          "field": "death_streak",
+          "from": 15,
+          "to": 24
+        },
+        {
+          "field": "learning_rate",
+          "from": 0.0005,
+          "to": 0.0004
+        },
+        {
+          "field": "max_edits_per_step",
+          "from": 0.18,
+          "to": 0.14
+        },
+        {
+          "field": "leader_fraction",
+          "from": 0.12,
+          "to": 0.08
+        },
+        {
+          "field": "leader_temperature_floor",
+          "from": 0.5,
+          "to": 0.8
+        },
+        {
+          "field": "leader_temperature_multiplier",
+          "from": 2.0,
+          "to": 1.6
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 0,
+      "status": "proposed",
+      "stop_reason": "not-started"
+    },
+    "result": {
+      "reported_by_model": "pending",
+      "step_window": {
+        "resume_local_start": null,
+        "resume_local_end": null
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": null,
+          "end_mean": null,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": null,
+          "used_max": null
+        },
+        "host_ram_bytes": null,
+        "oom": null
+      },
+      "notes": "Apply one change at a time for 1000-2000 steps each; then fill measured results in this record."
+    }
+  }
+]

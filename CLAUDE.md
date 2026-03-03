@@ -31,3 +31,15 @@ The builder pod uses an `nvcc` shim that reports CUDA 13.0 to cudarc's build-tim
 - Training job label: `app=erm-diffusion`
 - Builder pod name: `erm-builder`
 - Host paths: `/home/kadajett/dev/erm-rust` (deploy), `/home/kadajett/dev/erm-rust-src` (build cache)
+
+## Experiment Tracking Skill (Required)
+
+- Use shared skill: `skills/experiment-tracking/SKILL.md`
+- Track all config/code training decisions in `experiments/tracking/theory-tracker.json`
+- Keep the tracker as a JSON array of objects
+- Mark hypotheses with tag `theory`
+- Each entry must include:
+  - `decision.model` (model that made the decision)
+  - `result.reported_by_model` (model that measured/reported impact)
+  - `evaluation.window_minutes_target` (default `60`) and `evaluation.window_minutes_actual` (override if crash/short run)
+  - VRAM and loss trend metrics

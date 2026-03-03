@@ -102,6 +102,17 @@ These invariants must hold at ALL times. Add assertions in debug builds.
 4. **Not returning edge weights from RouteAggregate** — Phase 4 needs them for tracing
 5. **Unbounded graph growth** — every edge insertion must check Emax and prune if needed
 
+## Experiment Tracking Skill (Required)
+
+- For any training/config/code-change decision, use the shared skill at `skills/experiment-tracking/SKILL.md`
+- Record each decision and outcome in `experiments/tracking/theory-tracker.json`
+- Entries must be JSON objects in a JSON array and include the `theory` tag when the change is a hypothesis
+- Every entry must include:
+  - `decision.model` (model that proposed the change)
+  - `result.reported_by_model` (model that reported measured effects)
+  - `evaluation.window_minutes_target` (default `60`) and `evaluation.window_minutes_actual` (override when crash/early stop)
+  - `metrics` including VRAM and loss trend fields
+
 ---
 
 _This file is a living document. Every code review should check if new rules need to be added._
