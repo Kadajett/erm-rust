@@ -37,30 +37,51 @@ spec:
           apt-get update -qq 2>&1 | tail -1 || true
           apt-get install -y -qq --no-install-recommends ca-certificates 2>&1 | tail -3 || true
 
-          BASE_EXP="alice-run-b2"
           NEW_EXP="alice-run-b2-m100k"
-          RESUME_DIR="/workspace/erm-rust/data/experiments/${BASE_EXP}/checkpoints/latest"
+          BASE_EXP="alice-run-b2"
+          TARGET_STEP=100000
+          PRIMARY_RESUME="/workspace/erm-rust/data/experiments/${NEW_EXP}/checkpoints/latest"
+          FALLBACK_RESUME="/workspace/erm-rust/data/experiments/${BASE_EXP}/checkpoints/latest"
           CKPT_DIR="/workspace/erm-rust/data/experiments/${NEW_EXP}/checkpoints"
           EXP_DIR="/workspace/erm-rust/data/experiments/${NEW_EXP}"
 
           mkdir -p "${CKPT_DIR}"
 
+          if [[ -d "${PRIMARY_RESUME}" ]]; then
+            RESUME_DIR="${PRIMARY_RESUME}"
+          else
+            RESUME_DIR="${FALLBACK_RESUME}"
+          fi
+
           if [[ ! -d "${RESUME_DIR}" ]]; then
-            echo "ERROR: resume checkpoint not found: ${RESUME_DIR}"
+            echo "ERROR: resume checkpoint not found: ${PRIMARY_RESUME} or ${FALLBACK_RESUME}"
             exit 1
           fi
+
+          CURRENT_STEP=$(grep -o '"step"[[:space:]]*:[[:space:]]*[0-9]*' "${RESUME_DIR}/step.json" \
+            | grep -o '[0-9]*' | head -1 || echo "0")
+          if [[ -z "${CURRENT_STEP}" ]]; then
+            CURRENT_STEP=0
+          fi
+          REMAINING_STEPS=$((TARGET_STEP - CURRENT_STEP))
+          if [[ "${REMAINING_STEPS}" -le 0 ]]; then
+            echo "Resume step (${CURRENT_STEP}) is already >= target (${TARGET_STEP}); exiting."
+            exit 0
+          fi
+
           # Make vocab discoverable next to experiment outputs for io-example tooling.
           cp /workspace/erm-rust/data/tokenizers/merged/merged_vocab.json "${EXP_DIR}/bpe_vocab.json" || true
 
           echo "Resume: ${RESUME_DIR}"
+          echo "Current step: ${CURRENT_STEP} | Target: ${TARGET_STEP} | Remaining: ${REMAINING_STEPS}"
           echo "Config: default runtime config + checkpoint resume"
           echo "Checkpoint output: ${CKPT_DIR}"
           echo "Binary: /workspace/erm-rust/bin/erm"
-          echo "=== Starting +90k steps at $(date -u +%H:%M:%S) ==="
+          echo "=== Starting +${REMAINING_STEPS} steps at $(date -u +%H:%M:%S) ==="
 
           /workspace/erm-rust/bin/erm diffusion-train \
             --data /workspace/rust-pcn/data/books \
-            --steps 90000 \
+            --steps "${REMAINING_STEPS}" \
             --backend cuda \
             --log-every 10 \
             --checkpoint-every 250 \
