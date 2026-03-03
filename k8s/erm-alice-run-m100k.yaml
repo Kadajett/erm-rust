@@ -1,0 +1,120 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: erm-alice-run-m100k
+  namespace: pcn-train
+  labels:
+    app: erm-diffusion
+    exp: alice-run-m100k
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: erm-diffusion
+        exp: alice-run-m100k
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: [theshire]
+      containers:
+      - name: erm-alice-run-m100k
+        image: ubuntu:24.04
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -eo pipefail
+          echo "=== ERM Milestone A (to 100k total) ==="
+          echo "Host: $(hostname) | Start: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          apt-get update -qq 2>&1 | tail -1 || true
+          apt-get install -y -qq --no-install-recommends ca-certificates 2>&1 | tail -3 || true
+
+          BASE_EXP="alice-run-b2"
+          NEW_EXP="alice-run-b2-m100k"
+          RESUME_DIR="/workspace/erm-rust/data/experiments/${BASE_EXP}/checkpoints/latest"
+          CKPT_DIR="/workspace/erm-rust/data/experiments/${NEW_EXP}/checkpoints"
+          EXP_DIR="/workspace/erm-rust/data/experiments/${NEW_EXP}"
+
+          mkdir -p "${CKPT_DIR}"
+
+          if [[ ! -d "${RESUME_DIR}" ]]; then
+            echo "ERROR: resume checkpoint not found: ${RESUME_DIR}"
+            exit 1
+          fi
+          # Make vocab discoverable next to experiment outputs for io-example tooling.
+          cp /workspace/erm-rust/data/tokenizers/merged/merged_vocab.json "${EXP_DIR}/bpe_vocab.json" || true
+
+          echo "Resume: ${RESUME_DIR}"
+          echo "Config: default runtime config + checkpoint resume"
+          echo "Checkpoint output: ${CKPT_DIR}"
+          echo "Binary: /workspace/erm-rust/bin/erm"
+          echo "=== Starting +90k steps at $(date -u +%H:%M:%S) ==="
+
+          /workspace/erm-rust/bin/erm diffusion-train \
+            --data /workspace/rust-pcn/data/books \
+            --steps 90000 \
+            --backend cuda \
+            --log-every 25 \
+            --checkpoint-every 250 \
+            --checkpoint-dir "${CKPT_DIR}" \
+            --exp-id "${NEW_EXP}" \
+            --resume "${RESUME_DIR}" \
+            2>&1 | tee "${EXP_DIR}/console.log"
+
+          EXIT=$?
+          echo "=== training complete (exit=${EXIT}) | $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+          exit ${EXIT}
+        resources:
+          requests:
+            memory: "8Gi"
+            cpu: "2"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: "16Gi"
+            cpu: "4"
+            nvidia.com/gpu: "1"
+        env:
+        - name: LD_LIBRARY_PATH
+          value: /usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: compute,utility
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: all
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: RUST_BACKTRACE
+          value: "1"
+        volumeMounts:
+        - name: erm-rust
+          mountPath: /workspace/erm-rust
+        - name: rust-pcn
+          mountPath: /workspace/rust-pcn
+        - name: cuda-13-0
+          mountPath: /usr/local/cuda-13.0
+          readOnly: true
+        - name: cuda-13-1
+          mountPath: /usr/local/cuda
+          readOnly: true
+      volumes:
+      - name: erm-rust
+        hostPath:
+          path: /home/kadajett/dev/erm-rust
+          type: Directory
+      - name: rust-pcn
+        hostPath:
+          path: /home/kadajett/dev/rust-pcn
+          type: Directory
+      - name: cuda-13-0
+        hostPath:
+          path: /usr/local/cuda-13.0
+      - name: cuda-13-1
+        hostPath:
+          path: /usr/local/cuda-13.1
