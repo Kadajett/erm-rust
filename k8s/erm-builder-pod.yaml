@@ -41,14 +41,32 @@ spec:
       grep -c "lr=" /workspace/erm-rust-src/erm-cli/src/main.rs || echo "WARNING: lr not found!"
 
       # Ensure CUDA paths are available for burn-cuda compilation
-      export PATH="/usr/local/cuda/bin:${PATH}"
       export LD_LIBRARY_PATH="/usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
       export CUDA_PATH="/usr/local/cuda-13.0"
 
+      # Create a fake nvcc that reports CUDA 13.0 — the driver on theshire only
+      # supports 13.0 APIs. Without this, cudarc picks up the 13.1 toolkit nvcc
+      # and enables cuDevSmResourceSplit which doesn't exist in the 13.0 driver.
+      mkdir -p /tmp/cuda-shim
+      cat > /tmp/cuda-shim/nvcc <<'NVCC_SHIM'
+      #!/bin/sh
+      echo "nvcc: NVIDIA (R) Cuda compiler driver"
+      echo "Copyright (c) 2005-2025 NVIDIA Corporation"
+      echo "Built on Mon_Jan_01_00:00:00_UTC_2025"
+      echo "Cuda compilation tools, release 13.0, V13.0.0"
+      NVCC_SHIM
+      chmod +x /tmp/cuda-shim/nvcc
+      export PATH="/tmp/cuda-shim:/usr/local/cuda/bin:${PATH}"
+
       cd /workspace/erm-rust-src
 
-      # Touch changed files to force recompile
-      touch erm-cli/Cargo.toml Cargo.toml erm-cli/src/main.rs
+      # Clean cudarc/cubecl build cache to ensure correct CUDA version detection
+      echo "Cleaning cudarc build cache..."
+      rm -rf target/release/build/cudarc-* target/release/build/cubecl-cuda-*
+      rm -rf target/release/.fingerprint/cudarc-* target/release/.fingerprint/cubecl-cuda-*
+      rm -rf target/release/deps/libcudarc* target/release/deps/libcubecl_cuda*
+
+      echo "CUDA version (shim):" && nvcc --version 2>&1 | grep release
 
       echo "Building with GPU+CUDA backends (--no-default-features --features gpu,cuda)..."
       cargo build --release --bin erm --no-default-features --features gpu,cuda 2>&1
@@ -82,7 +100,7 @@ spec:
     - name: cuda-13-0
       mountPath: /usr/local/cuda-13.0
       readOnly: true
-    - name: cuda-13-1
+    - name: cuda-13-0-alias
       mountPath: /usr/local/cuda
       readOnly: true
   volumes:
@@ -101,6 +119,6 @@ spec:
   - name: cuda-13-0
     hostPath:
       path: /usr/local/cuda-13.0
-  - name: cuda-13-1
+  - name: cuda-13-0-alias
     hostPath:
-      path: /usr/local/cuda-13.1
+      path: /usr/local/cuda-13.0

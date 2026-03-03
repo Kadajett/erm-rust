@@ -35,8 +35,11 @@ spec:
           echo "Host: $(hostname) | Start: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
           apt-get update -qq 2>&1 | tail -1 || true
-          apt-get install -y -qq --no-install-recommends libvulkan1 mesa-vulkan-drivers ca-certificates 2>&1 | tail -3 || true
+          apt-get install -y -qq --no-install-recommends libvulkan1 ca-certificates 2>&1 | tail -3 || true
           update-ca-certificates || true
+
+          # NOTE: GPU backend requires updated NVIDIA driver with Vulkan ICD support.
+          # If --backend gpu fails, training falls back to CPU silently.
 
           # Prepare Alice-only corpus
           ALICE_DIR=/workspace/erm-rust/data/alice-only
@@ -107,7 +110,7 @@ spec:
             --data "$ALICE_DIR/alice.txt" \
             --steps 10000 \
             --config /workspace/erm-rust/data/train_config.json \
-            --backend gpu \
+            --backend cuda \
             --log-every 25 \
             --checkpoint-every 250 \
             --checkpoint-dir "$CKPT_DIR" \
