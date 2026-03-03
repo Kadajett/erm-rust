@@ -18,6 +18,7 @@ Status legend: `[ ]` pending, `[-]` in progress, `[x]` done.
 5. [x] Add automatic training-time sample dumps (`clean/corrupted/predicted`) every N steps.
 
 6. [-] Define and run longer training milestones on existing corpus:
+   - [x] Publish concrete 3050 runbook + resume script.
    - [ ] 100k steps
    - [ ] 400k steps
    - [ ] 1M steps
