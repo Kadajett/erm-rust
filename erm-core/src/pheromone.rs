@@ -282,12 +282,13 @@ pub fn update_pheromones_with_stats(
             }
         }
 
-        // Normalized deposit: η * tanh(Δ / (σ + ε)) when σ > 0, else η * tanh(Δ).
-        let deposit = if sigma > norm_eps {
-            eta * (positive_delta / (sigma + norm_eps)).tanh()
+        // Base deposit (without η scaling): tanh(Δ / (σ + ε)) when σ > 0, else tanh(Δ).
+        // The η factor is applied per-edge with age decay: η / (1 + age).
+        let deposit_base = if sigma > norm_eps {
+            (positive_delta / (sigma + norm_eps)).tanh()
         } else {
             // Fallback: unnormalized (backward-compatible cold start).
-            eta * positive_delta.tanh()
+            positive_delta.tanh()
         };
         let taint_deposit = zeta * negative_delta;
 
@@ -300,10 +301,13 @@ pub fn update_pheromones_with_stats(
                 continue;
             }
 
-            // Deposit pheromone (tanh-bounded).
-            graph.phi[flat] += deposit;
+            // Per-edge learning rate decay: η / (1 + age).
+            // Older edges receive smaller deposits (diminishing returns),
+            // similar to learning rate decay in gradient-based optimizers.
+            let edge_eta = eta / (1.0 + graph.age[flat] as f32);
+            graph.phi[flat] += edge_eta * deposit_base;
 
-            // Taint deposit.
+            // Taint deposit (not age-decayed — harmful signals stay strong).
             graph.taint[flat] += taint_deposit;
         }
     }
