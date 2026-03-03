@@ -6,11 +6,9 @@
 //!
 //! # Architecture
 //!
-//! Identical to the Vec<f32> scorer:
-//!
 //! ```text
 //! y_t: [B, L]  ──→  token_emb [B, L, d]
-//!                        + pos_emb [L, d]
+//!                        + fourier_pos_emb [L, d] (fixed sinusoidal + learned projection)
 //!                    ──→ 6 feed-forward blocks:
 //!                        linear(d → 4d) → ReLU → linear(4d → d) + residual
 //!                    ──→ logit_head: linear(d → V)  → logits [B, L, V]
@@ -19,6 +17,7 @@
 
 use burn::nn;
 use burn::prelude::*;
+use burn::tensor::TensorData;
 
 use crate::config::ErmConfig;
 
@@ -60,7 +59,14 @@ impl BurnScorerConfig {
         let d_inner = d * self.mlp_expansion;
 
         let token_embed = nn::EmbeddingConfig::new(self.total_vocab, d).init(device);
-        let pos_embed = nn::EmbeddingConfig::new(self.seq_len, d).init(device);
+
+        // Build fixed Fourier position embedding table [L, d]
+        let fourier_table = build_fourier_pos_table(self.seq_len, d);
+        let fourier_pos_embed =
+            Tensor::<B, 2>::from_data(TensorData::new(fourier_table, [self.seq_len, d]), device);
+
+        // Learned projection from Fourier features to hidden dim
+        let pos_proj = nn::LinearConfig::new(d, d).init(device);
 
         let blocks: Vec<FeedForwardBlock<B>> = (0..self.num_blocks)
             .map(|_| FeedForwardBlock {
@@ -74,7 +80,8 @@ impl BurnScorerConfig {
 
         BurnScorer {
             token_embed,
-            pos_embed,
+            fourier_pos_embed,
+            pos_proj,
             blocks,
             logit_head,
             uncertainty_head,
@@ -83,6 +90,34 @@ impl BurnScorerConfig {
             vocab_size: self.vocab_size,
         }
     }
+}
+
+/// Build a fixed sinusoidal position embedding table.
+///
+/// Uses the standard transformer formula from "Attention Is All You Need":
+///   PE(pos, 2i)   = sin(pos / 10000^(2i/d))
+///   PE(pos, 2i+1) = cos(pos / 10000^(2i/d))
+///
+/// This overcomes spectral bias (Tancik et al. 2020) by providing
+/// multi-frequency positional features that let the network learn
+/// fine-grained position-dependent patterns.
+fn build_fourier_pos_table(seq_len: usize, d: usize) -> Vec<f32> {
+    let mut table = vec![0.0f32; seq_len * d];
+    for pos in 0..seq_len {
+        for i in 0..d / 2 {
+            let freq = 1.0 / (10000.0_f64.powf(2.0 * i as f64 / d as f64));
+            let angle = pos as f64 * freq;
+            table[pos * d + 2 * i] = angle.sin() as f32;
+            table[pos * d + 2 * i + 1] = angle.cos() as f32;
+        }
+        // If d is odd, fill the last element with sin at highest frequency
+        if d % 2 == 1 {
+            let freq = 1.0 / (10000.0_f64.powf(2.0 * (d / 2) as f64 / d as f64));
+            let angle = pos as f64 * freq;
+            table[pos * d + d - 1] = angle.sin() as f32;
+        }
+    }
+    table
 }
 
 /// A single feed-forward block with residual connection (burn version).
@@ -111,13 +146,18 @@ impl<B: Backend> FeedForwardBlock<B> {
 /// Burn-based neural scorer for ERM.
 ///
 /// Drop-in replacement for [`crate::scorer::Scorer`] that uses burn tensors
-/// for GPU acceleration. The architecture is identical.
+/// for GPU acceleration. Uses fixed Fourier position embeddings with a
+/// learned projection to overcome spectral bias.
 #[derive(Module, Debug)]
 pub struct BurnScorer<B: Backend> {
     /// Token embedding table. Shape: `[V_total, d]`.
     token_embed: nn::Embedding<B>,
-    /// Position embedding table. Shape: `[L, d]`.
-    pos_embed: nn::Embedding<B>,
+    /// Fixed Fourier position embedding table. Shape: `[L, d]`.
+    /// Not a learned parameter — sinusoidal features at multiple frequencies.
+    #[module(skip)]
+    fourier_pos_embed: Tensor<B, 2>,
+    /// Learned projection from Fourier position features to hidden dim.
+    pos_proj: nn::Linear<B>,
     /// Feed-forward blocks with residual connections.
     blocks: Vec<FeedForwardBlock<B>>,
     /// Logit output head: `d → V`.
@@ -162,17 +202,15 @@ impl<B: Backend> BurnScorer<B> {
         &self,
         tokens: Tensor<B, 2, Int>,
     ) -> (Tensor<B, 3>, Tensor<B, 2>, Tensor<B, 3>) {
-        let device = tokens.device();
         let [batch_size, seq_len] = tokens.dims();
 
         // Token embedding: [B, L] → [B, L, d]
         let tok_emb = self.token_embed.forward(tokens);
 
-        // Position indices: [L] → broadcast to [B, L]
-        let pos_ids = Tensor::<B, 1, Int>::arange(0..seq_len as i64, &device)
-            .unsqueeze::<2>() // [1, L]
-            .repeat_dim(0, batch_size); // [B, L]
-        let pos_emb = self.pos_embed.forward(pos_ids);
+        // Fourier position embedding: [L, d] → project → [L, d] → broadcast [B, L, d]
+        let pos_feats = self.fourier_pos_embed.clone().unsqueeze::<3>(); // [1, L, d]
+        let pos_emb = self.pos_proj.forward(pos_feats); // [1, L, d]
+        let pos_emb = pos_emb.repeat_dim(0, batch_size); // [B, L, d]
 
         // h = tok_emb + pos_emb : [B, L, d]
         let mut h = tok_emb + pos_emb;
@@ -325,5 +363,18 @@ mod tests {
             u1.into_data().as_slice::<f32>().unwrap(),
             u2.into_data().as_slice::<f32>().unwrap()
         );
+    }
+
+    #[test]
+    fn test_fourier_pos_table_values() {
+        let table = build_fourier_pos_table(4, 8);
+        // Check position 0 has sin(0)=0, cos(0)=1 at lowest frequency
+        assert!((table[0] - 0.0).abs() < 1e-6, "sin(0) should be 0");
+        assert!((table[1] - 1.0).abs() < 1e-6, "cos(0) should be 1");
+        // Check no NaN/Inf
+        for &v in &table {
+            assert!(!v.is_nan(), "NaN in Fourier table");
+            assert!(!v.is_infinite(), "Inf in Fourier table");
+        }
     }
 }
