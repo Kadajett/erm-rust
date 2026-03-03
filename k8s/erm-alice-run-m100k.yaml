@@ -10,6 +10,9 @@ spec:
   backoffLimit: 0
   template:
     metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: erm-alice-run-m100k
+        kubectl.kubernetes.io/default-logs-container: erm-alice-run-m100k
       labels:
         app: erm-diffusion
         exp: alice-run-m100k
@@ -79,6 +82,50 @@ spec:
           echo "Binary: /workspace/erm-rust/bin/erm"
           echo "=== Starting +${REMAINING_STEPS} steps at $(date -u +%H:%M:%S) ==="
 
+          # Background helper: generate io_example.json for each new checkpoint.
+          # Aim sidecar picks this up from checkpoints/latest/io_example.json.
+          IO_HELPER_PID=0
+          cleanup_io_helper() {
+            if [[ "${IO_HELPER_PID}" -gt 0 ]] && kill -0 "${IO_HELPER_PID}" 2>/dev/null; then
+              echo "[io-helper] stopping pid=${IO_HELPER_PID}"
+              kill "${IO_HELPER_PID}" 2>/dev/null || true
+            fi
+          }
+          trap cleanup_io_helper EXIT
+
+          io_helper_loop() {
+            while true; do
+              for step_dir in $(ls -d "${CKPT_DIR}"/step_* 2>/dev/null | sort -r); do
+                [[ -d "${step_dir}" ]] || continue
+                [[ -f "${step_dir}/scorer.bin" ]] || continue
+                [[ -f "${step_dir}/io_example.json" ]] && continue
+                step_name="$(basename "${step_dir}")"
+                echo "[io-helper] generating io samples for ${step_name}"
+                /workspace/erm-rust/bin/erm io-example \
+                  --data /workspace/rust-pcn/data/books \
+                  --checkpoint "${step_dir}" \
+                  --output "${step_dir}/io_example.json" \
+                  --num-examples 3 \
+                  --seed 42 \
+                  >"/tmp/io-helper-${step_name}.log" 2>&1 || true
+
+                if [[ -f "${step_dir}/io_example.json" ]]; then
+                  cp "${step_dir}/io_example.json" "${CKPT_DIR}/latest/io_example.json" 2>/dev/null || true
+                  echo "[io-helper] published ${step_name} -> ${CKPT_DIR}/latest/io_example.json"
+                else
+                  echo "[io-helper] failed for ${step_name} (see /tmp/io-helper-${step_name}.log)"
+                fi
+                # Process one checkpoint per pass to keep helper CPU tame.
+                break
+              done
+              sleep 20
+            done
+          }
+
+          io_helper_loop &
+          IO_HELPER_PID=$!
+          echo "[io-helper] started pid=${IO_HELPER_PID}"
+
           /workspace/erm-rust/bin/erm diffusion-train \
             --data /workspace/rust-pcn/data/books \
             --steps "${REMAINING_STEPS}" \
@@ -91,6 +138,7 @@ spec:
             2>&1 | tee "${EXP_DIR}/console.log"
 
           EXIT=$?
+          cleanup_io_helper
           echo "=== training complete (exit=${EXIT}) | $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
           exit ${EXIT}
         resources:
