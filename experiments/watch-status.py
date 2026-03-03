@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 EXPERIMENTS = [
+    {"id": "alice-run-b2-m100k", "seq_len": 256, "hidden_dim": 512, "ants": 128, "batch": 1, "T": 6, "job": "erm-alice-run-m100k", "label": "alice-run-m100k"},
     {"id": "exp-a", "seq_len": 1024, "hidden_dim": 192, "ants": 64, "batch": 1, "T": 6},
     {"id": "exp-b", "seq_len": 768,  "hidden_dim": 256, "ants": 96, "batch": 1, "T": 6},
     {"id": "exp-c", "seq_len": 512,  "hidden_dim": 256, "ants": 128, "batch": 2, "T": 8},
@@ -47,8 +48,9 @@ def read_last_metrics(exp_id: str) -> dict:
     """
     # Main run metrics takes priority; fall back to smoke if main not started yet.
     candidates_ordered = [
-        EXP_BASE / exp_id / "metrics.jsonl",           # main run (priority)
-        EXP_BASE / exp_id / "smoke" / "metrics.jsonl",  # smoke test fallback
+        EXP_BASE / exp_id / "metrics.jsonl",                      # main run (priority)
+        EXP_BASE / exp_id / "checkpoints" / "metrics.jsonl",      # checkpoint subdir
+        EXP_BASE / exp_id / "smoke" / "metrics.jsonl",            # smoke test fallback
         EXP_BASE / exp_id / "smoke-retry" / "metrics.jsonl",
     ]
     for metrics_path in candidates_ordered:
@@ -105,12 +107,14 @@ def parse_log_line(line: str) -> dict:
     return result
 
 
-def get_pod_status(exp_id: str) -> str:
+def get_pod_status(exp_id: str, job_name: str | None = None, label: str | None = None) -> str:
     """Get K8s pod status for this experiment via kubectl."""
+    job = job_name or f"erm-diff-{exp_id}"
+    pod_label = label or exp_id
     try:
         import subprocess
         result = subprocess.run(
-            ["kubectl", "get", "jobs", f"erm-diff-{exp_id}",
+            ["kubectl", "get", "jobs", job,
              "-n", "pcn-train",
              "-o", "jsonpath={.status.conditions[0].type}"],
             capture_output=True, text=True, timeout=5
@@ -123,7 +127,7 @@ def get_pod_status(exp_id: str) -> str:
         # Check if pod is running
         result2 = subprocess.run(
             ["kubectl", "get", "pods",
-             "-l", f"exp={exp_id}",
+             "-l", f"exp={pod_label}",
              "-n", "pcn-train",
              "-o", "jsonpath={.items[0].status.phase}"],
             capture_output=True, text=True, timeout=5
@@ -156,7 +160,7 @@ def build_status() -> dict:
         metrics = read_last_metrics(exp_id)
         log_line = read_last_log_line(exp_id)
         log_data = parse_log_line(log_line)
-        pod_status = get_pod_status(exp_id)
+        pod_status = get_pod_status(exp_id, exp.get("job"), exp.get("label"))
 
         step = metrics.get("step") or log_data.get("step")
         loss = metrics.get("loss") or log_data.get("loss")

@@ -61,7 +61,15 @@ POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
 AIM_REPO = f"aim://{AIM_SERVER}:{AIM_PORT}"
 AIM_EXPERIMENT = os.environ.get("AIM_EXPERIMENT", "erm-training")
 
-TRACKED_METRICS = ["loss", "edits", "mean_phi", "deaths"]
+TRACKED_METRICS = [
+    "loss",
+    "edits",
+    "mean_phi",
+    "deaths",
+    "lr",
+    "follower_temp",
+    "leader_temp",
+]
 
 # Plateau detection: if loss variance is below this over N readings, flag it
 PLATEAU_WINDOW = 10
@@ -542,7 +550,7 @@ def backfill():
     if os.path.exists(METRICS_FILE):
         log.info("Backfilling current metrics.jsonl")
         state = load_curriculum_state()
-        current_book = state.get("current_book", "unknown") if state else "unknown"
+        current_book = state.get("current_book", experiment_id) if state else experiment_id
         with open(METRICS_FILE, "r") as f:
             for line in f:
                 rec = parse_line(line)
@@ -579,7 +587,7 @@ def watch():
 
     # Attach initial curriculum state
     last_book_index = -1
-    current_book_name = "unknown"
+    current_book_name = experiment_id
     state = load_curriculum_state()
     if state:
         last_book_index = state.get("book_index", -1)

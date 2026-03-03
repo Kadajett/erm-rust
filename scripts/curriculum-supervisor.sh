@@ -396,6 +396,74 @@ is_alive() {
   kill -0 "$1" 2>/dev/null
 }
 
+# ── Helper: run io-example on new checkpoints asynchronously ─────────────────
+# Scans for step_NNNNN/ checkpoint dirs that lack io_example.json, and runs
+# erm io-example in the background (CPU only, won't block GPU training).
+IO_EXAMPLE_PIDS=()
+
+run_io_examples_async() {
+  local ckpt_base="$1"
+  local data_file="$2"
+
+  # Clean up completed io-example PIDs
+  local still_running=()
+  for pid in "${IO_EXAMPLE_PIDS[@]}"; do
+    if is_alive "$pid"; then
+      still_running+=("$pid")
+    fi
+  done
+  IO_EXAMPLE_PIDS=("${still_running[@]}")
+
+  # Don't launch more than 1 concurrent io-example (CPU bound, slow)
+  if [[ ${#IO_EXAMPLE_PIDS[@]} -ge 1 ]]; then
+    return
+  fi
+
+  # Scan for step dirs missing io_example.json
+  for step_dir in "$ckpt_base"/step_*/; do
+    [[ -d "$step_dir" ]] || continue
+    [[ -f "$step_dir/io_example.json" ]] && continue
+    # Must have a scorer.bin to be a valid checkpoint
+    [[ -f "$step_dir/scorer.bin" ]] || continue
+
+    local step_name
+    step_name=$(basename "$step_dir")
+    echo "[io-example] Found checkpoint without IO examples: $step_name"
+
+    (
+      "$ERM_BIN" io-example \
+        --data "$data_file" \
+        --checkpoint "$step_dir" \
+        --output "$step_dir/io_example.json" \
+        --num-examples 3 \
+        --seed 42 \
+        2>&1 | while IFS= read -r line; do echo "[io-example:$step_name] $line"; done
+
+      # Copy to latest/ for the watcher to pick up
+      if [[ -f "$step_dir/io_example.json" ]]; then
+        cp "$step_dir/io_example.json" "$ckpt_base/latest/io_example.json" 2>/dev/null || true
+        echo "[io-example] Wrote $step_dir/io_example.json and copied to latest/"
+      fi
+    ) &
+
+    IO_EXAMPLE_PIDS+=($!)
+    echo "[io-example] Launched background io-example PID=$! for $step_name"
+    # Only launch one at a time
+    break
+  done
+}
+
+# ── Helper: cleanup io-example background jobs ──────────────────────────────
+cleanup_io_examples() {
+  for pid in "${IO_EXAMPLE_PIDS[@]}"; do
+    if is_alive "$pid"; then
+      echo "[io-example] Killing background io-example PID=$pid"
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
+  IO_EXAMPLE_PIDS=()
+}
+
 # ── Main training loop ──────────────────────────────────────────────────────
 TRAINING_PID=0
 
@@ -405,6 +473,7 @@ cleanup() {
     kill -TERM "$TRAINING_PID" 2>/dev/null || true
     wait "$TRAINING_PID" 2>/dev/null || true
   fi
+  cleanup_io_examples
   exit 0
 }
 trap cleanup SIGTERM SIGINT
@@ -521,6 +590,9 @@ while [[ $BOOK_INDEX -lt $TOTAL_BOOKS ]]; do
 
     # ── Phase 2: Training active — monitor plateau and hard timeout ──
     TRAINING_ELAPSED=$((NOW - TRAINING_START_TIME))
+    
+    # Run IO examples for any new checkpoints
+    run_io_examples_async "$CKPT_DIR" "$BOOK_STAGE_DIR/current.txt"
 
     # Check hard training timeout
     if [[ $TRAINING_ELAPSED -ge $HARD_TIMEOUT_SECS ]]; then

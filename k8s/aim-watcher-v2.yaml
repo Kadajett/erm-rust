@@ -31,7 +31,7 @@ spec:
             - name: AIM_EXPERIMENT
               value: erm-training
             - name: EXPERIMENT_DIR
-              value: /data/experiments/curriculum-run
+              value: /data/experiments/alice-run-b2-m100k
           volumeMounts:
             - name: experiments
               mountPath: /data/experiments
@@ -53,9 +53,9 @@ spec:
             - name: AIM_EXPERIMENT
               value: erm-training
             - name: EXPERIMENT_DIR
-              value: /data/experiments/curriculum-run
+              value: /data/experiments/alice-run-b2-m100k
             - name: POLL_INTERVAL
-              value: "5"
+              value: "1"
           resources:
             requests:
               cpu: 100m
