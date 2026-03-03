@@ -38,9 +38,9 @@ use erm_core::config::{ErmConfig, PheromoneConfig};
 use erm_core::corruption::corrupt;
 use erm_core::error::{ErmError, ErmResult};
 use erm_core::graph::RouteGraph;
-use erm_core::merge::{compute_ant_deltas, merge_proposals};
+use erm_core::merge::{compute_ant_deltas, compute_position_deltas, merge_proposals};
 use erm_core::pheromone::{
-    build_edge_traces, prune_edges, update_pheromones_with_diversity, PheromoneStats,
+    build_edge_traces, prune_edges, update_pheromones_with_position_credit, PheromoneStats,
     RunningDeltaStats,
 };
 
@@ -359,6 +359,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             let actual_v_new = if bl > 0 { logits_new_cpu.len() / bl } else { v_rt };
 
             let mut ant_deltas = vec![0.0_f32; cfg.num_ants];
+            let mut position_deltas = vec![0.0_f32; b * l];
             for batch_idx in 0..b {
                 let lo_start = batch_idx * l * v_rt;
                 let lo_end = (batch_idx + 1) * l * v_rt;
@@ -387,6 +388,17 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 for (acc, &d) in ant_deltas.iter_mut().zip(batch_deltas.iter()) {
                     *acc += d;
                 }
+
+                // Per-position deltas for this batch element.
+                let pos_deltas_b = compute_position_deltas(
+                    z_t_b,
+                    y_new_b,
+                    logits_b,
+                    logits_new_b,
+                    v_rt,
+                )?;
+                let pd_start = batch_idx * l;
+                position_deltas[pd_start..pd_start + l].copy_from_slice(&pos_deltas_b);
             }
             if b > 1 {
                 let b_f = b as f32;
@@ -403,7 +415,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 l,
                 cfg.emax,
             );
-            let pstats = update_pheromones_with_diversity(
+            let pstats = update_pheromones_with_position_credit(
                 &mut self.graph,
                 &traces,
                 &ant_deltas,
@@ -411,6 +423,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 Some(&mut self.delta_stats),
                 &hidden_cpu,
                 d,
+                &position_deltas,
             )?;
 
             // Prune edges.

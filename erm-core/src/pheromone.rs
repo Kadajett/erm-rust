@@ -222,7 +222,7 @@ pub fn update_pheromones(
     ant_deltas: &[f32],
     config: &PheromoneConfig,
 ) -> ErmResult<PheromoneStats> {
-    update_pheromones_full(graph, traces, ant_deltas, config, None, None)
+    update_pheromones_full(graph, traces, ant_deltas, config, None, None, None)
 }
 
 /// Update pheromones with optional running delta normalization.
@@ -243,7 +243,7 @@ pub fn update_pheromones_with_stats(
     config: &PheromoneConfig,
     delta_stats: Option<&mut RunningDeltaStats>,
 ) -> ErmResult<PheromoneStats> {
-    update_pheromones_full(graph, traces, ant_deltas, config, delta_stats, None)
+    update_pheromones_full(graph, traces, ant_deltas, config, delta_stats, None, None)
 }
 
 /// Update pheromones with both running delta normalization and diversity pressure.
@@ -278,6 +278,45 @@ pub fn update_pheromones_with_diversity(
         config,
         delta_stats,
         Some((hidden, hidden_dim)),
+        None,
+    )
+}
+
+/// Update pheromones with per-position credit assignment and diversity pressure.
+///
+/// When `position_deltas` is `Some`, the deposit for each edge uses the
+/// improvement delta at the edge's **destination position** rather than
+/// the aggregate delta for the edge's **ant**. This gives finer-grained
+/// credit: edges routing to positions that improved get positive deposit,
+/// edges routing to positions that worsened get zero deposit (taint still
+/// uses per-ant deltas).
+///
+/// # Arguments
+///
+/// - `position_deltas`: flat `[B * L]` per-position improvement deltas.
+///   Index as `position_deltas[batch_idx * seq_len + dest_pos]`.
+///
+/// # Errors
+///
+/// Returns `ErmError` on dimension mismatches.
+pub fn update_pheromones_with_position_credit(
+    graph: &mut RouteGraph,
+    traces: &[EdgeTrace],
+    ant_deltas: &[f32],
+    config: &PheromoneConfig,
+    delta_stats: Option<&mut RunningDeltaStats>,
+    hidden: &[f32],
+    hidden_dim: usize,
+    position_deltas: &[f32],
+) -> ErmResult<PheromoneStats> {
+    update_pheromones_full(
+        graph,
+        traces,
+        ant_deltas,
+        config,
+        delta_stats,
+        Some((hidden, hidden_dim)),
+        Some(position_deltas),
     )
 }
 
@@ -289,6 +328,7 @@ fn update_pheromones_full(
     config: &PheromoneConfig,
     mut delta_stats: Option<&mut RunningDeltaStats>,
     hidden: Option<(&[f32], usize)>,
+    position_deltas: Option<&[f32]>,
 ) -> ErmResult<PheromoneStats> {
     let total = graph.total_elements();
     let rho = config.evaporation_rate;
@@ -297,6 +337,7 @@ fn update_pheromones_full(
     let rho_tau = config.taint_decay;
     let tau_max = config.taint_max;
     let phi_max = config.phi_max;
+    let seq_len = graph.seq_len;
 
     // Compute sigma from running stats (if provided).
     let sigma = delta_stats.as_ref().map_or(0.0_f32, |s| s.sigma());
@@ -311,33 +352,39 @@ fn update_pheromones_full(
 
     // Step 2: Deposit — normalized tanh-bounded for edges used by ant k.
     // Step 3: Taint — τ += ζ * max(-Δ_k, 0.0) for edges used by ant k.
+    //
+    // When position_deltas is Some, deposit uses per-position delta at
+    // the edge's destination (finer credit assignment). When None, falls
+    // back to per-ant aggregate delta (original behavior).
+    // Taint always uses per-ant delta (harmful ant → penalize all its edges).
     for trace in traces {
         let ant_id = trace.ant_id;
-        let delta = if ant_id < ant_deltas.len() {
+        let ant_delta = if ant_id < ant_deltas.len() {
             ant_deltas[ant_id]
         } else {
             0.0
         };
 
-        let positive_delta = delta.max(0.0);
-        let negative_delta = (-delta).max(0.0);
+        // Taint from ant-level delta (always per-ant).
+        let negative_ant_delta = (-ant_delta).max(0.0);
+        let taint_deposit = zeta * negative_ant_delta;
 
-        // Update running stats with positive deltas.
-        if positive_delta > 0.0 {
+        // Pre-compute ant-level deposit base (used when position_deltas is None,
+        // or as fallback for out-of-bounds positions).
+        let ant_positive_delta = ant_delta.max(0.0);
+
+        // Update running stats with positive ant deltas.
+        if ant_positive_delta > 0.0 {
             if let Some(ref mut stats) = delta_stats {
-                stats.push(positive_delta);
+                stats.push(ant_positive_delta);
             }
         }
 
-        // Base deposit (without η scaling): tanh(Δ / (σ + ε)) when σ > 0, else tanh(Δ).
-        // The η factor is applied per-edge with age decay: η / (1 + age).
-        let deposit_base = if sigma > norm_eps {
-            (positive_delta / (sigma + norm_eps)).tanh()
+        let ant_deposit_base = if sigma > norm_eps {
+            (ant_positive_delta / (sigma + norm_eps)).tanh()
         } else {
-            // Fallback: unnormalized (backward-compatible cold start).
-            positive_delta.tanh()
+            ant_positive_delta.tanh()
         };
-        let taint_deposit = zeta * negative_delta;
 
         for &(b, dst, e, _weight) in &trace.entries {
             if b >= graph.batch_size || dst >= graph.seq_len || e >= graph.emax {
@@ -347,6 +394,23 @@ fn update_pheromones_full(
             if graph.nbr_idx[flat] == EMPTY_SLOT {
                 continue;
             }
+
+            // Choose deposit base: per-position when available, per-ant otherwise.
+            let deposit_base = if let Some(pos_deltas) = position_deltas {
+                let pos_idx = b * seq_len + dst;
+                if pos_idx < pos_deltas.len() {
+                    let pos_delta = pos_deltas[pos_idx].max(0.0);
+                    if sigma > norm_eps {
+                        (pos_delta / (sigma + norm_eps)).tanh()
+                    } else {
+                        pos_delta.tanh()
+                    }
+                } else {
+                    ant_deposit_base
+                }
+            } else {
+                ant_deposit_base
+            };
 
             // Per-edge learning rate decay: η / (1 + age).
             // Older edges receive smaller deposits (diminishing returns),
@@ -1076,6 +1140,161 @@ mod tests {
             (graph.phi[flat1] - 2.7).abs() < 0.01,
             "no penalty expected, got {}",
             graph.phi[flat1]
+        );
+    }
+
+    // ── Per-position credit assignment tests ──────────────────────────────────
+
+    #[test]
+    fn test_position_credit_deposits_per_position() {
+        // Two edges at different destinations, with different position deltas.
+        // Edge at dst=0 has high position delta, edge at dst=1 has zero.
+        let cfg = ErmConfig {
+            batch_size: 1,
+            seq_len: 4,
+            emax: 3,
+            ..ErmConfig::default()
+        };
+        let mut graph = RouteGraph::new_empty(&cfg);
+        graph.add_edge(0, 0, 1, 0.5).expect("add edge"); // edge to dst=0
+        graph.add_edge(0, 1, 2, 0.5).expect("add edge"); // edge to dst=1
+
+        // Both edges used by ant 0 — same ant, but different destinations.
+        let traces = vec![EdgeTrace {
+            ant_id: 0,
+            entries: vec![(0, 0, 0, 1.0), (0, 1, 0, 1.0)],
+        }];
+
+        // Ant delta = 2.0 (aggregate), but position deltas differ.
+        let ant_deltas = vec![2.0_f32];
+        // Position 0 improved a lot (delta=3.0), position 1 did not (delta=0.0).
+        let position_deltas = vec![3.0_f32, 0.0, 0.0, 0.0]; // [B*L] = [1*4]
+        let pconfig = small_pheromone_config();
+        let d = 4;
+        let hidden = vec![0.0_f32; 1 * 4 * d];
+
+        let _stats = update_pheromones_with_position_credit(
+            &mut graph,
+            &traces,
+            &ant_deltas,
+            &pconfig,
+            None,
+            &hidden,
+            d,
+            &position_deltas,
+        )
+        .expect("update");
+
+        let flat0 = graph.idx(0, 0, 0); // edge to dst=0 (position delta=3.0)
+        let flat1 = graph.idx(0, 1, 0); // edge to dst=1 (position delta=0.0)
+
+        // Edge at dst=0 should have HIGHER phi than edge at dst=1.
+        // After evap: 0.5 * 0.9 = 0.45 for both.
+        // Deposit at dst=0: η * tanh(3.0) ≈ 0.5 * 0.9951 = ~0.498 → phi ≈ 0.948
+        // Deposit at dst=1: η * tanh(0.0) = 0.5 * 0.0 = 0.0 → phi ≈ 0.45
+        assert!(
+            graph.phi[flat0] > graph.phi[flat1],
+            "position with high delta ({}) should have more phi than zero-delta ({})",
+            graph.phi[flat0],
+            graph.phi[flat1]
+        );
+        assert!(
+            graph.phi[flat0] > 0.9,
+            "high-delta position should get substantial deposit, got {}",
+            graph.phi[flat0]
+        );
+        assert!(
+            (graph.phi[flat1] - 0.45).abs() < 0.01,
+            "zero-delta position should only be evaporated, got {}",
+            graph.phi[flat1]
+        );
+    }
+
+    #[test]
+    fn test_position_credit_taint_still_uses_ant_delta() {
+        // Negative ant delta should still taint all edges regardless of position deltas.
+        let cfg = small_config();
+        let mut graph = RouteGraph::new_empty(&cfg);
+        graph.add_edge(0, 0, 1, 1.0).expect("add edge");
+
+        let traces = vec![EdgeTrace {
+            ant_id: 0,
+            entries: vec![(0, 0, 0, 1.0)],
+        }];
+
+        // Negative ant delta → taint should be applied.
+        let ant_deltas = vec![-0.5_f32];
+        // Position delta = 0 (no improvement at this position).
+        let position_deltas = vec![0.0_f32; 4]; // [B*L] = [1*4]
+        let pconfig = small_pheromone_config();
+        let d = 4;
+        let hidden = vec![0.0_f32; 1 * 4 * d];
+
+        let _stats = update_pheromones_with_position_credit(
+            &mut graph,
+            &traces,
+            &ant_deltas,
+            &pconfig,
+            None,
+            &hidden,
+            d,
+            &position_deltas,
+        )
+        .expect("update");
+
+        let flat = graph.idx(0, 0, 0);
+        // Taint should be: ζ * max(0.5, 0) = 0.3 * 0.5 = 0.15
+        // Then decayed: 0.15 * (1 - 0.05) = 0.1425
+        let expected_taint = 0.3 * 0.5 * (1.0 - 0.05);
+        assert!(
+            (graph.taint[flat] - expected_taint).abs() < 1e-4,
+            "taint should use ant delta, expected {expected_taint}, got {}",
+            graph.taint[flat]
+        );
+    }
+
+    #[test]
+    fn test_position_credit_matches_ant_when_uniform() {
+        // When all positions have the same delta as the ant aggregate,
+        // per-position credit should produce the same result as per-ant.
+        let cfg = small_config();
+
+        let traces = vec![EdgeTrace {
+            ant_id: 0,
+            entries: vec![(0, 0, 0, 1.0)],
+        }];
+        let ant_deltas = vec![1.0_f32];
+        let pconfig = small_pheromone_config();
+
+        // Graph A: per-ant (no position deltas).
+        let mut graph_a = RouteGraph::new_empty(&cfg);
+        graph_a.add_edge(0, 0, 1, 1.0).expect("add edge");
+        let _sa = update_pheromones(&mut graph_a, &traces, &ant_deltas, &pconfig).expect("update");
+
+        // Graph B: per-position with uniform delta = 1.0 everywhere.
+        let mut graph_b = RouteGraph::new_empty(&cfg);
+        graph_b.add_edge(0, 0, 1, 1.0).expect("add edge");
+        let position_deltas = vec![1.0_f32; 4]; // all positions = 1.0
+        let d = 4;
+        let hidden = vec![0.0_f32; 1 * 4 * d];
+        let _sb = update_pheromones_with_position_credit(
+            &mut graph_b,
+            &traces,
+            &ant_deltas,
+            &pconfig,
+            None,
+            &hidden,
+            d,
+            &position_deltas,
+        )
+        .expect("update");
+
+        let flat = graph_a.idx(0, 0, 0);
+        assert!(
+            (graph_a.phi[flat] - graph_b.phi[flat]).abs() < 1e-5,
+            "uniform position delta should match ant delta: a={}, b={}",
+            graph_a.phi[flat],
+            graph_b.phi[flat]
         );
     }
 }

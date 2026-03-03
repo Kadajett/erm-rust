@@ -125,6 +125,83 @@ pub fn merge_proposals(
     Ok(y_new)
 }
 
+/// Compute per-position improvement deltas after a merge step.
+///
+/// For each position where `y_new[pos] != y_t[pos]` (an edit was accepted),
+/// computes the logit improvement: `logit_after[pos, token] - logit_before[pos, token]`.
+/// Unedited positions get delta = 0.
+///
+/// This enables per-position credit assignment in pheromone deposit: edges routing
+/// TO a specific position receive deposit proportional to that position's improvement,
+/// rather than a flat per-ant aggregate.
+///
+/// # Arguments
+///
+/// - `y_t`: original tokens before merge, length `seq_len`.
+/// - `y_new`: tokens after merge, length `seq_len`.
+/// - `logits_before`: scorer logits before merge, flat `[L * V]`.
+/// - `logits_after`: scorer logits after merge, flat `[L * V]`.
+/// - `vocab_size`: vocabulary dimension `V`.
+///
+/// # Returns
+///
+/// Per-position delta vector of length `seq_len`.
+///
+/// # Errors
+///
+/// Returns [`ErmError::ShapeMismatch`] if logit dimensions don't match.
+///
+/// # Shape reference
+///
+/// | Tensor | Shape |
+/// |---|---|
+/// | `logits_before` | `[L, V]` flat |
+/// | `logits_after` | `[L, V]` flat |
+/// | output | `[L]` |
+pub fn compute_position_deltas(
+    y_t: &[u32],
+    y_new: &[u32],
+    logits_before: &[f32],
+    logits_after: &[f32],
+    vocab_size: usize,
+) -> ErmResult<Vec<f32>> {
+    let seq_len = y_t.len();
+    let expected_logits = seq_len * vocab_size;
+
+    if logits_before.len() != expected_logits {
+        return Err(ErmError::ShapeMismatch {
+            expected: format!("logits_before [L={seq_len}, V={vocab_size}] = {expected_logits}"),
+            got: format!("{}", logits_before.len()),
+        });
+    }
+    if logits_after.len() != expected_logits {
+        return Err(ErmError::ShapeMismatch {
+            expected: format!("logits_after [L={seq_len}, V={vocab_size}] = {expected_logits}"),
+            got: format!("{}", logits_after.len()),
+        });
+    }
+    if y_new.len() != seq_len {
+        return Err(ErmError::ShapeMismatch {
+            expected: format!("y_new length = {seq_len}"),
+            got: format!("{}", y_new.len()),
+        });
+    }
+
+    let mut deltas = vec![0.0_f32; seq_len];
+    for pos in 0..seq_len {
+        if y_new[pos] != y_t[pos] {
+            let token = y_new[pos] as usize;
+            if token < vocab_size {
+                let logit_old = logits_before[pos * vocab_size + token];
+                let logit_new = logits_after[pos * vocab_size + token];
+                deltas[pos] = logit_new - logit_old;
+            }
+        }
+    }
+
+    Ok(deltas)
+}
+
 /// Compute per-ant improvement deltas after a merge step.
 ///
 /// For each ant, sums the logit improvement at positions where that ant's
@@ -510,5 +587,103 @@ mod tests {
         assert!(
             compute_ant_deltas(&[], &y_t, &y_new, &logits_before, &logits_after, 4, 2).is_err()
         );
+    }
+
+    // ── Per-position delta tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_position_deltas_correct_values() {
+        let seq_len = 4;
+        let vocab_size = 8;
+
+        let y_t = vec![0, 1, 2, 3];
+        let y_new = vec![0, 5, 2, 7]; // positions 1 and 3 changed
+
+        let logits_before = vec![0.0_f32; seq_len * vocab_size];
+        let mut logits_after = vec![0.0_f32; seq_len * vocab_size];
+        // logits_after[pos=1, token=5] = 2.5
+        logits_after[1 * vocab_size + 5] = 2.5;
+        // logits_after[pos=3, token=7] = -0.3
+        logits_after[3 * vocab_size + 7] = -0.3;
+
+        let deltas =
+            compute_position_deltas(&y_t, &y_new, &logits_before, &logits_after, vocab_size)
+                .unwrap();
+
+        assert_eq!(deltas.len(), seq_len);
+        assert!((deltas[0]).abs() < 1e-6, "unchanged position should be 0");
+        assert!(
+            (deltas[1] - 2.5).abs() < 1e-6,
+            "expected 2.5, got {}",
+            deltas[1]
+        );
+        assert!((deltas[2]).abs() < 1e-6, "unchanged position should be 0");
+        assert!(
+            (deltas[3] - (-0.3)).abs() < 1e-6,
+            "expected -0.3, got {}",
+            deltas[3]
+        );
+    }
+
+    #[test]
+    fn test_position_deltas_no_changes() {
+        let y_t = vec![0, 1, 2];
+        let y_new = vec![0, 1, 2]; // no changes
+        let logits_before = vec![1.0_f32; 3 * 4];
+        let logits_after = vec![2.0_f32; 3 * 4];
+
+        let deltas =
+            compute_position_deltas(&y_t, &y_new, &logits_before, &logits_after, 4).unwrap();
+
+        for &d in &deltas {
+            assert!((d).abs() < 1e-9, "expected zero delta, got {d}");
+        }
+    }
+
+    #[test]
+    fn test_position_deltas_all_changed() {
+        let vocab_size = 4;
+        let y_t = vec![0, 1];
+        let y_new = vec![2, 3]; // both changed
+
+        let logits_before = vec![1.0_f32; 2 * vocab_size];
+        let mut logits_after = vec![1.0_f32; 2 * vocab_size];
+        logits_after[0 * vocab_size + 2] = 3.0; // pos 0, token 2: delta = 2.0
+        logits_after[1 * vocab_size + 3] = 0.5; // pos 1, token 3: delta = -0.5
+
+        let deltas =
+            compute_position_deltas(&y_t, &y_new, &logits_before, &logits_after, vocab_size)
+                .unwrap();
+
+        assert!((deltas[0] - 2.0).abs() < 1e-6);
+        assert!((deltas[1] - (-0.5)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_position_deltas_shape_mismatch() {
+        let y_t = vec![0, 1];
+        let y_new = vec![0, 1];
+        let logits_before = vec![0.0; 5]; // wrong size
+        let logits_after = vec![0.0; 8];
+
+        assert!(compute_position_deltas(&y_t, &y_new, &logits_before, &logits_after, 4).is_err());
+    }
+
+    #[test]
+    fn test_position_deltas_finite() {
+        let vocab_size = 4;
+        let y_t = vec![0, 1, 2];
+        let y_new = vec![3, 1, 0];
+
+        let logits_before = vec![0.5_f32; 3 * vocab_size];
+        let logits_after = vec![0.8_f32; 3 * vocab_size];
+
+        let deltas =
+            compute_position_deltas(&y_t, &y_new, &logits_before, &logits_after, vocab_size)
+                .unwrap();
+
+        for &d in &deltas {
+            assert!(d.is_finite(), "delta must be finite, got {d}");
+        }
     }
 }
