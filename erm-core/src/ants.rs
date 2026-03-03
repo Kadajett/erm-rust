@@ -332,18 +332,19 @@ impl FollowerConfig {
     }
 }
 
-/// Compute follower temperature that decays with training progress.
+/// Compute follower temperature that warms with training progress.
 ///
-/// `T_follower(step) = max(0.3, 1.0 - step / total_steps)`
+/// `T_follower(step) = min(1.0, 0.7 + 0.3 * progress)`
 ///
-/// Early training: high temperature (explore). Late: low temperature (exploit).
+/// Early training: slightly greedy (0.7) for initial structure learning.
+/// Late training: exploratory (1.0) to break out of local minima and prevent mode collapse.
 #[must_use]
 pub fn follower_temperature_schedule(step: usize, total_steps: usize) -> f32 {
     if total_steps == 0 {
         return 0.7;
     }
     let progress = step as f32 / total_steps as f32;
-    (1.0 - progress).max(0.3)
+    (0.7 + 0.3 * progress).min(1.0)
 }
 
 /// Compute leader temperature that scales with uncertainty.
@@ -1703,17 +1704,17 @@ mod tests {
     fn test_follower_temperature_schedule() {
         use super::follower_temperature_schedule;
 
-        // At step 0, temperature = max(0.3, 1.0) = 1.0
+        // At step 0, temperature = min(1.0, 0.7 + 0.0) = 0.7
         let t0 = follower_temperature_schedule(0, 1000);
-        assert!((t0 - 1.0).abs() < 1e-5, "step 0 should be 1.0, got {t0}");
+        assert!((t0 - 0.7).abs() < 1e-5, "step 0 should be 0.7, got {t0}");
 
-        // At halfway, temperature = max(0.3, 0.5) = 0.5
+        // At halfway, temperature = min(1.0, 0.7 + 0.15) = 0.85
         let t500 = follower_temperature_schedule(500, 1000);
-        assert!((t500 - 0.5).abs() < 1e-5, "step 500 should be 0.5, got {t500}");
+        assert!((t500 - 0.85).abs() < 1e-5, "step 500 should be 0.85, got {t500}");
 
-        // At end, temperature = max(0.3, 0.0) = 0.3
+        // At end, temperature = min(1.0, 0.7 + 0.3) = 1.0
         let t1000 = follower_temperature_schedule(1000, 1000);
-        assert!((t1000 - 0.3).abs() < 1e-5, "step 1000 should be 0.3, got {t1000}");
+        assert!((t1000 - 1.0).abs() < 1e-5, "step 1000 should be 1.0, got {t1000}");
 
         // total_steps=0 returns default 0.7
         let td = follower_temperature_schedule(50, 0);

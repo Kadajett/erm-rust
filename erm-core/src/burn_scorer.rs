@@ -107,6 +107,7 @@ impl BurnScorerConfig {
 
         let logit_head = nn::LinearConfig::new(d, self.vocab_size).init(device);
         let uncertainty_head = nn::LinearConfig::new(d, 1).init(device);
+        let output_dropout = nn::DropoutConfig::new(self.dropout).init();
 
         BurnScorer {
             token_embed,
@@ -117,6 +118,7 @@ impl BurnScorerConfig {
             block_order,
             logit_head,
             uncertainty_head,
+            output_dropout,
             hidden_dim: d,
             seq_len: self.seq_len,
             vocab_size: self.vocab_size,
@@ -202,6 +204,9 @@ pub struct BurnScorer<B: Backend> {
     logit_head: nn::Linear<B>,
     /// Uncertainty output head: `d → 1`.
     uncertainty_head: nn::Linear<B>,
+    /// Dropout applied to hidden states before logit head projection.
+    /// Prevents overfitting to a small set of output directions (mode collapse).
+    output_dropout: nn::Dropout,
     /// Hidden dimension (not a parameter, stored for shape checks).
     #[module(skip)]
     hidden_dim: usize,
@@ -269,8 +274,12 @@ impl<B: Backend> BurnScorer<B> {
             }
         }
 
+        // Apply output dropout before logit head to prevent mode collapse.
+        // Use dropped hidden for logits only; keep clean h for uncertainty + hidden output.
+        let h_dropped = self.output_dropout.forward(h.clone());
+
         // Logit head: [B, L, d] → [B, L, V]
-        let logits = self.logit_head.forward(h.clone());
+        let logits = self.logit_head.forward(h_dropped);
 
         // Uncertainty head: [B, L, d] → [B, L, 1] → sigmoid → reshape → [B, L]
         let unc_raw = self.uncertainty_head.forward(h.clone());

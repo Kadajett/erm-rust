@@ -55,14 +55,14 @@ spec:
           {
             "vocab_size": 0,
             "seq_len": 512,
-            "hidden_dim": 256,
+            "hidden_dim": 512,
             "num_blocks": 3,
             "num_heads": 8,
             "mlp_expansion": 4,
-            "dropout": 0.0,
+            "dropout": 0.3,
             "emax": 16,
             "num_ants": 128,
-            "topk": 6,
+            "topk": 32,
             "pmax": 6,
             "refinement_steps": 4,
             "batch_size": 1,
@@ -91,6 +91,9 @@ spec:
             "warmup_steps": 100,
             "warmstart_steps": 0,
             "T": 6,
+            "entropy_weight": 0.01,
+            "grad_clip_norm": 1.0,
+            "use_spectral_corruption": false,
             "bpe_vocab_path": "/workspace/erm-rust/data/tokenizers/merged/merged_vocab.json"
           }
           JSONEOF

@@ -139,6 +139,15 @@ pub struct ErmConfig {
     /// Path to pre-built BPE vocabulary file (empty = train from corpus).
     pub bpe_vocab_path: String,
 
+    // ── Regularization / stability ──────────────────────────────────────
+    /// Entropy regularization weight in diffusion loss. Penalizes peaked
+    /// predictions to prevent mode collapse. 0.0 disables.
+    pub entropy_weight: f64,
+    /// Maximum gradient norm for clipping. Prevents exploding gradients.
+    pub grad_clip_norm: f64,
+    /// Use spectral corruption schedule (frequency-aware) instead of uniform.
+    pub use_spectral_corruption: bool,
+
     // ── Experiment identity ────────────────────────────────────────────
     /// Experiment identifier (e.g., "exp-a"). Used in metrics.jsonl headers.
     pub exp_id: String,
@@ -208,6 +217,10 @@ impl Default for ErmConfig {
             tokenizer_type: "bpe".to_string(),
             bpe_vocab_size: 4096,
             bpe_vocab_path: String::new(),
+
+            entropy_weight: 0.01,
+            grad_clip_norm: 1.0,
+            use_spectral_corruption: false,
 
             exp_id: String::new(),
             metrics_path: String::new(),

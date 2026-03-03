@@ -23,6 +23,7 @@
 //! γ(t) follows the configured schedule (cosine/linear/sqrt).
 
 use burn::optim::decay::WeightDecayConfig;
+use burn::optim::grad_clipping::GradientClippingConfig;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::prelude::*;
 use burn::record::{BinFileRecorder, FullPrecisionSettings, Recorder};
@@ -36,7 +37,7 @@ use erm_core::ants::{
 };
 use erm_core::burn_scorer::{BurnScorer, BurnScorerConfig};
 use erm_core::config::{ErmConfig, PheromoneConfig};
-use erm_core::corruption::corrupt;
+use erm_core::corruption::{corrupt, corrupt_spectral};
 use erm_core::error::{ErmError, ErmResult};
 use erm_core::graph::RouteGraph;
 use erm_core::merge::{compute_ant_deltas, compute_position_deltas, merge_proposals};
@@ -117,6 +118,9 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
 
         let optimizer = AdamConfig::new()
             .with_weight_decay(Some(WeightDecayConfig::new(config.weight_decay as f32)))
+            .with_grad_clipping(Some(GradientClippingConfig::Norm(
+                config.grad_clip_norm as f32,
+            )))
             .init();
 
         let graph = RouteGraph::new(&config);
@@ -189,7 +193,15 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
         // Iterate from heavy noise (t=big_t) down to fine (t=1).
         for t in (1..=big_t).rev() {
             // 1. Corrupt clean tokens at noise level t → z_t.
-            let corruption = corrupt(&x_i32, t, cfg, rng)?;
+            let corruption = if cfg.use_spectral_corruption {
+                // Spectral corruption needs per-token surprisal; use uniform as
+                // baseline (equivalent to standard corruption but through the
+                // spectral code path). Real surprisal can be plugged in later.
+                let uniform_surprisal = vec![1.0_f32; x_i32.len()];
+                corrupt_spectral(&x_i32, t, &uniform_surprisal, cfg, rng)?
+            } else {
+                corrupt(&x_i32, t, cfg, rng)?
+            };
             let z_t_u32: Vec<u32> = corruption.y_t.iter().map(|&v| v as u32).collect();
 
             // Build corruption mask: 1.0 for positions changed by corrupt(), 0.0 for clean.
@@ -217,6 +229,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 mask_tensor,
                 gamma,
                 num_corrupted,
+                cfg.entropy_weight as f32,
             );
             accumulated_loss = Some(match accumulated_loss {
                 None => step_loss,
@@ -599,11 +612,14 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
 
 // ── Diffusion loss ────────────────────────────────────────────────────────────
 
-/// Compute `γ(t) * CE(x | z_t)` on GPU, averaged only over corrupted positions.
+/// Compute `γ(t) * CE(x | z_t) - entropy_weight * H(p)` on GPU, averaged only over corrupted positions.
 ///
 /// `logits`: `[B, L, V]`, `targets`: `[B, L]` int tensor of clean ids.
 /// `mask`: flat `[B*L]` float tensor — 1.0 at corrupted positions, 0.0 elsewhere.
 /// `num_corrupted`: pre-computed count of 1.0 entries in `mask` (avoids tensor→scalar round-trip).
+/// `entropy_weight`: coefficient for entropy regularization (0.0 disables).
+///   Entropy bonus = -Σ(softmax * log_softmax) averaged over corrupted positions.
+///   Penalizes peaked (collapsed) predictions.
 /// Returns a scalar `[1]` tensor.
 fn diffusion_ce_loss<B: AutodiffBackend>(
     logits: Tensor<B, 3>,
@@ -611,6 +627,7 @@ fn diffusion_ce_loss<B: AutodiffBackend>(
     mask: Tensor<B, 1>,
     gamma: f32,
     num_corrupted: usize,
+    entropy_weight: f32,
 ) -> Tensor<B, 1> {
     if num_corrupted == 0 {
         return Tensor::zeros([1], &logits.device());
@@ -623,13 +640,26 @@ fn diffusion_ce_loss<B: AutodiffBackend>(
     // [B,L] → [B*L]
     let targets_flat = targets.reshape([bl]);
     // log-softmax for numerical stability
-    let log_sm = burn::tensor::activation::log_softmax(logits_flat, 1);
+    let log_sm = burn::tensor::activation::log_softmax(logits_flat.clone(), 1);
     // gather log-prob at each target position
     let targets_idx = targets_flat.unsqueeze_dim::<2>(1); // [B*L, 1]
-    let log_prob = log_sm.gather(1, targets_idx).reshape([bl]); // [B*L]
+    let log_prob = log_sm.clone().gather(1, targets_idx).reshape([bl]); // [B*L]
     // Sum NLL only at corrupted positions, normalize by count.
-    let masked_nll = (-log_prob * mask).sum() * (1.0 / num_corrupted as f32);
-    masked_nll * gamma
+    let masked_nll = (-log_prob * mask.clone()).sum() * (1.0 / num_corrupted as f32);
+    let nll_term = masked_nll * gamma;
+
+    // Entropy regularization: penalize peaked (low-entropy) predictions.
+    if entropy_weight > 0.0 {
+        // entropy per position = -Σ_v softmax(v) * log_softmax(v)  [B*L]
+        let softmax = burn::tensor::activation::softmax(logits_flat, 1);
+        let entropy_per_pos = -(softmax * log_sm).sum_dim(1).reshape([bl]); // [B*L]
+        // Average entropy only at corrupted positions.
+        let masked_entropy = (entropy_per_pos * mask).sum() * (1.0 / num_corrupted as f32);
+        // Subtract entropy bonus: lower loss when entropy is high (diverse predictions).
+        nll_term - masked_entropy * entropy_weight
+    } else {
+        nll_term
+    }
 }
 
 // ── Leader edge insertion ─────────────────────────────────────────────────────
