@@ -322,6 +322,10 @@ enum Commands {
         /// Diffusion steps T override.
         #[arg(long)]
         diffusion_t: Option<usize>,
+
+        /// Resume training from a checkpoint directory (loads scorer weights, graph, ant state).
+        #[arg(long)]
+        resume: Option<String>,
     },
 }
 
@@ -332,6 +336,8 @@ enum BackendChoice {
     Cpu,
     /// GPU backend (wgpu — requires Vulkan/Metal/DX12).
     Gpu,
+    /// CUDA backend (burn-cuda — requires NVIDIA GPU + CUDA toolkit).
+    Cuda,
 }
 
 fn main() {
@@ -461,6 +467,7 @@ fn main() {
             num_ants,
             batch,
             diffusion_t,
+            resume,
         } => {
             run_diffusion_train(
                 &data,
@@ -476,6 +483,7 @@ fn main() {
                 num_ants,
                 batch,
                 diffusion_t,
+                resume.as_deref(),
             );
         }
     }
@@ -779,7 +787,26 @@ fn run_burn_train(
             }
             #[cfg(not(feature = "gpu"))]
             {
-                eprintln!("ERROR: GPU support not compiled. Rebuild with: cargo build --release --features gpu");
+                eprintln!("ERROR: GPU (wgpu) support not compiled. Rebuild with: cargo build --release --features gpu");
+                std::process::exit(1);
+            }
+        }
+        BackendChoice::Cuda => {
+            #[cfg(feature = "cuda")]
+            {
+                let device = burn_cuda::CudaDevice::new(0);
+                println!("Backend: CUDA device 0");
+                burn_train_loop::<burn_autodiff::Autodiff<burn_cuda::Cuda>>(
+                    &cfg,
+                    &dataset,
+                    total_steps,
+                    log_every,
+                    device,
+                );
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                eprintln!("ERROR: CUDA support not compiled. Rebuild with: cargo build --release --features cuda");
                 std::process::exit(1);
             }
         }
@@ -892,7 +919,27 @@ fn run_colony_train(
             }
             #[cfg(not(feature = "gpu"))]
             {
-                eprintln!("ERROR: GPU support not compiled. Rebuild with: cargo build --release --features gpu");
+                eprintln!("ERROR: GPU (wgpu) support not compiled. Rebuild with: cargo build --release --features gpu");
+                std::process::exit(1);
+            }
+        }
+        BackendChoice::Cuda => {
+            #[cfg(feature = "cuda")]
+            {
+                let device = burn_cuda::CudaDevice::new(0);
+                println!("Backend: CUDA device 0");
+                colony_train_loop::<burn_autodiff::Autodiff<burn_cuda::Cuda>>(
+                    &cfg,
+                    &dataset,
+                    total_steps,
+                    log_every,
+                    checkpoint_dir,
+                    device,
+                );
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                eprintln!("ERROR: CUDA support not compiled. Rebuild with: cargo build --release --features cuda");
                 std::process::exit(1);
             }
         }
@@ -1274,6 +1321,44 @@ fn io_example_loop_bpe<B: burn::tensor::backend::AutodiffBackend>(
                     "top_3_predictions": top3,
                 }));
             }
+        }
+
+        // For the first example, print a human-readable summary to stderr for k8s logs.
+        if example_idx == 0 && !position_predictions.is_empty() {
+            let mut predicted_tokens = y_t_u32.clone();
+            let mut top1_hits = 0usize;
+            let mut top3_hits = 0usize;
+            let num_corrupted_pos = position_predictions.len();
+            for pred in &position_predictions {
+                let pos = pred["position"].as_u64().unwrap_or(0) as usize;
+                let ground_truth = pred["ground_truth_token"].as_u64().unwrap_or(0) as u32;
+                if let Some(top3) = pred["top_3_predictions"].as_array() {
+                    if let Some(top1) = top3.first() {
+                        let top1_tok = top1["token_id"].as_u64().unwrap_or(0) as u32;
+                        if pos < predicted_tokens.len() {
+                            predicted_tokens[pos] = top1_tok;
+                        }
+                        if top1_tok == ground_truth {
+                            top1_hits += 1;
+                        }
+                    }
+                    if top3.iter().any(|p| p["token_id"].as_u64().unwrap_or(0) as u32 == ground_truth) {
+                        top3_hits += 1;
+                    }
+                }
+            }
+            let predicted_str = tokenizer.decode_text(&predicted_tokens);
+            let trunc80 = |s: &str| -> String { s.chars().take(80).collect() };
+            let top1_pct = 100.0 * top1_hits as f32 / num_corrupted_pos as f32;
+            let top3_pct = 100.0 * top3_hits as f32 / num_corrupted_pos as f32;
+            eprintln!("[io-sampler] === Sample Output (example 0, t={t_val}) ===");
+            eprintln!("[io-sampler] CLEAN:     \"{}\"", trunc80(&clean_string));
+            eprintln!("[io-sampler] CORRUPTED: \"{}\"", trunc80(&corrupted_string));
+            eprintln!("[io-sampler] PREDICTED: \"{}\"", trunc80(&predicted_str));
+            eprintln!(
+                "[io-sampler] Accuracy: top-1={:.1}% top-3={:.1}% ({} corrupted positions)",
+                top1_pct, top3_pct, num_corrupted_pos
+            );
         }
 
         let example = serde_json::json!({
@@ -1712,7 +1797,28 @@ fn run_infer(
             }
             #[cfg(not(feature = "gpu"))]
             {
-                eprintln!("ERROR: GPU support not compiled.");
+                eprintln!("ERROR: GPU (wgpu) support not compiled.");
+                std::process::exit(1);
+            }
+        }
+        BackendChoice::Cuda => {
+            #[cfg(feature = "cuda")]
+            {
+                let device = burn_cuda::CudaDevice::new(0);
+                println!("Backend: CUDA device 0");
+                infer_loop::<burn_autodiff::Autodiff<burn_cuda::Cuda>>(
+                    &erm_cfg,
+                    checkpoint_dir,
+                    length,
+                    k_steps,
+                    prompt,
+                    seed,
+                    device,
+                );
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                eprintln!("ERROR: CUDA support not compiled.");
                 std::process::exit(1);
             }
         }
@@ -1808,6 +1914,7 @@ fn run_diffusion_train(
     num_ants_override: Option<usize>,
     batch_override: Option<usize>,
     diffusion_t_override: Option<usize>,
+    resume: Option<&str>,
 ) {
     let mut cfg = load_config(config_path);
 
@@ -1908,6 +2015,7 @@ fn run_diffusion_train(
                 log_every,
                 checkpoint_every,
                 checkpoint_dir,
+                resume,
                 Default::default(),
             );
         }
@@ -1923,12 +2031,36 @@ fn run_diffusion_train(
                     log_every,
                     checkpoint_every,
                     checkpoint_dir,
+                    resume,
                     device,
                 );
             }
             #[cfg(not(feature = "gpu"))]
             {
-                eprintln!("ERROR: GPU support not compiled.");
+                eprintln!("ERROR: GPU (wgpu) support not compiled.");
+                std::process::exit(1);
+            }
+        }
+        BackendChoice::Cuda => {
+            #[cfg(feature = "cuda")]
+            {
+                let device = burn_cuda::CudaDevice::new(0);
+                println!("Backend: CUDA device 0");
+                diffusion_train_loop::<burn_autodiff::Autodiff<burn_cuda::Cuda>>(
+                    &cfg,
+                    streaming_cfg,
+                    tokenizer,
+                    total_steps,
+                    log_every,
+                    checkpoint_every,
+                    checkpoint_dir,
+                    resume,
+                    device,
+                );
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                eprintln!("ERROR: CUDA support not compiled.");
                 std::process::exit(1);
             }
         }
@@ -1976,6 +2108,7 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
     log_every: usize,
     checkpoint_every: usize,
     checkpoint_dir: Option<&str>,
+    resume: Option<&str>,
     device: B::Device,
 ) {
     use erm_train::diffusion_training::{DiffusionStepResult, DiffusionTrainer};
@@ -1985,6 +2118,19 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
     use rand_chacha::ChaCha8Rng;
 
     let mut trainer = DiffusionTrainer::<B>::new(cfg, device);
+
+    if let Some(resume_dir) = resume {
+        match trainer.load_checkpoint(resume_dir) {
+            Ok(()) => println!(
+                "[diffusion] Resumed from checkpoint: {resume_dir} (step={})",
+                trainer.step
+            ),
+            Err(e) => {
+                eprintln!("ERROR: cannot load resume checkpoint '{resume_dir}': {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     let mut dataset = StreamingDataset::new(streaming_cfg, tokenizer);
     let mut rng = ChaCha8Rng::seed_from_u64(42);
 

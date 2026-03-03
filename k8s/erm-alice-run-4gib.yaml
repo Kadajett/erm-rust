@@ -1,0 +1,148 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: erm-curriculum-run
+  namespace: pcn-train
+  labels:
+    app: erm-diffusion
+    exp: curriculum-run
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: erm-diffusion
+        exp: curriculum-run
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      # Graceful shutdown: give supervisor time to SIGTERM training + save checkpoint
+      terminationGracePeriodSeconds: 120
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: [theshire]
+      containers:
+      - name: erm-curriculum
+        image: ubuntu:24.04
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -e
+          echo "=== ERM Curriculum Run (NVIDIA runtime) ==="
+          echo "Host: $(hostname) | Start: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # ── Install dependencies ──
+          apt-get update -qq 2>&1 | tail -1 || true
+          apt-get install -y -qq --no-install-recommends \
+            libvulkan1 mesa-vulkan-drivers ca-certificates python3 2>&1 | tail -3 || true
+          update-ca-certificates || true
+
+          # Wire up NVIDIA Vulkan ICD
+          mkdir -p /etc/vulkan/icd.d
+          echo '{"file_format_version":"1.0.0","ICD":{"library_path":"libGLX_nvidia.so.0","api_version":"1.3"}}' \
+            > /etc/vulkan/icd.d/nvidia_icd.json || true
+
+          echo "=== GPU check ==="
+          nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader 2>/dev/null || echo "no nvidia-smi"
+          ls /dev/nvidia* 2>/dev/null || echo "no /dev/nvidia*"
+
+          # ── Verify books corpus ──
+          BOOKS_DIR=/workspace/rust-pcn/data/books
+          BOOK_COUNT=$(find "$BOOKS_DIR" -maxdepth 1 -type f -name '*.txt' | wc -l)
+          echo "Books corpus: $BOOKS_DIR ($BOOK_COUNT files)"
+
+          if [ "$BOOK_COUNT" -eq 0 ]; then
+            echo "ERROR: No .txt files in books dir" >&2
+            exit 1
+          fi
+
+          # ── Set up experiment directory ──
+          EXP_DIR=/workspace/erm-rust/data/experiments/curriculum-run
+          CKPT_DIR="$EXP_DIR/checkpoints"
+          mkdir -p "$CKPT_DIR"
+
+          echo "Experiment dir: $EXP_DIR"
+          echo "Config: d=1024 L=8 seq=1024 batch=2 ants=512 T=8"
+
+          # ── Run curriculum supervisor ──
+          /workspace/erm-rust/scripts/curriculum-supervisor.sh \
+            --books-dir "$BOOKS_DIR" \
+            --experiment-dir "$EXP_DIR" \
+            --config /workspace/erm-rust/data/alice_4gib_config.json \
+            --erm-bin /workspace/erm-rust/bin/erm \
+            --backend cuda \
+            --steps-per-book 10000 \
+            --log-every 50 \
+            --checkpoint-every 250 \
+            --startup-timeout 600 \
+            --plateau-window 300 \
+            --plateau-threshold 0.005 \
+            --hard-timeout 900 \
+            --poll-interval 15 \
+            --exp-id-prefix "curriculum" \
+            --bpe-vocab-path /workspace/erm-rust/data/tokenizers/merged/merged_vocab.json \
+            --bpe-num-merges 4096 \
+            --bpe-sample-mb 10
+
+          EXIT=$?
+          echo "VRAM final:"
+          nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader 2>/dev/null || true
+          echo "=== done (exit=$EXIT) | $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+          exit $EXIT
+        resources:
+          requests:
+            memory: "12Gi"
+            cpu: "2"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: "20Gi"
+            cpu: "6"
+            nvidia.com/gpu: "1"
+        env:
+        - name: LD_LIBRARY_PATH
+          value: /usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: compute,utility
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: all
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: WGPU_BACKEND
+          value: vulkan
+        - name: BPE_VOCAB_PATH
+          value: /workspace/erm-rust/data/tokenizers/merged/merged_vocab.json
+        - name: TOKENIZER_PATH
+          value: /workspace/erm-rust/data/tokenizers/merged/merged_vocab.json
+        - name: RUST_BACKTRACE
+          value: "1"
+        volumeMounts:
+        - name: erm-rust
+          mountPath: /workspace/erm-rust
+        - name: rust-pcn
+          mountPath: /workspace/rust-pcn
+        - name: cuda-13-0
+          mountPath: /usr/local/cuda-13.0
+          readOnly: true
+        - name: cuda-link
+          mountPath: /usr/local/cuda
+          readOnly: true
+      volumes:
+      - name: erm-rust
+        hostPath:
+          path: /home/kadajett/dev/erm-rust
+          type: Directory
+      - name: rust-pcn
+        hostPath:
+          path: /home/kadajett/dev/rust-pcn
+          type: Directory
+      - name: cuda-13-0
+        hostPath:
+          path: /usr/local/cuda-13.0
+      - name: cuda-link
+        hostPath:
+          path: /usr/local/cuda-13.1

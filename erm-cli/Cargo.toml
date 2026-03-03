@@ -22,7 +22,9 @@ burn = { workspace = true }
 burn-ndarray = { workspace = true }
 burn-autodiff = { workspace = true }
 burn-wgpu = { workspace = true, optional = true }
+burn-cuda = { workspace = true, optional = true }
 
 [features]
-default = ["gpu"]
+default = ["cuda"]
 gpu = ["burn-wgpu"]
+cuda = ["burn-cuda"]

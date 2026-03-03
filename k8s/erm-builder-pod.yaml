@@ -5,6 +5,8 @@ metadata:
   namespace: pcn-train
 spec:
   restartPolicy: Never
+  # REQUIRED for GPU — without this /dev/nvidia* is not injected
+  runtimeClassName: nvidia
   affinity:
     nodeAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
@@ -21,12 +23,33 @@ spec:
     args:
     - |
       set -eo pipefail
+      echo "=== ERM CUDA Build ==="
+      echo "CUDA toolkit: $(ls /usr/local/cuda*/version.json 2>/dev/null || echo 'checking...')"
+      
+      # Ensure CUDA paths are available for burn-cuda compilation
+      export PATH="/usr/local/cuda/bin:${PATH}"
+      export LD_LIBRARY_PATH="/usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
+      export CUDA_PATH="/usr/local/cuda-13.0"
+      
       cd /workspace/erm-rust-src
-      touch erm-core/src/config.rs erm-core/src/graph.rs erm-train/src/streaming_dataset.rs erm-cli/src/main.rs
-      cargo build --release --bin erm 2>&1
+      
+      # Touch changed files to force recompile
+      touch erm-cli/Cargo.toml Cargo.toml erm-cli/src/main.rs
+      
+      echo "Building with CUDA backend (--no-default-features --features cuda)..."
+      cargo build --release --bin erm --no-default-features --features cuda 2>&1
+      
       ls -la target/release/erm
       cp target/release/erm /workspace/erm-rust/bin/erm.new
-      echo "DONE"
+      
+      echo "=== Build complete ==="
+      # Keep pod alive briefly so we can check status
+      sleep 10
+    env:
+    - name: CUDA_PATH
+      value: "/usr/local/cuda-13.0"
+    - name: PATH
+      value: "/usr/local/cuda-13.0/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     resources:
       requests:
         cpu: "500m"
@@ -39,6 +62,12 @@ spec:
       mountPath: /workspace/erm-rust-src
     - name: erm-rust
       mountPath: /workspace/erm-rust
+    - name: cuda-13-0
+      mountPath: /usr/local/cuda-13.0
+      readOnly: true
+    - name: cuda-13-1
+      mountPath: /usr/local/cuda
+      readOnly: true
   volumes:
   - name: erm-rust-src
     hostPath:
@@ -48,3 +77,9 @@ spec:
     hostPath:
       path: /home/kadajett/dev/erm-rust
       type: Directory
+  - name: cuda-13-0
+    hostPath:
+      path: /usr/local/cuda-13.0
+  - name: cuda-13-1
+    hostPath:
+      path: /usr/local/cuda-13.1

@@ -14,6 +14,7 @@ burn = { version = "0.20", default-features = false, features = ["std"] }
 burn-ndarray = { version = "0.20" }
 burn-autodiff = { version = "0.20" }
 burn-wgpu = { version = "0.20" }
+burn-cuda = { version = "0.20" }
 
 # Tokenization
 tokenizers = { version = "0.21", default-features = false, features = ["progressbar", "onig"] }
