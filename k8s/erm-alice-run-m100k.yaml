@@ -39,6 +39,9 @@ spec:
 
           apt-get update -qq 2>&1 | tail -1 || true
           apt-get install -y -qq --no-install-recommends ca-certificates 2>&1 | tail -3 || true
+          apt-get install -y -qq --no-install-recommends python3 python3-pip python3-venv 2>&1 | tail -3 || true
+          python3 -m venv /tmp/aim-watcher-venv || true
+          /tmp/aim-watcher-venv/bin/pip install --quiet aim numpy || true
 
           NEW_EXP="alice-run-b2-m100k"
           BASE_EXP="alice-run-b2"
@@ -85,13 +88,24 @@ spec:
           # Background helper: generate io_example.json for each new checkpoint.
           # Aim sidecar picks this up from checkpoints/latest/io_example.json.
           IO_HELPER_PID=0
+          AIM_WATCHER_PID=0
           cleanup_io_helper() {
             if [[ "${IO_HELPER_PID}" -gt 0 ]] && kill -0 "${IO_HELPER_PID}" 2>/dev/null; then
               echo "[io-helper] stopping pid=${IO_HELPER_PID}"
               kill "${IO_HELPER_PID}" 2>/dev/null || true
             fi
           }
-          trap cleanup_io_helper EXIT
+          cleanup_aim_watcher() {
+            if [[ "${AIM_WATCHER_PID}" -gt 0 ]] && kill -0 "${AIM_WATCHER_PID}" 2>/dev/null; then
+              echo "[aim-watcher] stopping pid=${AIM_WATCHER_PID}"
+              kill "${AIM_WATCHER_PID}" 2>/dev/null || true
+            fi
+          }
+          cleanup_backgrounds() {
+            cleanup_io_helper
+            cleanup_aim_watcher
+          }
+          trap cleanup_backgrounds EXIT
 
           io_helper_loop() {
             while true; do
@@ -126,6 +140,15 @@ spec:
           IO_HELPER_PID=$!
           echo "[io-helper] started pid=${IO_HELPER_PID}"
 
+          export AIM_SERVER_HOST="aim-server.pcn-train.svc.cluster.local"
+          export AIM_SERVER_PORT="43800"
+          export AIM_EXPERIMENT="erm-training"
+          export EXPERIMENT_DIR="${EXP_DIR}"
+          export POLL_INTERVAL="1"
+          /tmp/aim-watcher-venv/bin/python -u /scripts/aim-watcher-v2.py watch >"${EXP_DIR}/aim-watcher.log" 2>&1 &
+          AIM_WATCHER_PID=$!
+          echo "[aim-watcher] started pid=${AIM_WATCHER_PID}"
+
           /workspace/erm-rust/bin/erm diffusion-train \
             --data /workspace/rust-pcn/data/books \
             --steps "${REMAINING_STEPS}" \
@@ -138,7 +161,7 @@ spec:
             2>&1 | tee "${EXP_DIR}/console.log"
 
           EXIT=$?
-          cleanup_io_helper
+          cleanup_backgrounds
           echo "=== training complete (exit=${EXIT}) | $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
           exit ${EXIT}
         resources:
@@ -166,57 +189,27 @@ spec:
           mountPath: /workspace/erm-rust
         - name: rust-pcn
           mountPath: /workspace/rust-pcn
+        - name: aim-watcher-scripts
+          mountPath: /scripts
+          readOnly: true
         - name: cuda-13-0
           mountPath: /usr/local/cuda-13.0
           readOnly: true
         - name: cuda-13-1
           mountPath: /usr/local/cuda
           readOnly: true
-      - name: aim-sidecar
-        image: python:3.11-slim
-        command: ["/bin/sh", "-c"]
-        args:
-        - |
-          set -eo pipefail
-          pip install --quiet aim numpy
-          python /scripts/aim-watcher-v2.py watch
-        env:
-        - name: AIM_SERVER_HOST
-          value: aim-server.pcn-train.svc.cluster.local
-        - name: AIM_SERVER_PORT
-          value: "43800"
-        - name: AIM_EXPERIMENT
-          value: erm-training
-        - name: EXPERIMENT_DIR
-          value: /workspace/erm-rust/data/experiments/alice-run-b2-m100k
-        - name: POLL_INTERVAL
-          value: "1"
-        resources:
-          requests:
-            cpu: "100m"
-            memory: "256Mi"
-          limits:
-            cpu: "500m"
-            memory: "512Mi"
-        volumeMounts:
-        - name: erm-rust
-          mountPath: /workspace/erm-rust
-          readOnly: true
-        - name: aim-watcher-scripts
-          mountPath: /scripts
-          readOnly: true
       volumes:
       - name: erm-rust
         hostPath:
           path: /home/kadajett/dev/erm-rust
           type: Directory
-      - name: aim-watcher-scripts
-        hostPath:
-          path: /home/kadajett/.openclaw/workspace/erm-rust/scripts
-          type: Directory
       - name: rust-pcn
         hostPath:
           path: /home/kadajett/dev/rust-pcn
+          type: Directory
+      - name: aim-watcher-scripts
+        hostPath:
+          path: /home/kadajett/.openclaw/workspace/erm-rust/scripts
           type: Directory
       - name: cuda-13-0
         hostPath:
