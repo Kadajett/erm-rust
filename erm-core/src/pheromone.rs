@@ -222,7 +222,7 @@ pub fn update_pheromones(
     ant_deltas: &[f32],
     config: &PheromoneConfig,
 ) -> ErmResult<PheromoneStats> {
-    update_pheromones_with_stats(graph, traces, ant_deltas, config, None)
+    update_pheromones_full(graph, traces, ant_deltas, config, None, None)
 }
 
 /// Update pheromones with optional running delta normalization.
@@ -241,7 +241,54 @@ pub fn update_pheromones_with_stats(
     traces: &[EdgeTrace],
     ant_deltas: &[f32],
     config: &PheromoneConfig,
+    delta_stats: Option<&mut RunningDeltaStats>,
+) -> ErmResult<PheromoneStats> {
+    update_pheromones_full(graph, traces, ant_deltas, config, delta_stats, None)
+}
+
+/// Update pheromones with both running delta normalization and diversity pressure.
+///
+/// When `hidden` is `Some(&[f32])` with shape `[B, L, d]`, applies diversity
+/// pressure after deposit: for each destination, if two incoming edges have
+/// source hidden states with cosine similarity > 0.9, the weaker edge's
+/// pheromone is penalized. This prevents the route graph from collapsing to
+/// redundant connections — the Muon "orthogonalization" analog.
+///
+/// # Arguments
+///
+/// - `hidden`: optional flat `[B, L, d]` hidden states from scorer.
+/// - `hidden_dim`: hidden dimension `d` (required when `hidden` is `Some`).
+///
+/// # Errors
+///
+/// Returns `ErmError` on dimension mismatches.
+pub fn update_pheromones_with_diversity(
+    graph: &mut RouteGraph,
+    traces: &[EdgeTrace],
+    ant_deltas: &[f32],
+    config: &PheromoneConfig,
+    delta_stats: Option<&mut RunningDeltaStats>,
+    hidden: &[f32],
+    hidden_dim: usize,
+) -> ErmResult<PheromoneStats> {
+    update_pheromones_full(
+        graph,
+        traces,
+        ant_deltas,
+        config,
+        delta_stats,
+        Some((hidden, hidden_dim)),
+    )
+}
+
+/// Internal: full pheromone update with all optional features.
+fn update_pheromones_full(
+    graph: &mut RouteGraph,
+    traces: &[EdgeTrace],
+    ant_deltas: &[f32],
+    config: &PheromoneConfig,
     mut delta_stats: Option<&mut RunningDeltaStats>,
+    hidden: Option<(&[f32], usize)>,
 ) -> ErmResult<PheromoneStats> {
     let total = graph.total_elements();
     let rho = config.evaporation_rate;
@@ -328,6 +375,80 @@ pub fn update_pheromones_with_stats(
 
             // Enforce τ ∈ [0, τ_max].
             graph.taint[flat] = graph.taint[flat].clamp(0.0, tau_max);
+        }
+    }
+
+    // Step 7 (optional): Diversity pressure using hidden states.
+    //
+    // For each destination node, compare the hidden states of its incoming
+    // edges' source positions. If two edges have cosine similarity > 0.9,
+    // penalize the weaker one (reduce φ by 20%). This prevents the route
+    // graph from collapsing into redundant connections — analogous to
+    // Muon's momentum orthogonalization which amplifies rare directions.
+    if let Some((hidden, d)) = hidden {
+        let b_size = graph.batch_size;
+        let l = graph.seq_len;
+        let emax = graph.emax;
+
+        for bi in 0..b_size {
+            for dst in 0..l {
+                // Collect valid edges at this destination.
+                let mut valid_edges: Vec<(usize, usize)> = Vec::new(); // (edge_slot, src_pos)
+                for e in 0..emax {
+                    let flat = graph.idx(bi, dst, e);
+                    if graph.nbr_idx[flat] != EMPTY_SLOT {
+                        valid_edges.push((e, graph.nbr_idx[flat] as usize));
+                    }
+                }
+
+                // Compare all pairs of valid edges.
+                for i in 0..valid_edges.len() {
+                    for j in (i + 1)..valid_edges.len() {
+                        let (ei, src_i) = valid_edges[i];
+                        let (ej, src_j) = valid_edges[j];
+
+                        // Compute cosine similarity between hidden[bi, src_i, :] and hidden[bi, src_j, :]
+                        let base_i = (bi * l + src_i) * d;
+                        let base_j = (bi * l + src_j) * d;
+
+                        // Bounds check to avoid panics.
+                        if base_i + d > hidden.len() || base_j + d > hidden.len() {
+                            continue;
+                        }
+
+                        let mut dot = 0.0_f32;
+                        let mut norm_i = 0.0_f32;
+                        let mut norm_j = 0.0_f32;
+                        for k in 0..d {
+                            let hi = hidden[base_i + k];
+                            let hj = hidden[base_j + k];
+                            dot += hi * hj;
+                            norm_i += hi * hi;
+                            norm_j += hj * hj;
+                        }
+
+                        let denom = (norm_i * norm_j).sqrt();
+                        if denom < 1e-8 {
+                            continue;
+                        }
+                        let cosine_sim = dot / denom;
+
+                        // If sources are very similar (cosine > 0.9), penalize the weaker edge.
+                        if cosine_sim > 0.9 {
+                            let flat_i = graph.idx(bi, dst, ei);
+                            let flat_j = graph.idx(bi, dst, ej);
+
+                            if graph.phi[flat_i] < graph.phi[flat_j] {
+                                // Penalize the weaker edge (i).
+                                graph.phi[flat_i] *= 0.8;
+                            } else {
+                                // Penalize the weaker edge (j).
+                                graph.phi[flat_j] *= 0.8;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

@@ -40,7 +40,7 @@ use erm_core::error::{ErmError, ErmResult};
 use erm_core::graph::RouteGraph;
 use erm_core::merge::{compute_ant_deltas, merge_proposals};
 use erm_core::pheromone::{
-    build_edge_traces, prune_edges, update_pheromones_with_stats, PheromoneStats,
+    build_edge_traces, prune_edges, update_pheromones_with_diversity, PheromoneStats,
     RunningDeltaStats,
 };
 
@@ -180,21 +180,31 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             let corruption = corrupt(&x_i32, t, cfg, rng)?;
             let z_t_u32: Vec<u32> = corruption.y_t.iter().map(|&v| v as u32).collect();
 
+            // Build corruption mask: 1.0 for positions changed by corrupt(), 0.0 for clean.
+            let mask_vec: Vec<f32> = corruption.y_t.iter()
+                .zip(x_i32.iter())
+                .map(|(y, x)| if y != x { 1.0f32 } else { 0.0f32 })
+                .collect();
+            let num_corrupted: usize = mask_vec.iter().filter(|&&v| v > 0.5).count();
+            let mask_tensor = {
+                let mask_data = TensorData::new(mask_vec, [b * l]);
+                Tensor::<B, 1>::from_data(mask_data, &self.device)
+            };
+
             // 2. forward_with_hidden(z_t) → logits [B,L,V], hidden [B,L,d].
             let z_t_tensor = tokens_to_tensor::<B>(&z_t_u32, b, l, &self.device)?;
             let (logits_tensor, unc_tensor, hidden_tensor) =
                 self.scorer.forward_with_hidden(z_t_tensor);
 
-            // 3. Diffusion loss: γ(t) * CE(x | z_t).
+            // 3. Diffusion loss: γ(t) * CE(x | z_t), masked to corrupted positions only.
             let x_tensor = tokens_to_tensor::<B>(&batch.tokens, b, l, &self.device)?;
             let gamma = cfg.gamma(t);
             let step_loss = diffusion_ce_loss::<B>(
                 logits_tensor.clone(),
                 x_tensor,
+                mask_tensor,
                 gamma,
-                b,
-                l,
-                vocab_size,
+                num_corrupted,
             );
             accumulated_loss = Some(match accumulated_loss {
                 None => step_loss,
@@ -393,12 +403,14 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 l,
                 cfg.emax,
             );
-            let pstats = update_pheromones_with_stats(
+            let pstats = update_pheromones_with_diversity(
                 &mut self.graph,
                 &traces,
                 &ant_deltas,
                 &self.pheromone_config,
                 Some(&mut self.delta_stats),
+                &hidden_cpu,
+                d,
             )?;
 
             // Prune edges.
@@ -532,32 +544,37 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
 
 // ── Diffusion loss ────────────────────────────────────────────────────────────
 
-/// Compute `γ(t) * CE(x | z_t)` on GPU.
+/// Compute `γ(t) * CE(x | z_t)` on GPU, averaged only over corrupted positions.
 ///
 /// `logits`: `[B, L, V]`, `targets`: `[B, L]` int tensor of clean ids.
+/// `mask`: flat `[B*L]` float tensor — 1.0 at corrupted positions, 0.0 elsewhere.
+/// `num_corrupted`: pre-computed count of 1.0 entries in `mask` (avoids tensor→scalar round-trip).
 /// Returns a scalar `[1]` tensor.
 fn diffusion_ce_loss<B: AutodiffBackend>(
     logits: Tensor<B, 3>,
     targets: Tensor<B, 2, Int>,
+    mask: Tensor<B, 1>,
     gamma: f32,
-    _b: usize,
-    _l: usize,
-    _v: usize,
+    num_corrupted: usize,
 ) -> Tensor<B, 1> {
+    if num_corrupted == 0 {
+        return Tensor::zeros([1], &logits.device());
+    }
     // Derive B, L, V from the actual tensor shape — never trust caller dims.
     let [b_rt, l_rt, v_rt] = logits.dims();
-    // [B,L,V] → [B*L, V]
-    let logits_flat = logits.reshape([b_rt * l_rt, v_rt]);
-    // [B,L] → [B*L]
     let bl = b_rt * l_rt;
+    // [B,L,V] → [B*L, V]
+    let logits_flat = logits.reshape([bl, v_rt]);
+    // [B,L] → [B*L]
     let targets_flat = targets.reshape([bl]);
     // log-softmax for numerical stability
     let log_sm = burn::tensor::activation::log_softmax(logits_flat, 1);
-    // gather log-prob at each target
+    // gather log-prob at each target position
     let targets_idx = targets_flat.unsqueeze_dim::<2>(1); // [B*L, 1]
-    let log_prob = log_sm.gather(1, targets_idx); // [B*L, 1]
-    let nll = -log_prob.reshape([bl]).mean(); // scalar
-    nll * gamma
+    let log_prob = log_sm.gather(1, targets_idx).reshape([bl]); // [B*L]
+    // Sum NLL only at corrupted positions, normalize by count.
+    let masked_nll = (-log_prob * mask).sum() * (1.0 / num_corrupted as f32);
+    masked_nll * gamma
 }
 
 // ── Leader edge insertion ─────────────────────────────────────────────────────
