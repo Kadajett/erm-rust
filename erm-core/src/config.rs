@@ -344,6 +344,12 @@ pub struct PheromoneConfig {
     pub prune_max_age: u32,
     /// Taint penalty coefficient `λ` used in composite score for pruning.
     pub route_lambda: f32,
+    /// Cosine similarity threshold for diversity pressure. Edges whose
+    /// source hidden states exceed this threshold are considered redundant.
+    pub diversity_threshold: f32,
+    /// Pheromone multiplier for the weaker of two redundant edges.
+    /// e.g. 0.8 means "reduce by 20%".
+    pub diversity_penalty: f32,
 }
 
 impl Default for PheromoneConfig {
@@ -358,6 +364,8 @@ impl Default for PheromoneConfig {
             prune_min_score: -1.0,
             prune_max_age: 1000,
             route_lambda: 1.0,
+            diversity_threshold: 0.9,
+            diversity_penalty: 0.8,
         }
     }
 }
@@ -376,6 +384,8 @@ impl PheromoneConfig {
             prune_min_score: config.prune_min_score,
             prune_max_age: config.prune_max_age,
             route_lambda: config.route_lambda,
+            diversity_threshold: 0.9,
+            diversity_penalty: 0.8,
         }
     }
 }

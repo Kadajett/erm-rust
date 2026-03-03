@@ -433,17 +433,15 @@ fn update_pheromones_full(
                         }
                         let cosine_sim = dot / denom;
 
-                        // If sources are very similar (cosine > 0.9), penalize the weaker edge.
-                        if cosine_sim > 0.9 {
+                        // If sources are very similar, penalize the weaker edge.
+                        if cosine_sim > config.diversity_threshold {
                             let flat_i = graph.idx(bi, dst, ei);
                             let flat_j = graph.idx(bi, dst, ej);
 
                             if graph.phi[flat_i] < graph.phi[flat_j] {
-                                // Penalize the weaker edge (i).
-                                graph.phi[flat_i] *= 0.8;
+                                graph.phi[flat_i] *= config.diversity_penalty;
                             } else {
-                                // Penalize the weaker edge (j).
-                                graph.phi[flat_j] *= 0.8;
+                                graph.phi[flat_j] *= config.diversity_penalty;
                             }
                         }
                     }
@@ -579,6 +577,8 @@ mod tests {
             prune_min_score: -1.0,
             prune_max_age: 1000,
             route_lambda: 1.0,
+            diversity_threshold: 0.9,
+            diversity_penalty: 0.8,
         }
     }
 
@@ -974,5 +974,108 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_diversity_pressure_penalizes_similar_sources() {
+        let cfg = small_config();
+        let mut graph = RouteGraph::new_empty(&cfg);
+        // Destination 0 has two edges: from src=1 and src=2.
+        graph.add_edge(0, 0, 1, 5.0).expect("add edge");
+        graph.add_edge(0, 0, 2, 3.0).expect("add edge");
+
+        let traces: Vec<EdgeTrace> = vec![];
+        let ant_deltas: Vec<f32> = vec![];
+        let pconfig = PheromoneConfig {
+            diversity_threshold: 0.9,
+            diversity_penalty: 0.8,
+            ..small_pheromone_config()
+        };
+
+        // Build hidden states [B=1, L=4, d=4].
+        // Make src=1 and src=2 have nearly identical hidden states (cosine ≈ 1.0).
+        let d = 4;
+        let mut hidden = vec![0.0_f32; 1 * 4 * d];
+        // src=1: [1.0, 2.0, 3.0, 4.0]
+        hidden[1 * d..2 * d].copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);
+        // src=2: [1.01, 2.01, 3.01, 4.01] — nearly identical
+        hidden[2 * d..3 * d].copy_from_slice(&[1.01, 2.01, 3.01, 4.01]);
+
+        let _stats = update_pheromones_with_diversity(
+            &mut graph,
+            &traces,
+            &ant_deltas,
+            &pconfig,
+            None,
+            &hidden,
+            d,
+        )
+        .expect("update");
+
+        // After evaporation: 5.0*0.9=4.5, 3.0*0.9=2.7.
+        // Diversity: cosine(src1, src2) ≈ 1.0 > 0.9 → weaker (2.7) penalized by 0.8.
+        let flat0 = graph.idx(0, 0, 0);
+        let flat1 = graph.idx(0, 0, 1);
+
+        let stronger = graph.phi[flat0];
+        let weaker = graph.phi[flat1];
+
+        // Stronger should be evaporated but NOT diversity-penalized: ~4.5.
+        assert!(
+            (stronger - 4.5).abs() < 0.1,
+            "stronger edge should be ~4.5, got {stronger}"
+        );
+        // Weaker should be evaporated AND diversity-penalized: ~2.7 * 0.8 = ~2.16.
+        assert!(
+            (weaker - 2.16).abs() < 0.1,
+            "weaker edge should be ~2.16, got {weaker}"
+        );
+    }
+
+    #[test]
+    fn test_diversity_pressure_skips_dissimilar_sources() {
+        let cfg = small_config();
+        let mut graph = RouteGraph::new_empty(&cfg);
+        graph.add_edge(0, 0, 1, 5.0).expect("add edge");
+        graph.add_edge(0, 0, 2, 3.0).expect("add edge");
+
+        let traces: Vec<EdgeTrace> = vec![];
+        let ant_deltas: Vec<f32> = vec![];
+        let pconfig = PheromoneConfig {
+            diversity_threshold: 0.9,
+            diversity_penalty: 0.8,
+            ..small_pheromone_config()
+        };
+
+        // Make src=1 and src=2 have orthogonal hidden states (cosine ≈ 0).
+        let d = 4;
+        let mut hidden = vec![0.0_f32; 1 * 4 * d];
+        hidden[1 * d..2 * d].copy_from_slice(&[1.0, 0.0, 0.0, 0.0]);
+        hidden[2 * d..3 * d].copy_from_slice(&[0.0, 1.0, 0.0, 0.0]);
+
+        let _stats = update_pheromones_with_diversity(
+            &mut graph,
+            &traces,
+            &ant_deltas,
+            &pconfig,
+            None,
+            &hidden,
+            d,
+        )
+        .expect("update");
+
+        // No diversity penalty — only evaporation.
+        let flat0 = graph.idx(0, 0, 0);
+        let flat1 = graph.idx(0, 0, 1);
+        assert!(
+            (graph.phi[flat0] - 4.5).abs() < 0.01,
+            "no penalty expected, got {}",
+            graph.phi[flat0]
+        );
+        assert!(
+            (graph.phi[flat1] - 2.7).abs() < 0.01,
+            "no penalty expected, got {}",
+            graph.phi[flat1]
+        );
     }
 }
