@@ -41,6 +41,12 @@ pub struct MetricsRecord {
     pub batch: usize,
     /// Hidden dimension of the scorer network.
     pub hidden_dim: usize,
+    /// Current learning rate.
+    pub lr: f64,
+    /// Current follower temperature.
+    pub follower_temp: f32,
+    /// Current leader temperature.
+    pub leader_temp: f32,
 }
 
 /// JSONL metrics writer.
@@ -149,6 +155,9 @@ mod tests {
             seq_len: 512,
             batch: 2,
             hidden_dim: 192,
+            lr: 0.0005,
+            follower_temp: 1.0,
+            leader_temp: 1.0,
         }
     }
 

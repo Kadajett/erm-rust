@@ -25,23 +25,37 @@ spec:
       set -eo pipefail
       echo "=== ERM CUDA Build ==="
       echo "CUDA toolkit: $(ls /usr/local/cuda*/version.json 2>/dev/null || echo 'checking...')"
-      
+
+      # Sync latest code from workspace into build source dir
+      echo "=== Syncing latest source code ==="
+      # Copy individual source files (overwrite) — target dir is preserved for incremental builds
+      cp -f /workspace/erm-workspace/Cargo.toml /workspace/erm-rust-src/Cargo.toml
+      cp -f /workspace/erm-workspace/Cargo.lock /workspace/erm-rust-src/Cargo.lock
+      for crate in erm-cli erm-core erm-train; do
+        cp -f /workspace/erm-workspace/$crate/Cargo.toml /workspace/erm-rust-src/$crate/Cargo.toml
+        mkdir -p /workspace/erm-rust-src/$crate/src
+        cp -f /workspace/erm-workspace/$crate/src/*.rs /workspace/erm-rust-src/$crate/src/
+      done
+      echo "=== Source sync complete ==="
+      echo "Verifying main.rs has lr logging:"
+      grep -c "lr=" /workspace/erm-rust-src/erm-cli/src/main.rs || echo "WARNING: lr not found!"
+
       # Ensure CUDA paths are available for burn-cuda compilation
       export PATH="/usr/local/cuda/bin:${PATH}"
       export LD_LIBRARY_PATH="/usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
       export CUDA_PATH="/usr/local/cuda-13.0"
-      
+
       cd /workspace/erm-rust-src
-      
+
       # Touch changed files to force recompile
       touch erm-cli/Cargo.toml Cargo.toml erm-cli/src/main.rs
-      
-      echo "Building with CUDA backend (--no-default-features --features cuda)..."
-      cargo build --release --bin erm --no-default-features --features cuda 2>&1
-      
+
+      echo "Building with GPU+CUDA backends (--no-default-features --features gpu,cuda)..."
+      cargo build --release --bin erm --no-default-features --features gpu,cuda 2>&1
+
       ls -la target/release/erm
       cp target/release/erm /workspace/erm-rust/bin/erm.new
-      
+
       echo "=== Build complete ==="
       # Keep pod alive briefly so we can check status
       sleep 10
@@ -62,6 +76,9 @@ spec:
       mountPath: /workspace/erm-rust-src
     - name: erm-rust
       mountPath: /workspace/erm-rust
+    - name: erm-workspace
+      mountPath: /workspace/erm-workspace
+      readOnly: true
     - name: cuda-13-0
       mountPath: /usr/local/cuda-13.0
       readOnly: true
@@ -76,6 +93,10 @@ spec:
   - name: erm-rust
     hostPath:
       path: /home/kadajett/dev/erm-rust
+      type: Directory
+  - name: erm-workspace
+    hostPath:
+      path: /home/kadajett/.openclaw/workspace/erm-rust
       type: Directory
   - name: cuda-13-0
     hostPath:

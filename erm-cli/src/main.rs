@@ -2118,6 +2118,7 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
     use rand_chacha::ChaCha8Rng;
 
     let mut trainer = DiffusionTrainer::<B>::new(cfg, device);
+    trainer.total_steps = total_steps;
 
     if let Some(resume_dir) = resume {
         match trainer.load_checkpoint(resume_dir) {
@@ -2185,9 +2186,12 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
             let avg_loss: f32 =
                 recent_losses.iter().sum::<f32>() / recent_losses.len() as f32;
             println!(
-                "[diffusion step {:6}] loss={:.4} edits={} mean_φ={:.4} deaths={} pruned={} inserted={}",
+                "[diffusion step {:6}] loss={:.4} lr={:.6} f_temp={:.2} l_temp={:.2} edits={} mean_φ={:.4} deaths={} pruned={} inserted={}",
                 step,
                 avg_loss,
+                result.lr,
+                result.follower_temp,
+                result.leader_temp,
                 result.total_edits,
                 result.pheromone_stats.mean_phi,
                 result.deaths,
@@ -2208,6 +2212,9 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
                     seq_len: cfg.seq_len,
                     batch: cfg.batch_size,
                     hidden_dim: cfg.hidden_dim,
+                    lr: result.lr,
+                    follower_temp: result.follower_temp,
+                    leader_temp: result.leader_temp,
                 };
                 if let Err(e) = mw.write(&record) {
                     eprintln!("WARNING: metrics write failed: {e}");

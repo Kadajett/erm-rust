@@ -15,6 +15,7 @@ spec:
         exp: alice-run
     spec:
       restartPolicy: Never
+      runtimeClassName: nvidia
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -88,21 +89,22 @@ spec:
             "learning_rate": 0.0005,
             "weight_decay": 0.01,
             "warmup_steps": 100,
-  "warmstart_steps": 0,
-            "T": 6
+            "warmstart_steps": 0,
+            "T": 6,
+            "bpe_vocab_path": "/workspace/erm-rust/data/tokenizers/merged/merged_vocab.json"
           }
           JSONEOF
 
           echo "=== Starting alice-run training at $(date -u +%H:%M:%S) ==="
           echo "Config: $(jq -c . /workspace/erm-rust/data/train_config.json 2>/dev/null || cat /workspace/erm-rust/data/train_config.json)"
 
-          # Launch diffusion training on GPU; write metrics and checkpoints frequently
+          # Launch diffusion training on CUDA; write metrics and checkpoints frequently
           /workspace/erm-rust/bin/erm diffusion-train \
             --data "$ALICE_DIR/alice.txt" \
             --steps 10000 \
             --config /workspace/erm-rust/data/train_config.json \
             --backend gpu \
-            --log-every 50 \
+            --log-every 25 \
             --checkpoint-every 250 \
             --checkpoint-dir "$CKPT_DIR" \
             2>&1 | tee /workspace/erm-rust/data/experiments/alice-run/console.log

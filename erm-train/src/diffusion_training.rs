@@ -65,6 +65,12 @@ pub struct DiffusionStepResult {
     pub edges_pruned: usize,
     /// Number of edges inserted by leaders.
     pub edges_inserted: usize,
+    /// Current learning rate.
+    pub lr: f64,
+    /// Current follower temperature.
+    pub follower_temp: f32,
+    /// Current leader temperature.
+    pub leader_temp: f32,
 }
 
 /// Diffusion colony trainer.
@@ -177,6 +183,8 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
         let mut total_deaths = 0usize;
         let mut total_pruned = 0usize;
         let mut total_inserted = 0usize;
+        let mut last_follower_temp: f32 = 1.0;
+        let mut last_leader_temp: f32 = 1.0;
 
         // Iterate from heavy noise (t=big_t) down to fine (t=1).
         for t in (1..=big_t).rev() {
@@ -268,6 +276,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             // scale leader temp with uncertainty.
             let follower_cfg = if self.total_steps > 0 {
                 let ft = follower_temperature_schedule(self.step, self.total_steps);
+                last_follower_temp = ft;
                 FollowerConfig::from_config(cfg).with_temperature(ft)
             } else {
                 FollowerConfig::from_config(cfg)
@@ -280,6 +289,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             };
             let leader_cfg = if self.total_steps > 0 {
                 let lt = leader_temperature_schedule(mean_unc);
+                last_leader_temp = lt;
                 LeaderConfig::from_config(cfg).with_temperature(lt)
             } else {
                 LeaderConfig::from_config(cfg)
@@ -518,6 +528,9 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             deaths: total_deaths,
             edges_pruned: total_pruned,
             edges_inserted: total_inserted,
+            lr: self.lr,
+            follower_temp: last_follower_temp,
+            leader_temp: last_leader_temp,
         })
     }
 
