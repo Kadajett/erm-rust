@@ -37,7 +37,7 @@ SCRIPT_DIR = Path(__file__).parent
 REPO_ROOT = SCRIPT_DIR.parent
 EXP_BASE = Path("/home/kadajett/dev/erm-rust/data/experiments")
 STATUS_PATH = SCRIPT_DIR / "STATUS.json"
-TARGET_STEPS = 10000
+TARGET_STEPS = 100000
 
 
 def read_last_metrics(exp_id: str) -> dict:

@@ -62,7 +62,7 @@ spec:
             --data /workspace/rust-pcn/data/books \
             --steps 90000 \
             --backend cuda \
-            --log-every 25 \
+            --log-every 10 \
             --checkpoint-every 250 \
             --checkpoint-dir "${CKPT_DIR}" \
             --exp-id "${NEW_EXP}" \
@@ -103,10 +103,47 @@ spec:
         - name: cuda-13-1
           mountPath: /usr/local/cuda
           readOnly: true
+      - name: aim-sidecar
+        image: python:3.11-slim
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -eo pipefail
+          pip install --quiet aim numpy
+          python /scripts/aim-watcher-v2.py watch
+        env:
+        - name: AIM_SERVER_HOST
+          value: aim-server.pcn-train.svc.cluster.local
+        - name: AIM_SERVER_PORT
+          value: "43800"
+        - name: AIM_EXPERIMENT
+          value: erm-training
+        - name: EXPERIMENT_DIR
+          value: /workspace/erm-rust/data/experiments/alice-run-b2-m100k
+        - name: POLL_INTERVAL
+          value: "1"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        volumeMounts:
+        - name: erm-rust
+          mountPath: /workspace/erm-rust
+          readOnly: true
+        - name: aim-watcher-scripts
+          mountPath: /scripts
+          readOnly: true
       volumes:
       - name: erm-rust
         hostPath:
           path: /home/kadajett/dev/erm-rust
+          type: Directory
+      - name: aim-watcher-scripts
+        hostPath:
+          path: /home/kadajett/.openclaw/workspace/erm-rust/scripts
           type: Directory
       - name: rust-pcn
         hostPath:
