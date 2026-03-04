@@ -105,12 +105,7 @@ impl RouteGraph {
                     for _ in 0..2 {
                         let src = rng.gen_range(0..graph.seq_len);
                         if src != i {
-                            let _ = graph.add_edge(
-                                bi,
-                                i,
-                                src,
-                                config.phi_init * 0.5,
-                            );
+                            let _ = graph.add_edge(bi, i, src, config.phi_init * 0.5);
                         }
                     }
                 }
@@ -361,9 +356,11 @@ impl RouteGraph {
 
         // Derive B dynamically from the actual hidden buffer size.
         let ld = l * d;
-        if ld == 0 || hidden.len() % ld != 0 {
+        if ld == 0 || !hidden.len().is_multiple_of(ld) {
             return Err(ErmError::ShapeMismatch {
-                expected: format!("[B, L={l}, d={d}] — hidden.len() must be a multiple of L*d={ld}"),
+                expected: format!(
+                    "[B, L={l}, d={d}] — hidden.len() must be a multiple of L*d={ld}"
+                ),
                 got: format!("{}", hidden.len()),
             });
         }

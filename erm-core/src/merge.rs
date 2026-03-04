@@ -385,6 +385,7 @@ pub fn compute_ant_deltas(
 /// against clean targets (training supervision), not the edited token itself.
 ///
 /// `delta_k = Σ_{i ∈ accepted_edits_by_ant_k} [ CE_before(i,target_i) - CE_after(i,target_i) ]`
+#[allow(clippy::too_many_arguments)]
 pub fn compute_ant_deltas_train(
     proposals: &[SimpleEditProposal],
     y_base: &[u32],

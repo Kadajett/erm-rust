@@ -309,6 +309,10 @@ enum Commands {
         /// Number of leading tokens from previous output to feed back as next prompt.
         #[arg(long, default_value = "32")]
         feedback_tokens: usize,
+
+        /// Feedback strategy for iterative prompt updates.
+        #[arg(long, value_enum, default_value = "anchored")]
+        feedback_mode: LiveFeedbackMode,
     },
 
     /// Run diffusion colony training (tokens-in → tokens-out, T refinement steps).
@@ -383,6 +387,17 @@ enum BackendChoice {
     Gpu,
     /// CUDA backend (burn-cuda — requires NVIDIA GPU + CUDA toolkit).
     Cuda,
+}
+
+/// Feedback update strategy for live diffusion loop.
+#[derive(Debug, Clone, ValueEnum)]
+enum LiveFeedbackMode {
+    /// Feed back leading tokens from the previous output.
+    Leading,
+    /// Keep original prompt prefix, append feedback tokens after it.
+    Anchored,
+    /// Disable feedback updates; re-run from original prompt each iteration.
+    None,
 }
 
 fn main() {
@@ -512,6 +527,7 @@ fn main() {
             backend,
             interval_ms,
             feedback_tokens,
+            feedback_mode,
         } => {
             run_infer_live(
                 &checkpoint,
@@ -523,6 +539,7 @@ fn main() {
                 &backend,
                 interval_ms,
                 feedback_tokens,
+                &feedback_mode,
             );
         }
         Commands::DiffusionTrain {
@@ -1923,6 +1940,7 @@ fn run_infer_live(
     backend: &BackendChoice,
     interval_ms: u64,
     feedback_tokens: usize,
+    feedback_mode: &LiveFeedbackMode,
 ) {
     let erm_cfg = if let Some(cp) = config_path {
         load_config(Some(cp))
@@ -1946,6 +1964,7 @@ fn run_infer_live(
                 seed,
                 interval_ms,
                 feedback_tokens,
+                feedback_mode,
                 Default::default(),
             );
         }
@@ -1962,6 +1981,7 @@ fn run_infer_live(
                     seed,
                     interval_ms,
                     feedback_tokens,
+                    feedback_mode,
                     device,
                 );
             }
@@ -1985,6 +2005,7 @@ fn run_infer_live(
                     seed,
                     interval_ms,
                     feedback_tokens,
+                    feedback_mode,
                     device,
                 );
             }
@@ -2007,6 +2028,7 @@ fn infer_live_loop<B: burn::tensor::backend::AutodiffBackend>(
     seed: u64,
     interval_ms: u64,
     feedback_tokens: usize,
+    feedback_mode: &LiveFeedbackMode,
     device: B::Device,
 ) {
     use erm_train::diffusion_training::DiffusionTrainer;
@@ -2101,13 +2123,17 @@ fn infer_live_loop<B: burn::tensor::backend::AutodiffBackend>(
     if current_prompt_tokens.len() > max_prompt_len {
         current_prompt_tokens.truncate(max_prompt_len);
     }
+    let base_prompt_tokens = current_prompt_tokens.clone();
+    let anchor_len = base_prompt_tokens.len().min(max_prompt_len);
 
     let feedback_len = feedback_tokens.max(1).min(max_prompt_len);
 
     println!(
         "=== Diffusion Live Loop ===\n\
-         length={length} steps={k_steps} interval_ms={interval_ms} feedback_tokens={feedback_len}\n\
+         length={length} steps={k_steps} interval_ms={interval_ms} feedback_tokens={feedback_len} feedback_mode={:?}\n\
          Stop with Ctrl+C."
+        ,
+        feedback_mode
     );
 
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
@@ -2137,9 +2163,37 @@ fn infer_live_loop<B: burn::tensor::backend::AutodiffBackend>(
                     println!("{tokens:?}");
                 }
 
-                let take_n = feedback_len.min(tokens.len().saturating_sub(1));
-                if take_n > 0 {
-                    current_prompt_tokens = tokens[..take_n].to_vec();
+                match feedback_mode {
+                    LiveFeedbackMode::None => {
+                        current_prompt_tokens = base_prompt_tokens.clone();
+                    }
+                    LiveFeedbackMode::Leading => {
+                        let take_n = feedback_len.min(tokens.len().saturating_sub(1));
+                        if take_n > 0 {
+                            current_prompt_tokens = tokens[..take_n].to_vec();
+                        } else {
+                            current_prompt_tokens = base_prompt_tokens.clone();
+                        }
+                    }
+                    LiveFeedbackMode::Anchored => {
+                        let mut next = base_prompt_tokens[..anchor_len].to_vec();
+                        let free = max_prompt_len.saturating_sub(next.len());
+                        let tail_take = feedback_len.min(free);
+                        if tail_take > 0 && !tokens.is_empty() {
+                            let start = anchor_len.min(tokens.len());
+                            let available = tokens.len().saturating_sub(start);
+                            if available >= tail_take {
+                                next.extend_from_slice(&tokens[start..start + tail_take]);
+                            } else {
+                                let from = tokens.len().saturating_sub(tail_take);
+                                next.extend_from_slice(&tokens[from..]);
+                            }
+                        }
+                        if next.is_empty() {
+                            next.push(0);
+                        }
+                        current_prompt_tokens = next;
+                    }
                 }
             }
             Err(e) => {
@@ -2531,7 +2585,7 @@ fn write_diffusion_sample<B: burn::tensor::backend::AutodiffBackend>(
 
     let clean_tokens: Vec<u32> = batch.tokens[..l].to_vec();
     let x_i32: Vec<i32> = clean_tokens.iter().map(|&t| t as i32).collect();
-    let t_val = ((trainer.config.diffusion_steps.max(1)) + 1) / 2;
+    let t_val = trainer.config.diffusion_steps.max(1).div_ceil(2);
     let mut sample_rng = ChaCha8Rng::seed_from_u64(0xD1FF_u64 ^ step as u64);
 
     let corruption = erm_core::corruption::corrupt(&x_i32, t_val, &trainer.config, &mut sample_rng)
@@ -2611,7 +2665,10 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
     resume: Option<&str>,
     device: B::Device,
 ) {
+    use std::collections::HashSet;
+
     use erm_train::diffusion_training::{DiffusionStepResult, DiffusionTrainer};
+    use erm_train::graph_health::compute_graph_health_metrics;
     use erm_train::metrics::{MetricsRecord, MetricsWriter};
     use erm_train::streaming_dataset::StreamingDataset;
     use rand::SeedableRng;
@@ -2658,6 +2715,7 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
 
     let mut local_step = 0usize;
     let mut recent_losses: Vec<f32> = Vec::new();
+    let mut prev_leader_edges: Option<HashSet<(usize, usize, usize)>> = None;
 
     while local_step < total_steps {
         let batch = match dataset.next_batch() {
@@ -2685,10 +2743,18 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
         recent_losses.push(result.loss);
 
         // Log.
-        if local_step % log_every == 0 || local_step == total_steps {
+        if local_step.is_multiple_of(log_every) || local_step == total_steps {
             let avg_loss: f32 = recent_losses.iter().sum::<f32>() / recent_losses.len() as f32;
+            let (graph_health, current_leader_edges) = compute_graph_health_metrics(
+                &trainer.graph,
+                cfg.route_lambda,
+                cfg.route_mu,
+                cfg.phi_max,
+                cfg.taint_max,
+                prev_leader_edges.as_ref(),
+            );
             println!(
-                "[diffusion step {:6}] loss={:.4} lr={:.6} f_temp={:.2} l_temp={:.2} edits={} mean_φ={:.4} deaths={} pruned={} inserted={}",
+                "[diffusion step {:6}] loss={:.4} lr={:.6} f_temp={:.2} l_temp={:.2} edits={} mean_φ={:.4} deaths={} pruned={} inserted={} H_edge={:.3} top1={:.3}",
                 global_step,
                 avg_loss,
                 result.lr,
@@ -2699,8 +2765,11 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
                 result.deaths,
                 result.edges_pruned,
                 result.edges_inserted,
+                graph_health.edge_weight_entropy_mean,
+                graph_health.top1_edge_share_mean,
             );
             recent_losses.clear();
+            prev_leader_edges = Some(current_leader_edges);
 
             // Write metrics.
             if let Some(ref mut mw) = metrics_writer {
@@ -2710,7 +2779,22 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
                     loss: avg_loss,
                     edits: result.total_edits,
                     mean_phi: result.pheromone_stats.mean_phi,
+                    max_phi: result.pheromone_stats.max_phi,
+                    mean_taint: result.pheromone_stats.mean_taint,
+                    tainted_count: result.pheromone_stats.tainted_count,
                     deaths: result.deaths,
+                    active_edges: graph_health.active_edges,
+                    leader_edges: graph_health.leader_edges,
+                    leader_edge_fraction: graph_health.leader_edge_fraction,
+                    mean_age: graph_health.mean_age,
+                    max_age: graph_health.max_age,
+                    phi_clamped_fraction: graph_health.phi_clamped_fraction,
+                    taint_clamped_fraction: graph_health.taint_clamped_fraction,
+                    edge_weight_entropy_mean: graph_health.edge_weight_entropy_mean,
+                    top1_edge_share_mean: graph_health.top1_edge_share_mean,
+                    leader_edge_survival_rate: graph_health.leader_edge_survival_rate,
+                    edges_pruned: result.edges_pruned,
+                    edges_inserted: result.edges_inserted,
                     seq_len: cfg.seq_len,
                     batch: cfg.batch_size,
                     hidden_dim: cfg.hidden_dim,
@@ -2739,16 +2823,17 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
         }
 
         // Checkpoint.
-        if checkpoint_every > 0 && local_step % checkpoint_every == 0 && checkpoint_dir.is_some() {
-            let dir = checkpoint_dir.unwrap();
-            let ckpt_dir = format!("{dir}/step_{global_step:08}");
-            if let Err(e) = trainer.save_checkpoint(&ckpt_dir) {
-                eprintln!("WARNING: checkpoint save failed: {e}");
-            }
-            // Also update latest/.
-            let latest_dir = format!("{dir}/latest");
-            if let Err(e) = trainer.save_checkpoint(&latest_dir) {
-                eprintln!("WARNING: latest checkpoint save failed: {e}");
+        if checkpoint_every > 0 && local_step.is_multiple_of(checkpoint_every) {
+            if let Some(dir) = checkpoint_dir {
+                let ckpt_dir = format!("{dir}/step_{global_step:08}");
+                if let Err(e) = trainer.save_checkpoint(&ckpt_dir) {
+                    eprintln!("WARNING: checkpoint save failed: {e}");
+                }
+                // Also update latest/.
+                let latest_dir = format!("{dir}/latest");
+                if let Err(e) = trainer.save_checkpoint(&latest_dir) {
+                    eprintln!("WARNING: latest checkpoint save failed: {e}");
+                }
             }
         }
     }

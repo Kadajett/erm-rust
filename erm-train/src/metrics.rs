@@ -33,8 +33,53 @@ pub struct MetricsRecord {
     pub edits: usize,
     /// Mean pheromone level across all route graph edges.
     pub mean_phi: f32,
+    /// Maximum pheromone level across all route graph edges.
+    #[serde(default)]
+    pub max_phi: f32,
+    /// Mean taint level across all route graph edges.
+    #[serde(default)]
+    pub mean_taint: f32,
+    /// Number of edges with taint > 0.
+    #[serde(default)]
+    pub tainted_count: usize,
     /// Number of ant deaths (and respawns) this step.
     pub deaths: usize,
+    /// Number of active (non-empty) edges.
+    #[serde(default)]
+    pub active_edges: usize,
+    /// Number of active leader-introduced edges.
+    #[serde(default)]
+    pub leader_edges: usize,
+    /// Fraction of active edges introduced by leaders.
+    #[serde(default)]
+    pub leader_edge_fraction: f32,
+    /// Mean edge age across active edges.
+    #[serde(default)]
+    pub mean_age: f32,
+    /// Maximum edge age across active edges.
+    #[serde(default)]
+    pub max_age: u32,
+    /// Fraction of active edges clamped at `phi_max`.
+    #[serde(default)]
+    pub phi_clamped_fraction: f32,
+    /// Fraction of active edges clamped at `taint_max`.
+    #[serde(default)]
+    pub taint_clamped_fraction: f32,
+    /// Mean per-destination edge-weight entropy.
+    #[serde(default)]
+    pub edge_weight_entropy_mean: f32,
+    /// Mean per-destination top-1 edge share.
+    #[serde(default)]
+    pub top1_edge_share_mean: f32,
+    /// Fraction of previous-step leader edges still present.
+    #[serde(default)]
+    pub leader_edge_survival_rate: f32,
+    /// Number of edges pruned during this step.
+    #[serde(default)]
+    pub edges_pruned: usize,
+    /// Number of edges inserted during this step.
+    #[serde(default)]
+    pub edges_inserted: usize,
     /// Sequence length used in this experiment.
     pub seq_len: usize,
     /// Batch size used in this experiment.
@@ -76,10 +121,9 @@ impl MetricsWriter {
         // Create parent directories.
         if let Some(parent) = std::path::Path::new(path).parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                ErmError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("cannot create metrics dir: {e}"),
-                ))
+                ErmError::IoError(std::io::Error::other(format!(
+                    "cannot create metrics dir: {e}"
+                )))
             })?;
         }
 
@@ -88,10 +132,9 @@ impl MetricsWriter {
             .append(true)
             .open(path)
             .map_err(|e| {
-                ErmError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("cannot open metrics file {path}: {e}"),
-                ))
+                ErmError::IoError(std::io::Error::other(format!(
+                    "cannot open metrics file {path}: {e}"
+                )))
             })?;
 
         Ok(Self {
@@ -108,7 +151,7 @@ impl MetricsWriter {
     ///
     /// Returns an error if writing fails.
     pub fn maybe_write(&mut self, step: usize, record: &MetricsRecord) -> ErmResult<bool> {
-        if step % self.log_every != 0 {
+        if !step.is_multiple_of(self.log_every) {
             return Ok(false);
         }
         self.write(record)?;
@@ -121,20 +164,13 @@ impl MetricsWriter {
     ///
     /// Returns an error if writing fails.
     pub fn write(&mut self, record: &MetricsRecord) -> ErmResult<()> {
-        let line = serde_json::to_string(record).map_err(|e| {
-            ErmError::InvalidConfig(format!("metrics serialization failed: {e}"))
-        })?;
+        let line = serde_json::to_string(record)
+            .map_err(|e| ErmError::InvalidConfig(format!("metrics serialization failed: {e}")))?;
         writeln!(self.writer, "{line}").map_err(|e| {
-            ErmError::IoError(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("metrics write failed: {e}"),
-            ))
+            ErmError::IoError(std::io::Error::other(format!("metrics write failed: {e}")))
         })?;
         self.writer.flush().map_err(|e| {
-            ErmError::IoError(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("metrics flush failed: {e}"),
-            ))
+            ErmError::IoError(std::io::Error::other(format!("metrics flush failed: {e}")))
         })?;
         Ok(())
     }
@@ -151,7 +187,22 @@ mod tests {
             loss: 3.14,
             edits: 42,
             mean_phi: 0.5,
+            max_phi: 0.9,
+            mean_taint: 0.1,
+            tainted_count: 3,
             deaths: 3,
+            active_edges: 64,
+            leader_edges: 12,
+            leader_edge_fraction: 0.1875,
+            mean_age: 4.0,
+            max_age: 10,
+            phi_clamped_fraction: 0.02,
+            taint_clamped_fraction: 0.01,
+            edge_weight_entropy_mean: 0.55,
+            top1_edge_share_mean: 0.73,
+            leader_edge_survival_rate: 0.88,
+            edges_pruned: 5,
+            edges_inserted: 7,
             seq_len: 512,
             batch: 2,
             hidden_dim: 192,
@@ -178,6 +229,9 @@ mod tests {
         assert_eq!(rec.step, 50);
         assert_eq!(rec.exp_id, "exp-test");
         assert!((rec.loss - 3.14).abs() < 1e-3);
+        assert_eq!(rec.active_edges, 64);
+        assert!((rec.leader_edge_fraction - 0.1875).abs() < 1e-6);
+        assert_eq!(rec.edges_pruned, 5);
 
         let _ = std::fs::remove_file(path);
     }
@@ -213,7 +267,11 @@ mod tests {
         }
 
         let content = std::fs::read_to_string(path).unwrap();
-        assert_eq!(content.lines().count(), 2, "should have 2 records after 2 opens");
+        assert_eq!(
+            content.lines().count(),
+            2,
+            "should have 2 records after 2 opens"
+        );
         let _ = std::fs::remove_file(path);
     }
 }

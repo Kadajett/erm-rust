@@ -25,6 +25,7 @@ pub mod comparison;
 pub mod dataset;
 pub mod diffusion_training;
 pub mod eval;
+pub mod graph_health;
 pub mod graph_snapshot;
 pub mod image_dataset;
 pub mod metrics;

@@ -742,6 +742,7 @@ fn insert_leader_edges(
 /// # Returns
 ///
 /// Final token sequence of length `seq_len`.
+#[allow(clippy::too_many_arguments)]
 pub fn diffusion_infer<B: burn::tensor::backend::Backend>(
     scorer: &BurnScorer<B>,
     _graph: &mut RouteGraph,
@@ -809,8 +810,8 @@ pub fn diffusion_infer<B: burn::tensor::backend::Backend>(
         let (logits_tensor, _, _) = scorer.forward_with_hidden(y_tensor);
         let logits_cpu = tensor_to_vec(logits_tensor)?;
         let v_rt = if l > 0 { logits_cpu.len() / l } else { 0 };
-        for pos in prompt_len..l {
-            if y[pos] != mask_id || v_rt == 0 {
+        for (pos, token) in y.iter_mut().enumerate().take(l).skip(prompt_len) {
+            if *token != mask_id || v_rt == 0 {
                 continue;
             }
             let start = pos * v_rt;
@@ -825,7 +826,7 @@ pub fn diffusion_infer<B: burn::tensor::backend::Backend>(
                 .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                 .map(|(i, _)| i)
                 .unwrap_or(0);
-            y[pos] = best as u32;
+            *token = best as u32;
         }
     }
 
@@ -834,8 +835,8 @@ pub fn diffusion_infer<B: burn::tensor::backend::Backend>(
     let (logits_tensor, _, _) = scorer.forward_with_hidden(y_tensor);
     let logits_cpu = tensor_to_vec(logits_tensor)?;
     let v_rt = if l > 0 { logits_cpu.len() / l } else { 0 };
-    for pos in prompt_len..l {
-        if y[pos] == mask_id {
+    for (pos, token) in y.iter_mut().enumerate().take(l).skip(prompt_len) {
+        if *token == mask_id {
             let start = pos * v_rt;
             let end = start + v_rt;
             if end > logits_cpu.len() || v_rt == 0 {
@@ -848,7 +849,7 @@ pub fn diffusion_infer<B: burn::tensor::backend::Backend>(
                 .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                 .map(|(i, _)| i)
                 .unwrap_or(0);
-            y[pos] = best as u32;
+            *token = best as u32;
         }
     }
 

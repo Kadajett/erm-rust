@@ -299,6 +299,7 @@ pub fn update_pheromones_with_diversity(
 /// # Errors
 ///
 /// Returns `ErmError` on dimension mismatches.
+#[allow(clippy::too_many_arguments)]
 pub fn update_pheromones_with_position_credit(
     graph: &mut RouteGraph,
     traces: &[EdgeTrace],
@@ -793,8 +794,7 @@ mod tests {
         let mut pconfig = small_pheromone_config();
         pconfig.use_log_deposit = true;
 
-        let _stats =
-            update_pheromones(&mut graph, &traces, &ant_deltas, &pconfig).expect("update");
+        let _stats = update_pheromones(&mut graph, &traces, &ant_deltas, &pconfig).expect("update");
 
         let flat = graph.idx(0, 0, 0);
         // After evap: 0.45, deposit: 0.5 * ln(1 + 0.1) ≈ 0.5 * 0.0953 ≈ 0.0477
@@ -820,8 +820,7 @@ mod tests {
         let mut pconfig = small_pheromone_config();
         pconfig.use_log_deposit = true;
 
-        let _stats =
-            update_pheromones(&mut graph, &traces, &ant_deltas, &pconfig).expect("update");
+        let _stats = update_pheromones(&mut graph, &traces, &ant_deltas, &pconfig).expect("update");
 
         let flat = graph.idx(0, 0, 0);
         // log1p never saturates to 1 — unlike tanh(100) ≈ 1.0, log(101) ≈ 4.62

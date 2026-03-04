@@ -182,9 +182,7 @@ pub fn corrupt_spectral<R: Rng>(
         }
     } else {
         // All zero surprisal — fall back to uniform.
-        for p in &mut priority {
-            *p = 1.0;
-        }
+        priority.fill(1.0);
     }
 
     let mut y_t = Vec::with_capacity(n);
