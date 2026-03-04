@@ -303,33 +303,33 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 0,
-      "status": "proposed",
-      "stop_reason": "awaiting-launch"
+      "window_minutes_actual": 10,
+      "status": "running",
+      "stop_reason": "first-chunk-snapshot-recorded"
     },
     "result": {
-      "reported_by_model": "pending",
+      "reported_by_model": "gpt-5-codex",
       "step_window": {
-        "resume_local_start": null,
-        "resume_local_end": null
+        "resume_local_start": 10,
+        "resume_local_end": 700
       },
       "metrics": {
         "loss": {
-          "start_mean": null,
-          "end_mean": null,
-          "last_100_mean": null,
-          "min": null,
-          "max": null
+          "start_mean": 13.467067199999999,
+          "end_mean": 8.032716599999999,
+          "last_100_mean": 8.032716599999999,
+          "min": 4.9949074,
+          "max": 13.868538
         },
         "vram_mb": {
           "total": 6144,
-          "used_min": null,
-          "used_max": null
+          "used_min": 3967,
+          "used_max": 3967
         },
-        "host_ram_bytes": null,
-        "oom": null
+        "host_ram_bytes": 3051204608,
+        "oom": false
       },
-      "notes": "Launched and validated at startup: logs show 'Scratch start: no checkpoint resume', exp_id=alice-run-b2-m1m-v1, steps=1000000. Policy now enforced in agent docs and skill: requesting a new experiment id means full restart by default. Resume requires explicit user request."
+      "notes": "Launched and validated at startup: logs show 'Scratch start: no checkpoint resume', exp_id=alice-run-b2-m1m-v1, steps=1000000. First chunk recorded: step 10-250 mean=10.2616 (start5=13.4671, end5=8.5492). Current observed window step 10-700 mean=8.7935 (end5=8.0327), min=4.9949, max=13.8685. Policy now enforced in agent docs and skill: requesting a new experiment id means full restart by default; resume requires explicit request."
     }
   }
 ]
