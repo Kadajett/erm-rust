@@ -44,3 +44,18 @@ The builder pod uses an `nvcc` shim that reports CUDA 13.0 to cudarc's build-tim
   - `result.reported_by_model` (model that measured/reported impact)
   - `evaluation.window_minutes_target` (default `60`) and `evaluation.window_minutes_actual` (override if crash/short run)
   - VRAM and loss trend metrics
+
+## Shared Operator Memory (Read First)
+
+- Before changing training jobs or data order, read `docs/OPERATOR_MEMORY.md`.
+- Keep `docs/OPERATOR_MEMORY.md` current with:
+  - live job + experiment id
+  - dataset order for current and next staged run
+  - absolute host and pod data paths
+  - any critical helper commands used by the operator
+- For plateau/debug analysis, follow the canonical workflow in `docs/OPERATOR_MEMORY.md`:
+  - pull pod logs + metrics writer status
+  - validate process + GPU state
+  - copy `metrics.jsonl` locally via `kubectl cp`
+  - compute fixed windows with `jq` + `awk`
+  - compare windows across recent experiments before recommending changes

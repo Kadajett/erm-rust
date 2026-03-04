@@ -117,6 +117,19 @@ These invariants must hold at ALL times. Add assertions in debug builds.
   - `evaluation.window_minutes_target` (default `60`) and `evaluation.window_minutes_actual` (override when crash/early stop)
   - `metrics` including VRAM and loss trend fields
 
+## Shared Operator Memory (Read First)
+
+- Before making new training/data-order decisions, read `docs/OPERATOR_MEMORY.md`.
+- Keep `docs/OPERATOR_MEMORY.md` updated with:
+  - current live job + experiment id
+  - current/next dataset order and absolute host+pod paths
+  - important operational commands the user relies on (for example `ermiotail`)
+- For pod diagnostics and plateau calls, use the canonical pull/analyze workflow in `docs/OPERATOR_MEMORY.md`:
+  - logs + metrics writer progression checks
+  - process/GPU sanity checks
+  - `kubectl cp` of `metrics.jsonl` for local fixed-window analysis
+  - cross-run comparisons on identical step windows before conclusions
+
 ---
 
 _This file is a living document. Every code review should check if new rules need to be added._

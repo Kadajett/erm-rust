@@ -1,0 +1,101 @@
+# Operator Memory (Shared: Codex + Claude)
+
+Last updated: 2026-03-04 UTC
+
+## Current Live Run
+
+- Job: `erm-alice-run-m1m-v5-sharded-3phase`
+- Experiment id: `alice-run-b2-m1m-v5-sharded-3phase-r1`
+- Status: running
+- Confirmed phase/data order:
+  - Phase 1: `100000` steps on `/workspace/rust-pcn/data/english-frontload-sharded`
+  - Phase 2: `200000` steps on `/workspace/rust-pcn/data/sentence-bridge-smclm-sharded`
+  - Phase 3: `700000` steps on `/workspace/rust-pcn/data/books`
+
+Observed early-phase behavior:
+- Entered classic early "the-stage" collapse in predictions (high-frequency stopword loops).
+- Around steps `~2k-2.5k`, loss hovered in `~7.0-7.9` band with noisy but slight net downtrend.
+
+### Startup Latency Note
+
+- v4 startup was delayed by monolithic-file tokenization before first step emit.
+- Mitigation added:
+  - sharded frontload and bridge corpora
+  - incremental line-stream tokenization in `StreamingDataset`
+  - mid-epoch discovery of newly added `*.txt` files (no restart required after next rebuild/deploy)
+
+## Dataset Paths (Host + Pod)
+
+- High-quality English (HF `agentlans/high-quality-english-sentences`)
+  - Host: `/home/kadajett/dev/rust-pcn/data/hq-english-sentences/train.txt`
+  - Pod: `/workspace/rust-pcn/data/hq-english-sentences/train.txt`
+  - Frontload dirs:
+    - Host: `/home/kadajett/dev/rust-pcn/data/english-frontload`
+    - Pod: `/workspace/rust-pcn/data/english-frontload`
+  - Sharded frontload dirs (current v5):
+    - Host: `/home/kadajett/dev/rust-pcn/data/english-frontload-sharded`
+    - Pod: `/workspace/rust-pcn/data/english-frontload-sharded`
+
+- Sentence bridge (HF `mmichall/smclm-10M-sentence-corpus`)
+  - Host: `/home/kadajett/dev/rust-pcn/data/smclm-10m-sentence-corpus`
+  - Pod: `/workspace/rust-pcn/data/smclm-10m-sentence-corpus`
+  - Bridge dirs:
+    - Host: `/home/kadajett/dev/rust-pcn/data/sentence-bridge-smclm`
+    - Pod: `/workspace/rust-pcn/data/sentence-bridge-smclm`
+  - Sharded bridge dirs (current v5):
+    - Host: `/home/kadajett/dev/rust-pcn/data/sentence-bridge-smclm-sharded`
+    - Pod: `/workspace/rust-pcn/data/sentence-bridge-smclm-sharded`
+  - Snapshot stats: `~7,958,341` lines across 10 `.txt` shards
+
+- Existing mixed books/code corpus
+  - Host: `/home/kadajett/dev/rust-pcn/data/books`
+  - Pod: `/workspace/rust-pcn/data/books`
+
+## Canonical Pod Pull + Analysis Workflow
+
+Use this exact sequence whenever diagnosing "plateau", stalls, or regressions.
+
+1. Identify live pod and basic status.
+   - `kubectl get pod -n pcn-train -l job-name=<job> -o wide`
+   - `kubectl logs -n pcn-train <pod> --tail=120`
+2. Verify writer activity and step progression.
+   - `kubectl exec -n pcn-train <pod> -- wc -l <metrics.jsonl>`
+   - `kubectl exec -n pcn-train <pod> -- tail -n 20 <metrics.jsonl>`
+   - Repeat after ~10-20s. If line count is unchanged, check process state.
+3. Check trainer process health.
+   - `kubectl exec -n pcn-train <pod> -- ps -eo pid,pcpu,pmem,rss,etime,cmd | grep 'erm.new diffusion-train'`
+   - `kubectl exec -n pcn-train <pod> -- top -b -n 1 | head -20`
+4. Check GPU memory/utilization quickly.
+   - `kubectl exec -n pcn-train <pod> -- nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu,utilization.memory --format=csv,noheader`
+5. Pull metrics for cross-run comparisons (local temp).
+   - `kubectl cp -n pcn-train <pod>:/workspace/erm-rust/data/experiments/<exp>/checkpoints/metrics.jsonl /tmp/erm-metrics/<exp>.metrics.jsonl`
+6. Compute trend windows with `jq` + `awk`.
+   - Must at least compute:
+     - `mean(<=500)`
+     - `loss@2000`
+     - `mean(1500-2000)`
+     - `slope(1500-2000)`
+     - `mean(>2000)` and `slope(>2000)` when available
+     - `deaths` mean/max in the same windows
+7. Compare against last 2-3 experiments using same windows.
+   - Never compare different windows directly.
+8. Record result in `experiments/tracking/theory-tracker.json`.
+   - Add qualitative stage note (for example "the-stage collapse") if present.
+   - Keep `evaluation.status` as `running` until run is actually ended.
+
+## Plateau Interpretation Rules (Use Consistently)
+
+- Do not call hard plateau at ~2k alone.
+- Treat as "noisy shelf" if:
+  - `slope(1500-2000)` or `slope(>2000)` is near 0 but slightly negative
+  - and fresh local minima continue to appear.
+- Treat as likely plateau/regression if:
+  - `slope(>2000)` turns positive over a long enough window (>= 1k steps),
+  - and `last_2k_mean` does not improve by at least ~5%.
+- Always check if throughput is stalled separately from loss plateau:
+  - unchanged `metrics.jsonl` line count + unchanged step in logs.
+
+## One-Command Readable Output Tail
+
+- Command: `ermiotail` (alias to `ermio`) from `~/.zshrc`
+- Behavior: auto-select newest running `erm-alice-run-*` pod and stream readable `clean/corr/pred` lines from latest checkpoint json/jsonl.
