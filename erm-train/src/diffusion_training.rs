@@ -42,7 +42,9 @@ use erm_core::config::{ErmConfig, PheromoneConfig};
 use erm_core::corruption::{corrupt, corrupt_spectral};
 use erm_core::error::{ErmError, ErmResult};
 use erm_core::graph::RouteGraph;
-use erm_core::merge::{compute_ant_deltas, compute_position_deltas, merge_proposals};
+use erm_core::merge::{
+    compute_ant_deltas_train, compute_position_deltas_train, merge_proposals, SimpleEditProposal,
+};
 use erm_core::pheromone::{
     build_edge_traces, pheromone_rescale, prune_edges, update_pheromones_with_position_credit,
     PheromoneStats, RunningDeltaStats,
@@ -334,7 +336,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             };
 
             let mut y_new_batch = Vec::with_capacity(b * l);
-            let mut all_proposals = Vec::new();
+            let mut proposals_by_batch: Vec<Vec<SimpleEditProposal>> = Vec::with_capacity(b);
             let mut all_edge_proposals = Vec::new();
 
             for batch_idx in 0..b {
@@ -410,7 +412,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 total_edits += edits;
 
                 y_new_batch.extend_from_slice(&y_new);
-                all_proposals.extend(batch_proposals);
+                proposals_by_batch.push(batch_proposals);
                 all_edge_proposals.extend(edge_proposals);
             }
 
@@ -449,11 +451,14 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 let logits_new_b = &logits_new_cpu[ln_start..ln_end];
                 let z_t_b = &z_t_u32[batch_idx * l..(batch_idx + 1) * l];
                 let y_new_b = &y_new_batch[batch_idx * l..(batch_idx + 1) * l];
+                let x_b = &batch.tokens[batch_idx * l..(batch_idx + 1) * l];
+                let proposals_b = &proposals_by_batch[batch_idx];
 
-                let batch_deltas = compute_ant_deltas(
-                    &all_proposals,
+                let batch_deltas = compute_ant_deltas_train(
+                    proposals_b,
                     z_t_b,
                     y_new_b,
+                    x_b,
                     logits_b,
                     logits_new_b,
                     v_rt,
@@ -464,8 +469,14 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 }
 
                 // Per-position deltas for this batch element.
-                let pos_deltas_b =
-                    compute_position_deltas(z_t_b, y_new_b, logits_b, logits_new_b, v_rt)?;
+                let pos_deltas_b = compute_position_deltas_train(
+                    z_t_b,
+                    y_new_b,
+                    x_b,
+                    logits_b,
+                    logits_new_b,
+                    v_rt,
+                )?;
                 let pd_start = batch_idx * l;
                 position_deltas[pd_start..pd_start + l].copy_from_slice(&pos_deltas_b);
             }
@@ -477,7 +488,23 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             }
 
             // 6. Pheromone update (CPU).
-            let traces = build_edge_traces(&all_proposals, &edge_weights, b, l, cfg.emax);
+            // Build traces per batch to avoid cross-batch proposal contamination.
+            let mut traces = Vec::new();
+            for (batch_idx, proposals_b) in proposals_by_batch.iter().enumerate() {
+                let ew_start = batch_idx * l * cfg.emax;
+                let ew_end = ew_start + l * cfg.emax;
+                if ew_end > edge_weights.len() {
+                    continue;
+                }
+                let mut traces_b =
+                    build_edge_traces(proposals_b, &edge_weights[ew_start..ew_end], 1, l, cfg.emax);
+                for trace in &mut traces_b {
+                    for entry in &mut trace.entries {
+                        entry.0 = batch_idx;
+                    }
+                }
+                traces.extend(traces_b);
+            }
             let pstats = update_pheromones_with_position_credit(
                 &mut self.graph,
                 &traces,

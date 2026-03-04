@@ -588,7 +588,12 @@ impl TokenizerApi for BpeTokenizer {
     fn decode_text(&self, ids: &[u32]) -> String {
         let mut out = String::new();
         for &id in ids {
-            if id == PAD_ID || id == MASK_ID {
+            if id == PAD_ID {
+                continue;
+            }
+            // ERM uses one extra dynamic MASK sentinel at `vocab_size`.
+            if id as usize == self.vocab_size || id == MASK_ID {
+                out.push_str("<mask>");
                 continue;
             }
             if let Some(tok) = self.id_to_token.get(&id) {
@@ -596,7 +601,11 @@ impl TokenizerApi for BpeTokenizer {
                     out.push('?');
                     continue;
                 }
-                if tok == "<pad>" || tok == "<mask>" {
+                if tok == "<pad>" {
+                    continue;
+                }
+                if tok == "<mask>" {
+                    out.push_str("<mask>");
                     continue;
                 }
                 // Replace both common whitespace markers with a literal space.

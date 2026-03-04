@@ -202,6 +202,67 @@ pub fn compute_position_deltas(
     Ok(deltas)
 }
 
+/// Compute per-position supervised CE improvement deltas after a merge step.
+///
+/// For each edited position (`y_new[pos] != y_base[pos]`), computes:
+/// `delta = CE_before(target[pos]) - CE_after(target[pos])`.
+/// Positive delta means the edit moved logits closer to the clean target.
+///
+/// Unedited positions get delta = 0.
+pub fn compute_position_deltas_train(
+    y_base: &[u32],
+    y_new: &[u32],
+    targets: &[u32],
+    logits_before: &[f32],
+    logits_after: &[f32],
+    vocab_size: usize,
+) -> ErmResult<Vec<f32>> {
+    let seq_len = y_base.len();
+    let expected_logits = seq_len * vocab_size;
+
+    if logits_before.len() != expected_logits {
+        return Err(ErmError::ShapeMismatch {
+            expected: format!("logits_before [L={seq_len}, V={vocab_size}] = {expected_logits}"),
+            got: format!("{}", logits_before.len()),
+        });
+    }
+    if logits_after.len() != expected_logits {
+        return Err(ErmError::ShapeMismatch {
+            expected: format!("logits_after [L={seq_len}, V={vocab_size}] = {expected_logits}"),
+            got: format!("{}", logits_after.len()),
+        });
+    }
+    if y_new.len() != seq_len {
+        return Err(ErmError::ShapeMismatch {
+            expected: format!("y_new length = {seq_len}"),
+            got: format!("{}", y_new.len()),
+        });
+    }
+    if targets.len() != seq_len {
+        return Err(ErmError::ShapeMismatch {
+            expected: format!("targets length = {seq_len}"),
+            got: format!("{}", targets.len()),
+        });
+    }
+
+    let mut deltas = vec![0.0_f32; seq_len];
+    for pos in 0..seq_len {
+        if y_new[pos] != y_base[pos] {
+            let target = targets[pos] as usize;
+            if target >= vocab_size {
+                continue;
+            }
+            let start = pos * vocab_size;
+            let end = start + vocab_size;
+            let ce_before = nll_from_logits(&logits_before[start..end], target);
+            let ce_after = nll_from_logits(&logits_after[start..end], target);
+            deltas[pos] = ce_before - ce_after;
+        }
+    }
+
+    Ok(deltas)
+}
+
 /// Compute per-ant improvement deltas after a merge step.
 ///
 /// For each ant, sums the logit improvement at positions where that ant's
@@ -316,6 +377,105 @@ pub fn compute_ant_deltas(
     }
 
     Ok(deltas)
+}
+
+/// Compute per-ant supervised CE improvement deltas after a merge step.
+///
+/// Credit is assigned only to accepted edits, but improvement is measured
+/// against clean targets (training supervision), not the edited token itself.
+///
+/// `delta_k = Σ_{i ∈ accepted_edits_by_ant_k} [ CE_before(i,target_i) - CE_after(i,target_i) ]`
+pub fn compute_ant_deltas_train(
+    proposals: &[SimpleEditProposal],
+    y_base: &[u32],
+    y_new: &[u32],
+    targets: &[u32],
+    logits_before: &[f32],
+    logits_after: &[f32],
+    vocab_size: usize,
+    num_ants: usize,
+) -> ErmResult<Vec<f32>> {
+    let seq_len = y_base.len();
+    let expected_logits = seq_len * vocab_size;
+
+    if logits_before.len() != expected_logits {
+        return Err(ErmError::ShapeMismatch {
+            expected: format!("logits_before [L={seq_len}, V={vocab_size}] = {expected_logits}"),
+            got: format!("{}", logits_before.len()),
+        });
+    }
+    if logits_after.len() != expected_logits {
+        return Err(ErmError::ShapeMismatch {
+            expected: format!("logits_after [L={seq_len}, V={vocab_size}] = {expected_logits}"),
+            got: format!("{}", logits_after.len()),
+        });
+    }
+    if y_new.len() != seq_len {
+        return Err(ErmError::ShapeMismatch {
+            expected: format!("y_new length = {seq_len}"),
+            got: format!("{}", y_new.len()),
+        });
+    }
+    if targets.len() != seq_len {
+        return Err(ErmError::ShapeMismatch {
+            expected: format!("targets length = {seq_len}"),
+            got: format!("{}", targets.len()),
+        });
+    }
+
+    let mut deltas = vec![0.0_f32; num_ants];
+
+    let mut winning_ant: Vec<Option<usize>> = vec![None; seq_len];
+    for p in proposals {
+        if p.position >= seq_len {
+            continue;
+        }
+        if y_new[p.position] != y_base[p.position] && y_new[p.position] == p.token {
+            match winning_ant[p.position] {
+                Some(existing_ant) => {
+                    let existing_gain = proposals
+                        .iter()
+                        .filter(|q| {
+                            q.position == p.position
+                                && q.ant_id == existing_ant
+                                && q.token == p.token
+                        })
+                        .map(|q| q.predicted_gain)
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    if p.predicted_gain > existing_gain {
+                        winning_ant[p.position] = Some(p.ant_id);
+                    }
+                }
+                None => {
+                    winning_ant[p.position] = Some(p.ant_id);
+                }
+            }
+        }
+    }
+
+    for (pos, opt_ant) in winning_ant.iter().enumerate() {
+        if let Some(ant_id) = opt_ant {
+            if *ant_id < num_ants {
+                let target = targets[pos] as usize;
+                if target < vocab_size {
+                    let start = pos * vocab_size;
+                    let end = start + vocab_size;
+                    let ce_before = nll_from_logits(&logits_before[start..end], target);
+                    let ce_after = nll_from_logits(&logits_after[start..end], target);
+                    deltas[*ant_id] += ce_before - ce_after;
+                }
+            }
+        }
+    }
+
+    Ok(deltas)
+}
+
+fn nll_from_logits(logits: &[f32], target: usize) -> f32 {
+    let max_logit = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let sum_exp: f32 = logits.iter().map(|&x| (x - max_logit).exp()).sum();
+    let logsumexp = max_logit + sum_exp.ln();
+    -(logits[target] - logsumexp)
 }
 
 #[cfg(test)]
@@ -685,5 +845,73 @@ mod tests {
         for &d in &deltas {
             assert!(d.is_finite(), "delta must be finite, got {d}");
         }
+    }
+
+    #[test]
+    fn test_position_deltas_train_uses_clean_target() {
+        let y_base = vec![0_u32];
+        let y_new = vec![1_u32]; // edited position
+        let targets = vec![0_u32]; // clean target stays token 0
+
+        // Before: uniform logits -> CE(target=0) ~= 0.6931
+        let logits_before = vec![0.0_f32, 0.0_f32];
+        // After: stronger logit on clean target token 0 -> CE decreases
+        let logits_after = vec![2.0_f32, 0.0_f32];
+
+        let deltas = compute_position_deltas_train(
+            &y_base,
+            &y_new,
+            &targets,
+            &logits_before,
+            &logits_after,
+            2,
+        )
+        .unwrap();
+
+        assert_eq!(deltas.len(), 1);
+        assert!(deltas[0] > 0.0, "expected positive CE improvement");
+    }
+
+    #[test]
+    fn test_ant_deltas_train_assigns_winner_with_target_ce_gain() {
+        let proposals = vec![
+            SimpleEditProposal {
+                position: 0,
+                token: 1,
+                predicted_gain: 0.1,
+                ant_id: 0,
+            },
+            SimpleEditProposal {
+                position: 0,
+                token: 1,
+                predicted_gain: 0.9, // winner
+                ant_id: 1,
+            },
+        ];
+
+        let y_base = vec![0_u32];
+        let y_new = vec![1_u32];
+        let targets = vec![0_u32];
+        let logits_before = vec![0.0_f32, 0.0_f32];
+        let logits_after = vec![2.0_f32, 0.0_f32];
+
+        let deltas = compute_ant_deltas_train(
+            &proposals,
+            &y_base,
+            &y_new,
+            &targets,
+            &logits_before,
+            &logits_after,
+            2,
+            2,
+        )
+        .unwrap();
+
+        assert_eq!(deltas.len(), 2);
+        assert!(deltas[1] > 0.0, "winner ant should get positive credit");
+        assert!(
+            (deltas[0]).abs() < 1e-9,
+            "non-winner should get zero credit"
+        );
     }
 }
