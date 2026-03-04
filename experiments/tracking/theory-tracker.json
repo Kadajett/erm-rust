@@ -234,9 +234,9 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 0,
-      "status": "running",
-      "stop_reason": "training-in-progress"
+      "window_minutes_actual": 45,
+      "status": "rolled_back",
+      "stop_reason": "superseded-by-v2-stability-run"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
@@ -260,7 +260,7 @@
         "host_ram_bytes": null,
         "oom": null
       },
-      "notes": "Theory for next run: from-scratch should avoid resume transient shock. With batch=2 retained, restoring edit/exploration freedom and using modestly higher context/refinement should reduce variance and drive lower rolling loss. Expected trajectory: first 60 min noisy (peaks possible), then last_100_mean trending under ~5 if config is healthy."
+      "notes": "Superseded before full 60-minute completion. v1 showed an early valley but regressed later; replaced with v2 stability-focused config."
     }
   },
   {
@@ -303,22 +303,22 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 10,
-      "status": "running",
-      "stop_reason": "first-chunk-snapshot-recorded"
+      "window_minutes_actual": 45,
+      "status": "rolled_back",
+      "stop_reason": "replaced-by-v2-stability-run"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
       "step_window": {
         "resume_local_start": 10,
-        "resume_local_end": 700
+        "resume_local_end": 6060
       },
       "metrics": {
         "loss": {
           "start_mean": 13.467067199999999,
-          "end_mean": 8.032716599999999,
-          "last_100_mean": 8.032716599999999,
-          "min": 4.9949074,
+          "end_mean": 7.3049,
+          "last_100_mean": 7.3049,
+          "min": 3.2585328,
           "max": 13.868538
         },
         "vram_mb": {
@@ -329,7 +329,97 @@
         "host_ram_bytes": 3051204608,
         "oom": false
       },
-      "notes": "Launched and validated at startup: logs show 'Scratch start: no checkpoint resume', exp_id=alice-run-b2-m1m-v1, steps=1000000. First chunk recorded: step 10-250 mean=10.2616 (start5=13.4671, end5=8.5492). Current observed window step 10-700 mean=8.7935 (end5=8.0327), min=4.9949, max=13.8685. Policy now enforced in agent docs and skill: requesting a new experiment id means full restart by default; resume requires explicit request."
+      "notes": "Launched and validated at startup: scratch/no-resume confirmed. Early trend improved, then regressed: valley at steps 3010-4000 (mean loss 5.4529) vs recent steps 5010-6060 (mean 7.3576). Tail_100 rose to 7.3049, so run was replaced by v2 stability profile."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v2-stability-2026-03-04T01-29-29Z-launch",
+    "created_at_utc": "2026-03-04T01:29:29Z",
+    "experiment_id": "alice-run-b2-m1m-v2-stability",
+    "tags": [
+      "theory",
+      "k8s_change",
+      "from-scratch",
+      "batch2",
+      "m1m",
+      "stability"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "config_change",
+      "summary": "Launch fresh m1m-v2 run with lower exploration pressure and slower forgetting to address v1 late-stage regression.",
+      "changes": [
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v1",
+          "to": "alice-run-b2-m1m-v2-stability"
+        },
+        {
+          "field": "learning_rate",
+          "from": 0.0004,
+          "to": 0.0003
+        },
+        {
+          "field": "death_streak",
+          "from": 24,
+          "to": 18
+        },
+        {
+          "field": "pheromone_evap",
+          "from": 0.03,
+          "to": 0.02
+        },
+        {
+          "field": "max_edits_per_step",
+          "from": 0.14,
+          "to": 0.12
+        },
+        {
+          "field": "leader_fraction",
+          "from": 0.08,
+          "to": 0.06
+        },
+        {
+          "field": "gamma_max",
+          "from": 2.0,
+          "to": 1.6
+        },
+        {
+          "field": "mask_rate_max",
+          "from": 0.8,
+          "to": 0.7
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 0,
+      "status": "running",
+      "stop_reason": "training-in-progress"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 0,
+        "resume_local_end": null
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": null,
+          "end_mean": null,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": null,
+          "used_max": null
+        },
+        "host_ram_bytes": null,
+        "oom": null
+      },
+      "notes": "Scratch launch only (no --resume). Waiting for first metrics chunk before judging trend."
     }
   }
 ]
