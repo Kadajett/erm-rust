@@ -168,8 +168,12 @@ spec:
           step = sys.argv[2]
 
           def compact(s: str, limit: int = 120) -> str:
-              s = re.sub(r"\s+", " ", (s or "")).strip()
-              return s[:limit]
+              raw = (s or "")
+              collapsed = re.sub(r"\s+", " ", raw)
+              stripped = collapsed.strip()
+              if raw and not stripped:
+                  return "<ws>"
+              return stripped[:limit]
 
           obj = json.load(open(path, "r", encoding="utf-8"))
           examples = obj.get("examples", [])
