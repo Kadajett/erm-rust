@@ -1096,5 +1096,78 @@
       },
       "notes": "Smoke test on v7 checkpoint snapshot produced iterative outputs (live iter 1..6) at ~1s interval in CPU mode while training job remained running."
     }
+  },
+  {
+    "id": "alice-run-b2-m1m-v7-sharded-3phase-r1-2026-03-04T19-39-42Z-million-numbers-prep",
+    "created_at_utc": "2026-03-04T19:39:42Z",
+    "experiment_id": "alice-run-b2-m1m-v7-sharded-3phase-r1",
+    "tags": [
+      "theory",
+      "data",
+      "curriculum",
+      "numbers",
+      "post-1m"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "data_pipeline_change",
+      "summary": "Add and prepare lsb/million-english-numbers as three sharded training variants for post-reasoning curriculum: word-copy, int-to-word, and word-to-int.",
+      "changes": [
+        {
+          "field": "source_dataset",
+          "from": null,
+          "to": "lsb/million-english-numbers"
+        },
+        {
+          "field": "prep_script",
+          "from": null,
+          "to": "scripts/prepare-million-english-numbers.py"
+        },
+        {
+          "field": "output_root",
+          "from": null,
+          "to": "/home/kadajett/dev/rust-pcn/data/million-english-numbers-sharded"
+        },
+        {
+          "field": "variants",
+          "from": [],
+          "to": [
+            "word-copy-sharded",
+            "int-to-word-sharded",
+            "word-to-int-sharded"
+          ]
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 16,
+      "status": "completed",
+      "stop_reason": "dataset prep and integrity checks completed"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": null,
+        "resume_local_end": null
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": null,
+          "end_mean": null,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": null,
+          "used_max": null
+        },
+        "host_ram_bytes": null,
+        "oom": false
+      },
+      "notes": "Initial full run created an extra trailing empty shard; fixed shard rotation logic and rebuilt cleanly. Final output verified: 1,000,000 examples per variant, 50 shards per variant, boundary checks passed (0/19999/20000/999999), and pod path is visible at /workspace/rust-pcn/data/million-english-numbers-sharded."
+    }
   }
 ]

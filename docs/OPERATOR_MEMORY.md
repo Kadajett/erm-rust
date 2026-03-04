@@ -11,6 +11,9 @@ Last updated: 2026-03-04 UTC
   - Phase 1: `100000` steps on `/workspace/rust-pcn/data/english-frontload-sharded`
   - Phase 2: `200000` steps on `/workspace/rust-pcn/data/sentence-bridge-smclm-sharded`
   - Phase 3: `700000` steps on `/workspace/rust-pcn/data/books`
+- Planned post-1M extension order:
+  - Reasoning Q/A resume corpus: `/workspace/rust-pcn/data/reasoning-qa-sharded`
+  - Million numbers curriculum (3 variants): `/workspace/rust-pcn/data/million-english-numbers-sharded/...`
 
 Observed early-phase behavior:
 - Entered classic early "the-stage" collapse in predictions (high-frequency stopword loops).
@@ -106,6 +109,32 @@ Notes:
     - `lines_seen=2326`
     - `examples_written=2249`
     - `thinking_included=false`
+
+- Million numbers corpus (HF `lsb/million-english-numbers`)
+  - Source schema: `text` only (word form of integer sequence from `0` to `999999`)
+  - Prepared output root:
+    - Host: `/home/kadajett/dev/rust-pcn/data/million-english-numbers-sharded`
+    - Pod: `/workspace/rust-pcn/data/million-english-numbers-sharded`
+  - Variants:
+    - `word-copy-sharded` (denoise-style reconstruction)
+      - Host: `/home/kadajett/dev/rust-pcn/data/million-english-numbers-sharded/word-copy-sharded`
+      - Pod: `/workspace/rust-pcn/data/million-english-numbers-sharded/word-copy-sharded`
+      - Template: `<number-word>`
+    - `int-to-word-sharded`
+      - Host: `/home/kadajett/dev/rust-pcn/data/million-english-numbers-sharded/int-to-word-sharded`
+      - Pod: `/workspace/rust-pcn/data/million-english-numbers-sharded/int-to-word-sharded`
+      - Template: `Input:\n<integer>\n\nOutput:\n<number-word>`
+    - `word-to-int-sharded`
+      - Host: `/home/kadajett/dev/rust-pcn/data/million-english-numbers-sharded/word-to-int-sharded`
+      - Pod: `/workspace/rust-pcn/data/million-english-numbers-sharded/word-to-int-sharded`
+      - Template: `Input:\n<number-word>\n\nOutput:\n<integer>`
+  - Prep command:
+    - `python3 scripts/prepare-million-english-numbers.py --out-root /home/kadajett/dev/rust-pcn/data/million-english-numbers-sharded --shard-size 20000 --progress-every 200000`
+  - Verified snapshot:
+    - `rows_seen=1,000,000`
+    - `examples_written=1,000,000` per variant
+    - `shard_count=50` per variant
+    - Boundary checks passed at indices `0`, `19999`, `20000`, `999999`
 
 ## Post-1M Resume Handoff (Reasoning Phase)
 
