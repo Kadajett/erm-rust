@@ -7,6 +7,27 @@
 - **Deploy flow**: Delete existing job → `kubectl apply -f k8s/erm-alice-run-b1.yaml` → verify pod starts and GPU is active with `nvidia-smi`.
 - **Binary swap**: The running pod holds the binary file lock. Stop the training job first, then swap `erm.new` → `erm` via an ephemeral pod, then redeploy.
 
+## Fresh Experiment Deployment Standard (Required)
+
+When user asks for a new experiment id, execute this order exactly:
+
+1. Create a new job manifest copy with:
+   - new k8s job name
+   - new `NEW_EXP` experiment id
+   - scratch guard: fail if experiment directory already exists
+2. Kill old job first:
+   - `kubectl delete job <old-job> -n pcn-train --ignore-not-found=true`
+3. Rebuild binary after old pod is gone:
+   - restart builder pod from `k8s/erm-builder-pod.yaml`
+   - wait for `Succeeded`
+4. Confirm builder did not hit file-lock failure:
+   - if logs contain `Text file busy` for `/workspace/erm-rust/bin/erm.new`, old trainer still held the binary; delete old job and rebuild again.
+5. Deploy new job manifest.
+6. Verify logs show true fresh run:
+   - must include `Scratch start: no checkpoint resume`
+   - must include `DiffusionTrain: exp=<new-exp-id>`
+   - phase 1 must not include `Resumed from checkpoint`
+
 ## GPU Backend Notes
 
 - **CUDA backend** (`--backend cuda`): Requires burn-cuda (cudarc). The cudarc version shipped with burn 0.20 needs CUDA 13.x driver APIs. Driver must be up-to-date (580.x with all CUDA 13 symbols).

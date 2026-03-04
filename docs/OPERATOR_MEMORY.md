@@ -4,8 +4,8 @@ Last updated: 2026-03-04 UTC
 
 ## Current Live Run
 
-- Job: `erm-alice-run-m1m-v5-sharded-3phase`
-- Experiment id: `alice-run-b2-m1m-v5-sharded-3phase-r1`
+- Job: `erm-alice-run-m1m-v6-sharded-3phase`
+- Experiment id: `alice-run-b2-m1m-v6-sharded-3phase-r1`
 - Status: running
 - Confirmed phase/data order:
   - Phase 1: `100000` steps on `/workspace/rust-pcn/data/english-frontload-sharded`
@@ -23,6 +23,45 @@ Observed early-phase behavior:
   - sharded frontload and bridge corpora
   - incremental line-stream tokenization in `StreamingDataset`
   - mid-epoch discovery of newly added `*.txt` files (no restart required after next rebuild/deploy)
+
+## Canonical New-Experiment Deploy Flow (Fresh Start)
+
+Use this exact sequence whenever user asks for a new experiment id and expects full restart.
+
+1. Prepare a new job manifest with a new job name and new `NEW_EXP`.
+   - Example pattern:
+     - job name: `erm-alice-run-m1m-v6-sharded-3phase`
+     - experiment id: `alice-run-b2-m1m-v6-sharded-3phase-r1`
+   - Ensure script enforces scratch semantics:
+     - `if [[ -d "${EXP_DIR}" ]]; then exit 1; fi`
+     - first phase has no `--resume`
+2. Stop old training job before rebuilding.
+   - `kubectl delete job <old-job> -n pcn-train --ignore-not-found=true`
+   - Wait for old pod termination.
+3. Rebuild `erm.new` via builder pod.
+   - `kubectl delete pod erm-builder -n pcn-train --ignore-not-found=true`
+   - `kubectl apply -f k8s/erm-builder-pod.yaml`
+   - wait until `Succeeded`
+4. Verify binary publish succeeded.
+   - Check builder logs for absence of:
+     - `cp: cannot create regular file '/workspace/erm-rust/bin/erm.new': Text file busy`
+   - Verify new artifact:
+     - `ls -l /home/kadajett/dev/erm-rust/bin/erm.new`
+     - `sha256sum /home/kadajett/dev/erm-rust/bin/erm.new`
+5. Deploy new job.
+   - `kubectl apply -f <new-job-yaml>`
+6. Verify fresh start and correct experiment id from logs.
+   - Must see:
+     - `Scratch start: no checkpoint resume`
+     - `DiffusionTrain: exp=<new-exp-id> ...`
+   - Must not see `Resumed from checkpoint` in phase 1.
+7. Confirm only new job is running.
+   - `kubectl get jobs -n pcn-train -o wide`
+   - `kubectl get pods -n pcn-train -o wide`
+
+Notes:
+- If build log ends with `Text file busy`, old trainer still had `erm.new` open. Kill old job and rebuild again.
+- Training pods execute `/workspace/erm-rust/bin/erm.new`; rebuild must complete after old job is stopped.
 
 ## Dataset Paths (Host + Pod)
 
