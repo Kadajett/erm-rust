@@ -102,6 +102,10 @@ Notes:
     - `Question:\n...\n\nAnswer:\n...`
   - Manifest:
     - `/home/kadajett/dev/rust-pcn/data/reasoning-qa-sharded/manifest.json`
+  - Current prepared snapshot:
+    - `lines_seen=2326`
+    - `examples_written=2249`
+    - `thinking_included=false`
 
 ## Post-1M Resume Handoff (Reasoning Phase)
 
