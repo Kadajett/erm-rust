@@ -827,5 +827,65 @@
       },
       "notes": "This fix addresses two high-impact correctness issues in B=2 runs: cross-batch contamination in ant/pheromone credit and target mismatch during credit scoring. Treat pre-fix v5 metrics as non-comparable to post-fix runs for pheromone/credit dynamics."
     }
+  },
+  {
+    "id": "alice-run-b2-m1m-v5-sharded-3phase-r1-2026-03-04T04-28-00Z-streamed-whitespace-boundary-fix",
+    "created_at_utc": "2026-03-04T04:28:00Z",
+    "experiment_id": "alice-run-b2-m1m-v5-sharded-3phase-r1",
+    "tags": [
+      "theory",
+      "code_change",
+      "bugfix",
+      "tokenization",
+      "whitespace",
+      "streaming"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "code_change",
+      "summary": "Preserve trailing whitespace in prefix-marker BPE encoding so line-by-line streaming tokenization does not merge adjacent lines into malformed words.",
+      "changes": [
+        {
+          "field": "encode_text_prefix_markers.trailing_whitespace",
+          "from": "dropped when chunk ended on whitespace",
+          "to": "encoded as standalone whitespace marker tokens when available"
+        },
+        {
+          "field": "tests",
+          "from": "no explicit streamed line-boundary checks",
+          "to": "added line-boundary and trailing-space streaming tests"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 0,
+      "status": "pending_redeploy",
+      "stop_reason": "tokenizer-fix-not-yet-running-in-live-binary"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": null,
+        "resume_local_end": null
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": null,
+          "end_mean": null,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": null,
+          "used_max": null
+        },
+        "host_ram_bytes": null,
+        "oom": null
+      },
+      "notes": "Expected effect: cleaner IO samples with proper inter-line spaces and fewer merged words (for example, no \"chosen.Someone\" artifacts caused by chunk boundary whitespace loss)."
+    }
   }
 ]

@@ -248,6 +248,10 @@ impl BpeTokenizer {
 
         if !current_word.is_empty() {
             ids.extend(self.encode_prefix_word(&current_word, pending_ws));
+        } else if pending_ws > 0 {
+            // Preserve trailing whitespace when tokenizing streamed line chunks.
+            // Without this, encoding line-by-line can merge boundary words.
+            ids.extend(self.encode_standalone_whitespace(pending_ws));
         }
 
         ids
@@ -331,6 +335,23 @@ impl BpeTokenizer {
         }
 
         ids
+    }
+
+    /// Encode a standalone run of whitespace markers in prefix-marker mode.
+    ///
+    /// This is used to preserve trailing whitespace when input arrives in
+    /// streamed chunks (for example, one line at a time).
+    fn encode_standalone_whitespace(&self, count: usize) -> Vec<u32> {
+        let Some(ws_id) = self
+            .vocab
+            .get("Ġ")
+            .copied()
+            .or_else(|| self.vocab.get("▁").copied())
+            .or_else(|| self.vocab.get(" ").copied())
+        else {
+            return Vec::new();
+        };
+        vec![ws_id; count]
     }
 
     /// Greedy raw-text tokenizer for vocabularies without explicit marker style.
@@ -831,6 +852,24 @@ mod tests {
         let ids = bpe.encode_text("hello  world\nmoon");
         let decoded = bpe.decode_text(&ids);
         assert_eq!(decoded, "hello  world moon");
+    }
+
+    #[test]
+    fn test_prefix_vocab_preserves_line_boundary_when_streamed() {
+        let bpe = prefix_marker_tokenizer();
+        let mut ids = bpe.encode_text("hello\n");
+        ids.extend(bpe.encode_text("world"));
+        let decoded = bpe.decode_text(&ids);
+        assert_eq!(decoded, "hello world");
+    }
+
+    #[test]
+    fn test_prefix_vocab_preserves_trailing_spaces_when_streamed() {
+        let bpe = prefix_marker_tokenizer();
+        let mut ids = bpe.encode_text("hello  ");
+        ids.extend(bpe.encode_text("world"));
+        let decoded = bpe.decode_text(&ids);
+        assert_eq!(decoded, "hello  world");
     }
 
     #[test]
