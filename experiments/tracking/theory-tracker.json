@@ -1169,5 +1169,74 @@
       },
       "notes": "Initial full run created an extra trailing empty shard; fixed shard rotation logic and rebuilt cleanly. Final output verified: 1,000,000 examples per variant, 50 shards per variant, boundary checks passed (0/19999/20000/999999), and pod path is visible at /workspace/rust-pcn/data/million-english-numbers-sharded."
     }
+  },
+  {
+    "id": "alice-run-b2-m1m-v7-sharded-3phase-r1-2026-03-04T19-50-42Z-save-backup-resume-runbook",
+    "created_at_utc": "2026-03-04T19:50:42Z",
+    "experiment_id": "alice-run-b2-m1m-v7-sharded-3phase-r1",
+    "tags": [
+      "theory",
+      "ops",
+      "runbook",
+      "resume",
+      "backup"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "process_change",
+      "summary": "Document a canonical save/backup/resume workflow for continuing current training on new data without losing checkpoint continuity.",
+      "changes": [
+        {
+          "field": "shared_memory_path",
+          "from": "partial notes",
+          "to": "docs/OPERATOR_MEMORY.md runbook section"
+        },
+        {
+          "field": "backup_scope",
+          "from": "ad-hoc",
+          "to": "latest checkpoint + metrics.jsonl + bpe vocab snapshot"
+        },
+        {
+          "field": "resume_entrypoint",
+          "from": "manual CLI assembly",
+          "to": "scripts/run-diffusion-milestone.sh or scripts/run-reasoning-resume.sh"
+        },
+        {
+          "field": "auto_data_loading_validation",
+          "from": "assumed",
+          "to": "code + unit-test backed"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 5,
+      "status": "completed",
+      "stop_reason": "runbook documented and streaming discovery test confirmed"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": null,
+        "resume_local_end": null
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": null,
+          "end_mean": null,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": null,
+          "used_max": null
+        },
+        "host_ram_bytes": null,
+        "oom": false
+      },
+      "notes": "Auto-loading path confirmed in erm-train/src/streaming_dataset.rs (NEW_FILE_RESCAN_INTERVAL=8) and validated with cargo test -p erm-train test_discover_new_txt_paths."
+    }
   }
 ]

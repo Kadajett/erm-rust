@@ -145,6 +145,58 @@ Notes:
   - no chain-of-thought field ingestion
   - same checkpoint continuity while changing data domain
 
+## Save + Backup + Resume-With-New-Data Playbook
+
+Use this when we want to preserve current training state, then continue learning on a new dataset.
+
+### 1) Snapshot current training safely (no interruption)
+
+1. Capture live pod and experiment variables:
+   - `job=erm-alice-run-m1m-v7-sharded-3phase`
+   - `pod=$(kubectl get pods -n pcn-train -l job-name=${job} -o jsonpath='{.items[0].metadata.name}')`
+   - `exp=alice-run-b2-m1m-v7-sharded-3phase-r1`
+2. Read latest checkpointed step:
+   - `kubectl exec -n pcn-train ${pod} -- cat /workspace/erm-rust/data/experiments/${exp}/checkpoints/latest/step.json`
+3. Copy a timestamped backup snapshot locally:
+   - `ts=$(date -u +%Y%m%dT%H%M%SZ)`
+   - `out=/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/${exp}-${ts}`
+   - `mkdir -p "${out}"`
+   - `kubectl cp -n pcn-train "${pod}:/workspace/erm-rust/data/experiments/${exp}/checkpoints/latest" "${out}/latest"`
+   - `kubectl cp -n pcn-train "${pod}:/workspace/erm-rust/data/experiments/${exp}/checkpoints/metrics.jsonl" "${out}/metrics.jsonl"`
+   - `kubectl cp -n pcn-train "${pod}:/workspace/erm-rust/data/experiments/${exp}/bpe_vocab.json" "${out}/bpe_vocab.json"`
+4. Verify snapshot:
+   - `cat "${out}/latest/step.json"`
+   - `test -f "${out}/latest/model.safetensors" && echo "model ok"`
+   - `wc -l "${out}/metrics.jsonl"`
+
+### 2) Optional: wait for a fresh checkpoint before stopping/redeploying
+
+- Checkpoint cadence is currently `250` steps. If we need a cleaner cutoff:
+  - watch logs for `checkpoint saved` near desired step before stopping:
+  - `kubectl logs -n pcn-train ${pod} --tail=200 | grep "checkpoint saved"`
+
+### 3) Resume on new data (same weights, new data domain)
+
+- Preferred generic resume entrypoint:
+  - `scripts/run-diffusion-milestone.sh --checkpoint-dir /workspace/erm-rust/data/experiments/${exp}/checkpoints --data <new_data_dir> --exp-id <new_exp_id_or_same> --add-steps <N> --backend cuda --erm-bin /workspace/erm-rust/bin/erm.new`
+- Reasoning-specific shortcut:
+  - `scripts/run-reasoning-resume.sh --checkpoint-dir /workspace/erm-rust/data/experiments/${exp}/checkpoints --exp-id <new_exp_id_or_same> --data /workspace/rust-pcn/data/reasoning-qa-sharded --add-steps 200000 --backend cuda --erm-bin /workspace/erm-rust/bin/erm.new`
+
+Notes:
+- If user asks for a **new experiment id** but still says **resume**, keep `--resume` and write to a new experiment path for clean AIM separation.
+- If user asks for a **new experiment id** and a **full restart**, do not pass `--resume`.
+
+### 4) Auto data loading (new `.txt` files during active training)
+
+- Status: still enabled and tested.
+  - Code: `erm-train/src/streaming_dataset.rs`
+  - Rescan interval: `NEW_FILE_RESCAN_INTERVAL = 8` processed files.
+  - Discovery log line:
+    - `[streaming_dataset] discovered <N> new .txt files in <data_dir>`
+- Validation test:
+  - `cargo test -p erm-train test_discover_new_txt_paths -- --nocapture`
+  - Last run status: `pass` on `2026-03-04`.
+
 ## Canonical Pod Pull + Analysis Workflow
 
 Use this exact sequence whenever diagnosing "plateau", stalls, or regressions.
