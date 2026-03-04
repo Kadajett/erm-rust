@@ -131,33 +131,33 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 0,
-      "status": "proposed",
-      "stop_reason": "not-started"
+      "window_minutes_actual": 42,
+      "status": "running",
+      "stop_reason": "interim-observation-while-training-active"
     },
     "result": {
-      "reported_by_model": "pending",
+      "reported_by_model": "gpt-5-codex",
       "step_window": {
-        "resume_local_start": null,
-        "resume_local_end": null
+        "resume_local_start": 27260,
+        "resume_local_end": 33420
       },
       "metrics": {
         "loss": {
-          "start_mean": null,
-          "end_mean": null,
-          "last_100_mean": null,
-          "min": null,
-          "max": null
+          "start_mean": 8.403839303333333,
+          "end_mean": 6.741176296666667,
+          "last_100_mean": 6.771178974,
+          "min": 3.1177661,
+          "max": 17.737642
         },
         "vram_mb": {
           "total": 6144,
-          "used_min": null,
-          "used_max": null
+          "used_min": 4063,
+          "used_max": 4063
         },
-        "host_ram_bytes": null,
-        "oom": null
+        "host_ram_bytes": 7678767104,
+        "oom": false
       },
-      "notes": "Apply one change at a time for 1000-2000 steps each; then fill measured results in this record."
+      "notes": "Interim only (not closed): relaunch showed a large volatility spike (max loss 17.74), then trended down into a lower band. Recent log-only window also improved (last-half mean 6.741 vs first-half mean 6.994 over the latest 120 points). Training remains active with no OOM or panic observed."
     }
   }
 ]
