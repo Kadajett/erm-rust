@@ -1,12 +1,12 @@
 # Operator Memory (Shared: Codex + Claude)
 
-Last updated: 2026-03-04 UTC (23:32)
+Last updated: 2026-03-04 UTC (23:56)
 
 ## Current Live Run
 
-- Job: `erm-alice-run-m1m-v7-i06-r6-resume`
-- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r6`
-- Status: running (resume canary on CUDA from step `175250`)
+- Job: `erm-alice-run-m1m-v7-i01-r1-resume`
+- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i01-r1`
+- Status: running (resume canary on CUDA from step `179000`)
 - Confirmed phase/data order:
   - Phase 1: `100000` steps on `/workspace/rust-pcn/data/english-frontload-sharded`
   - Phase 2: `200000` steps on `/workspace/rust-pcn/data/sentence-bridge-smclm-sharded`
@@ -37,6 +37,21 @@ Ticket #6 validation notes (2026-03-04 UTC):
 - Fast schema smoke (local CPU) completed:
   - `ticket6-graph-health-smoke-r2`
   - verified new fields in `metrics.jsonl`: taint/age/clamp/entropy/top1/leader-survival/prune/insert.
+
+Ticket #1 rollout notes (2026-03-04 UTC):
+- Code commit on `main`: `78c7289` (`phi_min` + elite-only pheromone deposits).
+- Source run before redeploy:
+  - job `erm-alice-run-m1m-v7-i06-r6-resume`, latest checkpoint step `178750`.
+- Snapshot captured before stop/rebuild:
+  - `/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r6-20260304T234921Z`
+- New canary deployment:
+  - job `erm-alice-run-m1m-v7-i01-r1-resume`
+  - exp `alice-run-b2-m1m-v7-sharded-3phase-r1-i01-r1`
+  - resumed from `/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r6/checkpoints/latest` at step `179000`
+- Ticket #1 config values injected in `train-config.json`:
+  - `phi_min = 0.0001`
+  - `elite_k = 10` (10% of 96 ants)
+- AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i01-r1`.
 
 ### CUDA/Burn Setup (Known-Good)
 

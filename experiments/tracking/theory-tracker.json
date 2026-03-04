@@ -1471,23 +1471,23 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 4,
-      "status": "running",
-      "stop_reason": "initial window healthy; awaiting user go-ahead for data audit"
+      "window_minutes_actual": 21,
+      "status": "completed",
+      "stop_reason": "stopped intentionally for ticket-1 rollout after healthy resume window"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
       "step_window": {
         "resume_local_start": 175260,
-        "resume_local_end": 175280
+        "resume_local_end": 178880
       },
       "metrics": {
         "loss": {
           "start_mean": 5.930536,
-          "end_mean": 5.5372224,
-          "last_100_mean": 5.694505,
-          "min": 5.5372224,
-          "max": 5.930536
+          "end_mean": 5.582036,
+          "last_100_mean": 5.578545460606061,
+          "min": 4.9992156,
+          "max": 6.147111
         },
         "vram_mb": {
           "total": 6144,
@@ -1497,7 +1497,84 @@
         "host_ram_bytes": null,
         "oom": false
       },
-      "notes": "CUDA preflight passed, resume loaded from step 175250, metrics.jsonl and AIM watcher both writing on i06-r6."
+      "notes": "CUDA preflight passed, resume loaded from step 175250, metrics/AIM stayed healthy until checkpoint snapshot and controlled stop for next ticket."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i01-r1-2026-03-04T23-52-38Z-ticket1-mmas-elite",
+    "created_at_utc": "2026-03-04T23:56:30Z",
+    "experiment_id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i01-r1",
+    "tags": [
+      "theory",
+      "code_change",
+      "ticket-1",
+      "k8s_change",
+      "resume",
+      "aim-sidecar",
+      "cuda",
+      "mmas"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "code_change",
+      "summary": "Enable MMAS-style pheromone floor and elite-only deposits, then redeploy CUDA resume canary with explicit `phi_min` and `elite_k` in run config.",
+      "changes": [
+        {
+          "field": "commit",
+          "from": "ea36efc",
+          "to": "78c7289"
+        },
+        {
+          "field": "code",
+          "from": "phi clamp [0, phi_max], all ants deposit",
+          "to": "phi clamp [phi_min, phi_max], deposit restricted to top-k elite ants"
+        },
+        {
+          "field": "job_name",
+          "from": "erm-alice-run-m1m-v7-i06-r6-resume",
+          "to": "erm-alice-run-m1m-v7-i01-r1-resume"
+        },
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r6",
+          "to": "alice-run-b2-m1m-v7-sharded-3phase-r1-i01-r1"
+        },
+        {
+          "field": "config_overrides",
+          "from": "none",
+          "to": "phi_min=0.0001, elite_k=10"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 4,
+      "status": "running",
+      "stop_reason": "initial ticket-1 validation window; awaiting extended observation"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 179010,
+        "resume_local_end": 179180
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": 5.7883596,
+          "end_mean": 5.3856487,
+          "last_100_mean": 5.5552248111111115,
+          "min": 5.0177755,
+          "max": 5.7883596
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": 727,
+          "used_max": 3615
+        },
+        "host_ram_bytes": null,
+        "oom": false
+      },
+      "notes": "New run resumed from step 179000 with CUDA runtimeClass; metrics and AIM watcher are both active with ticket-1 config fields present in train-config.json."
     }
   }
 ]
