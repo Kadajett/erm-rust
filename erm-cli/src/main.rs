@@ -2249,12 +2249,17 @@ fn write_diffusion_sample<B: burn::tensor::backend::AutodiffBackend>(
         ));
     }
 
-    let mut predicted_tokens = Vec::with_capacity(l);
+    // Display prediction in denoising mode: only replace positions that were
+    // actually corrupted. Keeping clean positions unchanged avoids misleading
+    // "full-sequence argmax" output that does not reflect training objective.
+    let mut predicted_tokens = corrupted_tokens.clone();
     for pos in 0..l {
+        if corrupted_tokens[pos] == clean_tokens[pos] {
+            continue;
+        }
         let start = pos * v_rt;
         let end = start + v_rt;
         if end > logits_cpu.len() {
-            predicted_tokens.push(0);
             continue;
         }
         let pos_logits = &logits_cpu[start..end];
@@ -2264,7 +2269,7 @@ fn write_diffusion_sample<B: burn::tensor::backend::AutodiffBackend>(
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(i, _)| i as u32)
             .unwrap_or(0);
-        predicted_tokens.push(best);
+        predicted_tokens[pos] = best;
     }
 
     let record = DiffusionSampleRecord {
