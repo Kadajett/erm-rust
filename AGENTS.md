@@ -107,6 +107,10 @@ These invariants must hold at ALL times. Add assertions in debug builds.
 - For any training/config/code-change decision, use the shared skill at `skills/experiment-tracking/SKILL.md`
 - Record each decision and outcome in `experiments/tracking/theory-tracker.json`
 - Entries must be JSON objects in a JSON array and include the `theory` tag when the change is a hypothesis
+- If the user asks for a **new experiment id**, treat that as a **full restart by default**:
+  - do not pass `--resume`
+  - write checkpoints/metrics to a new experiment directory
+  - only resume if the user explicitly says to resume
 - Every entry must include:
   - `decision.model` (model that proposed the change)
   - `result.reported_by_model` (model that reported measured effects)

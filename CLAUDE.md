@@ -38,6 +38,7 @@ The builder pod uses an `nvcc` shim that reports CUDA 13.0 to cudarc's build-tim
 - Track all config/code training decisions in `experiments/tracking/theory-tracker.json`
 - Keep the tracker as a JSON array of objects
 - Mark hypotheses with tag `theory`
+- If user asks for a new experiment id, default to full restart (no `--resume`) unless user explicitly requests resume.
 - Each entry must include:
   - `decision.model` (model that made the decision)
   - `result.reported_by_model` (model that measured/reported impact)

@@ -131,22 +131,22 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 42,
-      "status": "running",
-      "stop_reason": "interim-observation-while-training-active"
+      "window_minutes_actual": 60,
+      "status": "completed",
+      "stop_reason": "manual-snapshot-for-next-round-planning"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
       "step_window": {
         "resume_local_start": 27260,
-        "resume_local_end": 33420
+        "resume_local_end": 37090
       },
       "metrics": {
         "loss": {
           "start_mean": 8.403839303333333,
-          "end_mean": 6.741176296666667,
-          "last_100_mean": 6.771178974,
-          "min": 3.1177661,
+          "end_mean": 6.510923586666666,
+          "last_100_mean": 6.222735969,
+          "min": 2.8342907,
           "max": 17.737642
         },
         "vram_mb": {
@@ -154,10 +154,182 @@
           "used_min": 4063,
           "used_max": 4063
         },
-        "host_ram_bytes": 7678767104,
+        "host_ram_bytes": 10345238528,
         "oom": false
       },
-      "notes": "Interim only (not closed): relaunch showed a large volatility spike (max loss 17.74), then trended down into a lower band. Recent log-only window also improved (last-half mean 6.741 vs first-half mean 6.994 over the latest 120 points). Training remains active with no OOM or panic observed."
+      "notes": "Completed 60-minute snapshot: relaunch produced a high-volatility spike (max 17.74), then settled lower. Means improved from first_60=8.40 to last_60=6.51, and tail_200=5.79 confirms gradual downtrend. Run stayed stable (no OOM/panic), with ~2.1 GB VRAM headroom on a 6 GB card."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v1-2026-03-04T00-36-23Z-next-round-theory",
+    "created_at_utc": "2026-03-04T00:36:23Z",
+    "experiment_id": "alice-run-b2-m1m-v1",
+    "tags": [
+      "theory",
+      "from-scratch",
+      "batch2",
+      "m1m"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "config_change",
+      "summary": "Next round from scratch at 1M steps with batch=2, using available VRAM headroom while undoing over-constraining exploration/edit limits from the prior run.",
+      "changes": [
+        {
+          "field": "steps",
+          "from": 100000,
+          "to": 1000000
+        },
+        {
+          "field": "batch_size",
+          "from": 2,
+          "to": 2
+        },
+        {
+          "field": "seq_len",
+          "from": 128,
+          "to": 160
+        },
+        {
+          "field": "diffusion_steps",
+          "from": 2,
+          "to": 3
+        },
+        {
+          "field": "num_ants",
+          "from": 64,
+          "to": 96
+        },
+        {
+          "field": "learning_rate",
+          "from": 0.0004,
+          "to": 0.0005
+        },
+        {
+          "field": "death_streak",
+          "from": 24,
+          "to": 15
+        },
+        {
+          "field": "max_edits_per_step",
+          "from": 0.14,
+          "to": 0.18
+        },
+        {
+          "field": "leader_fraction",
+          "from": 0.08,
+          "to": 0.12
+        },
+        {
+          "field": "leader_temperature_floor",
+          "from": 0.8,
+          "to": 0.5
+        },
+        {
+          "field": "leader_temperature_multiplier",
+          "from": 1.6,
+          "to": 2.0
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 0,
+      "status": "running",
+      "stop_reason": "training-in-progress"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 0,
+        "resume_local_end": null
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": null,
+          "end_mean": null,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": null,
+          "used_max": null
+        },
+        "host_ram_bytes": null,
+        "oom": null
+      },
+      "notes": "Theory for next run: from-scratch should avoid resume transient shock. With batch=2 retained, restoring edit/exploration freedom and using modestly higher context/refinement should reduce variance and drive lower rolling loss. Expected trajectory: first 60 min noisy (peaks possible), then last_100_mean trending under ~5 if config is healthy."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v1-2026-03-04T00-43-24Z-scratch-no-resume-enforcement",
+    "created_at_utc": "2026-03-04T00:43:24Z",
+    "experiment_id": "alice-run-b2-m1m-v1",
+    "tags": [
+      "theory",
+      "k8s_change",
+      "from-scratch",
+      "batch2",
+      "m1m"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "k8s_change",
+      "summary": "Launch a new 1M-step experiment as a true from-scratch run with no checkpoint resume path.",
+      "changes": [
+        {
+          "field": "k8s_manifest",
+          "from": "k8s/erm-alice-run-m100k.yaml",
+          "to": "k8s/erm-alice-run-m1m.yaml"
+        },
+        {
+          "field": "exp_id",
+          "from": "alice-run-b2-m100k",
+          "to": "alice-run-b2-m1m-v1"
+        },
+        {
+          "field": "steps",
+          "from": 100000,
+          "to": 1000000
+        },
+        {
+          "field": "resume_mode",
+          "from": "auto-resume with fallback",
+          "to": "disabled (scratch only)"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 0,
+      "status": "proposed",
+      "stop_reason": "awaiting-launch"
+    },
+    "result": {
+      "reported_by_model": "pending",
+      "step_window": {
+        "resume_local_start": null,
+        "resume_local_end": null
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": null,
+          "end_mean": null,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": null,
+          "used_max": null
+        },
+        "host_ram_bytes": null,
+        "oom": null
+      },
+      "notes": "Launched and validated at startup: logs show 'Scratch start: no checkpoint resume', exp_id=alice-run-b2-m1m-v1, steps=1000000. Policy now enforced in agent docs and skill: requesting a new experiment id means full restart by default. Resume requires explicit user request."
     }
   }
 ]

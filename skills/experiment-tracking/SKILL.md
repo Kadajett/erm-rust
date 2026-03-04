@@ -46,6 +46,10 @@ Every record must include:
 
 1. Before applying a change:
    - append a new entry with `tags` containing `"theory"`, `evaluation.status="proposed"`.
+   - if user requests a new `experiment_id`, treat it as scratch by default:
+     - use a new output directory,
+     - do not pass `--resume`,
+     - only resume when the user explicitly asks to resume.
 2. After deploying/running:
    - update the same entry with measured numbers.
    - set `window_minutes_actual` and `evaluation.status` (`completed`/`crashed`).
