@@ -31,7 +31,7 @@
 //! This module only produces `Vec<u32>` token batches. The caller is responsible
 //! for moving them to the GPU via `tokens_to_tensor`.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -44,6 +44,9 @@ use rand_chacha::ChaCha8Rng;
 
 use erm_core::bpe_tokenizer::TokenizerApi;
 use erm_core::error::{ErmError, ErmResult};
+
+/// How often (in processed files) to rescan `data_dir` for newly added `.txt` files.
+const NEW_FILE_RESCAN_INTERVAL: usize = 8;
 
 /// A CPU-side batch of tokenized sequences ready for GPU transfer.
 #[derive(Debug, Clone)]
@@ -168,9 +171,16 @@ fn producer_loop<T: TokenizerApi>(
             paths.shuffle(&mut rng);
         }
 
+        let mut known_paths: HashSet<PathBuf> = paths.iter().cloned().collect();
         let mut pending: VecDeque<u32> = VecDeque::new();
+        let mut path_idx = 0usize;
+        let mut files_since_scan = 0usize;
 
-        for path in &paths {
+        while path_idx < paths.len() {
+            let path = &paths[path_idx];
+            path_idx += 1;
+            files_since_scan += 1;
+
             let ok = if config.use_paragraph_spans {
                 stream_paragraph_file_into_pending(path, &config, &tokenizer, &tx, &mut pending)
             } else {
@@ -178,6 +188,31 @@ fn producer_loop<T: TokenizerApi>(
             };
             if !ok {
                 return;
+            }
+
+            if files_since_scan >= NEW_FILE_RESCAN_INTERVAL {
+                files_since_scan = 0;
+                match discover_new_txt_paths(&config.data_dir, &mut known_paths) {
+                    Ok(mut new_paths) => {
+                        if !new_paths.is_empty() {
+                            if config.shuffle_files {
+                                new_paths.shuffle(&mut rng);
+                            }
+                            let discovered = new_paths.len();
+                            paths.extend(new_paths);
+                            eprintln!(
+                                "[streaming_dataset] discovered {discovered} new .txt files in {}",
+                                config.data_dir
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[streaming_dataset] warning: cannot rescan {}: {e}",
+                            config.data_dir
+                        );
+                    }
+                }
             }
         }
 
@@ -429,6 +464,18 @@ fn collect_txt_paths(dir: &str) -> ErmResult<Vec<PathBuf>> {
     Ok(paths)
 }
 
+/// Discover newly added `.txt` files in `dir` that are not already in `known`.
+fn discover_new_txt_paths(dir: &str, known: &mut HashSet<PathBuf>) -> ErmResult<Vec<PathBuf>> {
+    let current = collect_txt_paths(dir)?;
+    let mut new_paths = Vec::new();
+    for path in current {
+        if known.insert(path.clone()) {
+            new_paths.push(path);
+        }
+    }
+    Ok(new_paths)
+}
+
 fn collect_txt_paths_rec(dir: &Path, out: &mut Vec<PathBuf>) -> ErmResult<()> {
     let entries = std::fs::read_dir(dir)
         .map_err(|e| ErmError::InvalidConfig(format!("cannot read dir {}: {e}", dir.display())))?;
@@ -448,6 +495,7 @@ fn collect_txt_paths_rec(dir: &Path, out: &mut Vec<PathBuf>) -> ErmResult<()> {
 mod tests {
     use super::*;
     use erm_core::bpe_tokenizer::BpeTokenizer;
+    use std::collections::HashSet;
 
     fn make_corpus() -> String {
         "the quick brown fox jumps over the lazy dog\n\n".repeat(30)
@@ -551,5 +599,28 @@ mod tests {
         let mut ds = StreamingDataset::new(config, bpe);
         let result = ds.next_batch();
         assert!(result.is_err() || matches!(result, Ok(None)));
+    }
+
+    #[test]
+    fn test_discover_new_txt_paths() {
+        let dir = "/tmp/erm_streaming_test_discover";
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(format!("{dir}/a.txt"), "alpha").unwrap();
+
+        let mut known = HashSet::new();
+        let first = discover_new_txt_paths(dir, &mut known).unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(first[0].ends_with("a.txt"));
+
+        std::fs::write(format!("{dir}/b.txt"), "beta").unwrap();
+        let second = discover_new_txt_paths(dir, &mut known).unwrap();
+        assert_eq!(second.len(), 1);
+        assert!(second[0].ends_with("b.txt"));
+
+        let third = discover_new_txt_paths(dir, &mut known).unwrap();
+        assert!(third.is_empty());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
