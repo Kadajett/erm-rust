@@ -321,6 +321,25 @@ pub fn update_pheromones_with_position_credit(
     )
 }
 
+/// Build an optional elite mask from per-ant deltas.
+///
+/// Returns `None` when elite filtering is disabled (`elite_k == 0`) or when
+/// `elite_k >= ant_deltas.len()` (all ants are effectively elite).
+fn build_elite_mask(ant_deltas: &[f32], elite_k: usize) -> Option<Vec<bool>> {
+    if elite_k == 0 || ant_deltas.is_empty() || elite_k >= ant_deltas.len() {
+        return None;
+    }
+
+    let mut ranked: Vec<(usize, f32)> = ant_deltas.iter().copied().enumerate().collect();
+    ranked.sort_unstable_by(|(i_a, d_a), (i_b, d_b)| d_b.total_cmp(d_a).then_with(|| i_a.cmp(i_b)));
+
+    let mut mask = vec![false; ant_deltas.len()];
+    for (ant_id, _) in ranked.into_iter().take(elite_k) {
+        mask[ant_id] = true;
+    }
+    Some(mask)
+}
+
 /// Internal: full pheromone update with all optional features.
 fn update_pheromones_full(
     graph: &mut RouteGraph,
@@ -338,7 +357,9 @@ fn update_pheromones_full(
     let rho_tau = config.taint_decay;
     let tau_max = config.taint_max;
     let phi_max = config.phi_max;
+    let phi_min = config.phi_min.clamp(0.0, phi_max);
     let seq_len = graph.seq_len;
+    let elite_mask = build_elite_mask(ant_deltas, config.elite_k);
 
     // Compute sigma from running stats (if provided).
     let sigma = delta_stats.as_ref().map_or(0.0_f32, |s| s.sigma());
@@ -370,7 +391,7 @@ fn update_pheromones_full(
         }
     }
 
-    // Step 2: Deposit — bounded (log1p or tanh) for edges used by ant k.
+    // Step 2: Deposit — bounded (log1p or tanh) for edges used by elite ants.
     // Step 3: Taint — τ += ζ * max(-Δ_k, 0.0) for edges used by ant k.
     //
     // When position_deltas is Some, deposit uses per-position delta at
@@ -384,6 +405,11 @@ fn update_pheromones_full(
         } else {
             0.0
         };
+        let is_elite = if let Some(mask) = elite_mask.as_ref() {
+            ant_id < mask.len() && mask[ant_id]
+        } else {
+            true
+        };
 
         // Taint from ant-level delta (always per-ant).
         let negative_ant_delta = (-ant_delta).max(0.0);
@@ -394,13 +420,17 @@ fn update_pheromones_full(
         let ant_positive_delta = ant_delta.max(0.0);
 
         // Update running stats with positive ant deltas.
-        if ant_positive_delta > 0.0 {
+        if is_elite && ant_positive_delta > 0.0 {
             if let Some(ref mut stats) = delta_stats {
                 stats.push(ant_positive_delta);
             }
         }
 
-        let ant_deposit_base = bounded_deposit(ant_positive_delta);
+        let ant_deposit_base = if is_elite {
+            bounded_deposit(ant_positive_delta)
+        } else {
+            0.0
+        };
 
         for &(b, dst, e, _weight) in &trace.entries {
             if b >= graph.batch_size || dst >= graph.seq_len || e >= graph.emax {
@@ -412,16 +442,20 @@ fn update_pheromones_full(
             }
 
             // Choose deposit base: per-position when available, per-ant otherwise.
-            let deposit_base = if let Some(pos_deltas) = position_deltas {
-                let pos_idx = b * seq_len + dst;
-                if pos_idx < pos_deltas.len() {
-                    let pos_delta = pos_deltas[pos_idx].max(0.0);
-                    bounded_deposit(pos_delta)
+            let deposit_base = if is_elite {
+                if let Some(pos_deltas) = position_deltas {
+                    let pos_idx = b * seq_len + dst;
+                    if pos_idx < pos_deltas.len() {
+                        let pos_delta = pos_deltas[pos_idx].max(0.0);
+                        bounded_deposit(pos_delta)
+                    } else {
+                        ant_deposit_base
+                    }
                 } else {
                     ant_deposit_base
                 }
             } else {
-                ant_deposit_base
+                0.0
             };
 
             // Per-edge learning rate decay: η / (1 + age).
@@ -446,11 +480,14 @@ fn update_pheromones_full(
             // Age increment.
             graph.age[flat] += 1;
 
-            // Enforce φ ∈ [0, φ_max].
-            graph.phi[flat] = graph.phi[flat].clamp(0.0, phi_max);
+            // Enforce φ ∈ [φ_min, φ_max] for active edges.
+            graph.phi[flat] = graph.phi[flat].clamp(phi_min, phi_max);
 
             // Enforce τ ∈ [0, τ_max].
             graph.taint[flat] = graph.taint[flat].clamp(0.0, tau_max);
+
+            debug_assert!(graph.phi[flat] >= 0.0);
+            debug_assert!(graph.taint[flat] >= 0.0 && graph.taint[flat] <= tau_max);
         }
     }
 
@@ -691,6 +728,8 @@ mod tests {
             taint_decay: 0.05,
             taint_max: 5.0,
             phi_max: 100.0,
+            phi_min: 1e-4,
+            elite_k: 0,
             prune_min_score: -1.0,
             prune_max_age: 1000,
             route_lambda: 1.0,
@@ -725,6 +764,140 @@ mod tests {
             (graph.phi[flat1] - 1.8).abs() < 1e-5,
             "expected 1.8, got {}",
             graph.phi[flat1]
+        );
+    }
+
+    #[test]
+    fn test_phi_min_floor_applies_to_active_edges() {
+        let cfg = small_config();
+        let mut graph = RouteGraph::new_empty(&cfg);
+        graph.add_edge(0, 0, 1, 0.02).expect("add edge");
+
+        let traces: Vec<EdgeTrace> = vec![];
+        let ant_deltas: Vec<f32> = vec![];
+        let pconfig = PheromoneConfig {
+            phi_min: 0.05,
+            ..small_pheromone_config()
+        };
+
+        let _stats = update_pheromones(&mut graph, &traces, &ant_deltas, &pconfig).expect("update");
+
+        let flat = graph.idx(0, 0, 0);
+        assert!(
+            (graph.phi[flat] - 0.05).abs() < 1e-6,
+            "expected phi floor at 0.05, got {}",
+            graph.phi[flat]
+        );
+    }
+
+    #[test]
+    fn test_elite_k_filters_positive_deposits() {
+        let cfg = small_config();
+        let mut graph = RouteGraph::new_empty(&cfg);
+        graph.add_edge(0, 0, 1, 0.5).expect("add edge");
+        graph.add_edge(0, 1, 2, 0.5).expect("add edge");
+
+        let traces = vec![
+            EdgeTrace {
+                ant_id: 0,
+                entries: vec![(0, 0, 0, 1.0)],
+            },
+            EdgeTrace {
+                ant_id: 1,
+                entries: vec![(0, 1, 0, 1.0)],
+            },
+        ];
+        let ant_deltas = vec![1.0_f32, 0.8_f32];
+        let pconfig = PheromoneConfig {
+            elite_k: 1,
+            phi_min: 0.0,
+            ..small_pheromone_config()
+        };
+
+        let _stats = update_pheromones(&mut graph, &traces, &ant_deltas, &pconfig).expect("update");
+
+        let flat_elite = graph.idx(0, 0, 0);
+        let flat_non_elite = graph.idx(0, 1, 0);
+        assert!(
+            graph.phi[flat_elite] > graph.phi[flat_non_elite],
+            "elite edge should have higher phi: elite={}, non_elite={}",
+            graph.phi[flat_elite],
+            graph.phi[flat_non_elite]
+        );
+        assert!(
+            (graph.phi[flat_non_elite] - 0.45).abs() < 1e-4,
+            "non-elite edge should only evaporate, got {}",
+            graph.phi[flat_non_elite]
+        );
+    }
+
+    #[test]
+    fn test_non_elite_negative_ant_still_adds_taint() {
+        let cfg = small_config();
+        let mut graph = RouteGraph::new_empty(&cfg);
+        graph.add_edge(0, 0, 1, 0.5).expect("add edge");
+        graph.add_edge(0, 1, 2, 0.5).expect("add edge");
+
+        let traces = vec![
+            EdgeTrace {
+                ant_id: 0,
+                entries: vec![(0, 0, 0, 1.0)],
+            },
+            EdgeTrace {
+                ant_id: 1,
+                entries: vec![(0, 1, 0, 1.0)],
+            },
+        ];
+        let ant_deltas = vec![1.0_f32, -1.0_f32];
+        let pconfig = PheromoneConfig {
+            elite_k: 1,
+            phi_min: 0.0,
+            ..small_pheromone_config()
+        };
+
+        let _stats = update_pheromones(&mut graph, &traces, &ant_deltas, &pconfig).expect("update");
+
+        let flat_non_elite = graph.idx(0, 1, 0);
+        assert!(
+            graph.taint[flat_non_elite] > 0.0,
+            "negative non-elite ant should still taint edge, got {}",
+            graph.taint[flat_non_elite]
+        );
+    }
+
+    #[test]
+    fn test_elite_k_zero_disables_filtering() {
+        let cfg = small_config();
+        let mut graph = RouteGraph::new_empty(&cfg);
+        graph.add_edge(0, 0, 1, 0.5).expect("add edge");
+        graph.add_edge(0, 1, 2, 0.5).expect("add edge");
+
+        let traces = vec![
+            EdgeTrace {
+                ant_id: 0,
+                entries: vec![(0, 0, 0, 1.0)],
+            },
+            EdgeTrace {
+                ant_id: 1,
+                entries: vec![(0, 1, 0, 1.0)],
+            },
+        ];
+        let ant_deltas = vec![1.0_f32, 0.8_f32];
+        let pconfig = PheromoneConfig {
+            elite_k: 0,
+            phi_min: 0.0,
+            ..small_pheromone_config()
+        };
+
+        let _stats = update_pheromones(&mut graph, &traces, &ant_deltas, &pconfig).expect("update");
+
+        let flat_a = graph.idx(0, 0, 0);
+        let flat_b = graph.idx(0, 1, 0);
+        assert!(
+            graph.phi[flat_a] > 0.45 && graph.phi[flat_b] > 0.45,
+            "both ants should deposit when elite_k=0, got {}, {}",
+            graph.phi[flat_a],
+            graph.phi[flat_b]
         );
     }
 

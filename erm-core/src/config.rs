@@ -69,8 +69,13 @@ pub struct ErmConfig {
     pub taint_decay: f32,
     /// Maximum pheromone value `φ_max` (clip ceiling).
     pub phi_max: f32,
+    /// Minimum pheromone value `φ_min` (floor for active edges).
+    pub phi_min: f32,
     /// Initial pheromone for new edges.
     pub phi_init: f32,
+    /// Number of ants allowed to deposit pheromone each step.
+    /// `0` disables elite filtering (all ants may deposit).
+    pub elite_k: usize,
 
     // ── RouteAggregate hyperparams ─────────────────────────────────────
     /// Epsilon added to phi before log in weight computation.
@@ -190,7 +195,9 @@ impl Default for ErmConfig {
             taint_max: 5.0,
             taint_decay: 0.05,
             phi_max: 100.0,
+            phi_min: 1e-4,
             phi_init: 0.05,
+            elite_k: 0,
 
             route_epsilon: 1e-6,
             route_lambda: 1.0,
@@ -355,6 +362,11 @@ pub struct PheromoneConfig {
     pub taint_max: f32,
     /// Maximum pheromone value `φ_max`. Pheromone is clamped to `[0, φ_max]`.
     pub phi_max: f32,
+    /// Minimum pheromone value `φ_min` for active edges.
+    pub phi_min: f32,
+    /// Number of ants allowed to deposit each step.
+    /// `0` disables elite filtering (all ants may deposit).
+    pub elite_k: usize,
     /// Minimum composite score `φ - λ·τ` for pruning.
     pub prune_min_score: f32,
     /// Maximum edge age before pruning.
@@ -382,6 +394,8 @@ impl Default for PheromoneConfig {
             taint_decay: 0.05,
             taint_max: 5.0,
             phi_max: 100.0,
+            phi_min: 1e-4,
+            elite_k: 0,
             prune_min_score: -1.0,
             prune_max_age: 1000,
             route_lambda: 1.0,
@@ -403,6 +417,8 @@ impl PheromoneConfig {
             taint_decay: config.taint_decay,
             taint_max: config.taint_max,
             phi_max: config.phi_max,
+            phi_min: config.phi_min,
+            elite_k: config.elite_k,
             prune_min_score: config.prune_min_score,
             prune_max_age: config.prune_max_age,
             route_lambda: config.route_lambda,
@@ -433,6 +449,8 @@ mod tests {
         assert_eq!(cfg.hidden_dim, 512);
         assert_eq!(cfg.num_blocks, 3);
         assert_eq!(cfg.emax, 16);
+        assert!((cfg.phi_min - 1e-4).abs() < 1e-8);
+        assert_eq!(cfg.elite_k, 0);
         assert_eq!(cfg.mask_token_id(), 0);
         assert_eq!(cfg.total_vocab_size(), 1);
     }
@@ -477,5 +495,19 @@ mod tests {
         assert!((rate_t - 0.1).abs() < 1e-6);
         let rate_1 = cfg.replace_rate(1);
         assert!((rate_1 - 0.02).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_pheromone_config_from_config_includes_new_fields() {
+        let cfg = ErmConfig {
+            phi_max: 10.0,
+            phi_min: 0.01,
+            elite_k: 7,
+            ..ErmConfig::default()
+        };
+        let p = PheromoneConfig::from_config(&cfg);
+        assert!((p.phi_max - 10.0).abs() < 1e-8);
+        assert!((p.phi_min - 0.01).abs() < 1e-8);
+        assert_eq!(p.elite_k, 7);
     }
 }
