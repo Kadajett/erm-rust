@@ -123,8 +123,41 @@ Your trainer is currently single-GPU bound in code paths (device `0`), so:
 
 ---
 
+## Conversation-Capable Target Matrix (6GB now vs 5090 later)
+Goal: move from pure denoise replication toward usable prompt->completion chat behavior.
+
+### What is hard-limited today
+- Current run is fixed-window (`seq_len=128`) per generation call.
+- Prompt + output must fit in that window.
+- This limits real thread memory unless you implement chunked continuation/summarized memory.
+
+### Practical profiles
+| Profile | Hardware | Train config target | Inference `length` | Practical per-turn history budget* | Practical reply budget* | Risk |
+|---|---|---|---:|---:|---:|---|
+| C0 (current short-chat) | 6GB | `B=2, L=128, T=2, H=512, blocks=3` | 128 | ~80 tok (~60 words) | ~48 tok (~35 words) | Low |
+| C1 (entry chat) | 5090 | `B=4, L=256, T=2, H=512, blocks=3` | 256 | ~160 tok (~120 words) | ~96 tok (~70 words) | Low |
+| C2 (better chat quality) | 5090 | `B=4, L=384, T=3, H=768, blocks=6` | 384 | ~256 tok (~190 words) | ~128 tok (~95 words) | Medium |
+| C3 (longer turn budget) | 5090 | `B=2, L=512, T=4, H=768, blocks=6` | 512 | ~352 tok (~260 words) | ~160 tok (~120 words) | Medium/High |
+
+\\*Budgets assume you reserve output space each turn; 1 English word is typically ~1.3 tokens.
+
+### Why this matters
+- 6GB can do very short-turn Q/A, but not robust multi-turn memory.
+- 5090 enables larger `L` + stronger model capacity at the same time.
+- For true “normal chat thread” behavior, you still eventually need:
+  1. Thread packing policy (history truncation/summarization).
+  2. Completion-style training mix (not denoise-only).
+  3. Optional chunked continuation for outputs longer than one window.
+
+### Suggested rollout
+1. **Now on 6GB**: keep current run and add completion-style evals only.
+2. **First 5090 pass**: use C1 to validate stability and prompt-following quickly.
+3. **Second 5090 pass**: move to C2 for higher quality responses.
+4. **Only if needed**: C3 for larger single-turn context/output.
+
+---
+
 ## Quick Decision Summary
 - If objective is **fast iteration now**: 5090 Scenario A first.
 - If objective is **better model behavior per run**: 5090 Scenario B after one calibration cycle.
 - Monthly ceiling at on-demand 5090 is low enough to run long experiments without H200-class cost.
-
