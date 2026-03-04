@@ -32,6 +32,8 @@
 //! for moving them to the GPU via `tokens_to_tensor`.
 
 use std::collections::VecDeque;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
@@ -169,73 +171,20 @@ fn producer_loop<T: TokenizerApi>(
         let mut pending: VecDeque<u32> = VecDeque::new();
 
         for path in &paths {
-            // Read file on CPU; do NOT send to GPU.
-            let text = match std::fs::read_to_string(path) {
-                Ok(t) => t,
-                Err(e) => {
-                    eprintln!(
-                        "[streaming_dataset] warning: cannot read {}: {e}",
-                        path.display()
-                    );
-                    continue;
-                }
-            };
-
-            let tokens = if config.use_paragraph_spans {
-                tokenize_by_paragraphs(&text, &tokenizer, config.seq_len)
+            let ok = if config.use_paragraph_spans {
+                stream_paragraph_file_into_pending(path, &config, &tokenizer, &tx, &mut pending)
             } else {
-                tokenize_sliding_window(&text, &tokenizer, config.seq_len)
+                stream_sliding_file_into_pending(path, &config, &tokenizer, &tx, &mut pending)
             };
-
-            pending.extend(tokens);
-
-            // Emit complete batches as soon as we have enough pending tokens.
-            while pending.len() >= config.batch_size * config.seq_len {
-                let batch_tokens: Vec<u32> = pending
-                    .drain(..config.batch_size * config.seq_len)
-                    .collect();
-
-                let batch = TokenBatch {
-                    tokens: batch_tokens,
-                    batch_size: config.batch_size,
-                    seq_len: config.seq_len,
-                };
-
-                // send() blocks when channel is full (back-pressure).
-                if tx.send(Ok(batch)).is_err() {
-                    // Receiver dropped — trainer is done.
-                    return;
-                }
+            if !ok {
+                return;
             }
         }
 
         // Emit any partial last batch, padded to full batch_size by repeating
         // sequences (the graph/ant state expect a fixed batch_size).
-        if !pending.is_empty() && pending.len() >= config.seq_len {
-            let complete_seqs = pending.len() / config.seq_len;
-            let batch_seqs = complete_seqs.min(config.batch_size);
-            if batch_seqs > 0 {
-                let mut batch_tokens: Vec<u32> =
-                    pending.drain(..batch_seqs * config.seq_len).collect();
-
-                // Pad to full batch_size by repeating the first sequence.
-                while batch_tokens.len() < config.batch_size * config.seq_len {
-                    let pad_start = 0;
-                    let pad_end = config.seq_len.min(batch_tokens.len());
-                    let pad_seq: Vec<u32> = batch_tokens[pad_start..pad_end].to_vec();
-                    batch_tokens.extend_from_slice(&pad_seq);
-                }
-                batch_tokens.truncate(config.batch_size * config.seq_len);
-
-                let batch = TokenBatch {
-                    tokens: batch_tokens,
-                    batch_size: config.batch_size,
-                    seq_len: config.seq_len,
-                };
-                if tx.send(Ok(batch)).is_err() {
-                    return;
-                }
-            }
+        if !emit_tail_batch(&config, &tx, &mut pending) {
+            return;
         }
 
         if !config.repeat {
@@ -246,79 +195,229 @@ fn producer_loop<T: TokenizerApi>(
 
 // ── Tokenization strategies ───────────────────────────────────────────────────
 
-/// Tokenize text using a sliding window (seq_len/2 stride).
-///
-/// Returns a flat `Vec<u32>` of all token ids across all windows. The caller
-/// is responsible for slicing into batches.
-fn tokenize_sliding_window<T: TokenizerApi>(text: &str, tokenizer: &T, seq_len: usize) -> Vec<u32> {
-    let all_tokens = tokenizer.encode_text(text);
-    if all_tokens.len() < seq_len {
-        return all_tokens;
-    }
-    let stride = (seq_len / 2).max(1);
-    let mut result = Vec::new();
-
-    let mut start = 0;
-    while start + seq_len <= all_tokens.len() {
-        result.extend_from_slice(&all_tokens[start..start + seq_len]);
-        start += stride;
-    }
-    // Capture leftover tail.
-    if all_tokens.len() >= seq_len {
-        let last_start = all_tokens.len() - seq_len;
-        if last_start >= start {
-            result.extend_from_slice(&all_tokens[last_start..]);
+/// Emit complete batches from `pending` into the producer channel.
+fn emit_ready_batches(
+    config: &StreamingConfig,
+    tx: &SyncSender<ErmResult<TokenBatch>>,
+    pending: &mut VecDeque<u32>,
+) -> bool {
+    let needed = config.batch_size * config.seq_len;
+    while pending.len() >= needed {
+        let batch_tokens: Vec<u32> = pending.drain(..needed).collect();
+        let batch = TokenBatch {
+            tokens: batch_tokens,
+            batch_size: config.batch_size,
+            seq_len: config.seq_len,
+        };
+        if tx.send(Ok(batch)).is_err() {
+            return false;
         }
     }
-    result
+    true
 }
 
-/// Tokenize text by paragraph/sentence boundaries.
+/// Emit one final padded tail batch from remaining pending tokens.
+fn emit_tail_batch(
+    config: &StreamingConfig,
+    tx: &SyncSender<ErmResult<TokenBatch>>,
+    pending: &mut VecDeque<u32>,
+) -> bool {
+    if pending.len() < config.seq_len {
+        return true;
+    }
+
+    let complete_seqs = pending.len() / config.seq_len;
+    let batch_seqs = complete_seqs.min(config.batch_size);
+    if batch_seqs == 0 {
+        return true;
+    }
+
+    let mut batch_tokens: Vec<u32> = pending.drain(..batch_seqs * config.seq_len).collect();
+    while batch_tokens.len() < config.batch_size * config.seq_len {
+        let pad_end = config.seq_len.min(batch_tokens.len());
+        let pad_seq: Vec<u32> = batch_tokens[..pad_end].to_vec();
+        batch_tokens.extend_from_slice(&pad_seq);
+    }
+    batch_tokens.truncate(config.batch_size * config.seq_len);
+
+    let batch = TokenBatch {
+        tokens: batch_tokens,
+        batch_size: config.batch_size,
+        seq_len: config.seq_len,
+    };
+    tx.send(Ok(batch)).is_ok()
+}
+
+/// Stream-tokenize one file with sliding windows and push resulting tokens to `pending`.
 ///
-/// Splits the text at double-newlines (paragraphs) and single newlines
-/// (sentences), producing spans that are at most `seq_len` tokens long.
-/// Spans shorter than `seq_len` are concatenated until they fill a window.
-fn tokenize_by_paragraphs<T: TokenizerApi>(text: &str, tokenizer: &T, seq_len: usize) -> Vec<u32> {
-    // Split into paragraphs first, then sentences within each.
-    let mut all_tokens: Vec<u32> = Vec::new();
-    let mut buffer: Vec<u32> = Vec::new();
+/// This emits batches incrementally while reading lines, avoiding full-file
+/// tokenization latency before the first training step.
+fn stream_sliding_file_into_pending<T: TokenizerApi>(
+    path: &Path,
+    config: &StreamingConfig,
+    tokenizer: &T,
+    tx: &SyncSender<ErmResult<TokenBatch>>,
+    pending: &mut VecDeque<u32>,
+) -> bool {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!(
+                "[streaming_dataset] warning: cannot read {}: {e}",
+                path.display()
+            );
+            return true;
+        }
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    let stride = (config.seq_len / 2).max(1);
 
-    for para in text.split_inclusive("\n\n") {
-        for sentence in para.split_inclusive('\n') {
-            if sentence.chars().all(char::is_whitespace) {
-                continue;
+    let mut token_buffer: VecDeque<u32> = VecDeque::new();
+    let mut total_tokens = 0usize;
+    let mut next_start = 0usize;
+
+    loop {
+        line.clear();
+        let read = match reader.read_line(&mut line) {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!(
+                    "[streaming_dataset] warning: read error {}: {e}",
+                    path.display()
+                );
+                break;
             }
-            let tokens = tokenizer.encode_text(sentence);
-            if tokens.is_empty() {
-                continue;
+        };
+        if read == 0 {
+            break;
+        }
+
+        let tokens = tokenizer.encode_text(&line);
+        if tokens.is_empty() {
+            continue;
+        }
+        total_tokens += tokens.len();
+        token_buffer.extend(tokens);
+
+        while next_start + config.seq_len <= total_tokens {
+            let buffer_start = total_tokens - token_buffer.len();
+            let offset = next_start.saturating_sub(buffer_start);
+            let window: Vec<u32> = token_buffer
+                .iter()
+                .skip(offset)
+                .take(config.seq_len)
+                .copied()
+                .collect();
+            if window.len() < config.seq_len {
+                break;
+            }
+            pending.extend(window);
+            if !emit_ready_batches(config, tx, pending) {
+                return false;
             }
 
-            // If adding this sentence would overflow the window, flush buffer.
-            if buffer.len() + tokens.len() >= seq_len {
-                if !buffer.is_empty() {
-                    // Pad or truncate to exactly seq_len.
-                    buffer.truncate(seq_len);
-                    while buffer.len() < seq_len {
-                        buffer.push(erm_core::bpe_tokenizer::PAD_ID);
-                    }
-                    all_tokens.extend_from_slice(&buffer);
-                    buffer.clear();
-                }
+            next_start += stride;
+            let new_buffer_start = total_tokens - token_buffer.len();
+            let drop_n = next_start
+                .saturating_sub(new_buffer_start)
+                .min(token_buffer.len());
+            for _ in 0..drop_n {
+                let _ = token_buffer.pop_front();
             }
-            buffer.extend_from_slice(&tokens);
         }
     }
 
-    // Flush remaining buffer.
-    if buffer.len() >= seq_len / 4 {
-        buffer.truncate(seq_len);
-        while buffer.len() < seq_len {
-            buffer.push(erm_core::bpe_tokenizer::PAD_ID);
-        }
-        all_tokens.extend_from_slice(&buffer);
+    if total_tokens < config.seq_len {
+        pending.extend(token_buffer.iter().copied());
+        return emit_ready_batches(config, tx, pending);
     }
 
-    all_tokens
+    let last_start = total_tokens - config.seq_len;
+    if last_start >= next_start {
+        let buffer_start = total_tokens - token_buffer.len();
+        let offset = last_start.saturating_sub(buffer_start);
+        let tail: Vec<u32> = token_buffer
+            .iter()
+            .skip(offset)
+            .take(config.seq_len)
+            .copied()
+            .collect();
+        if tail.len() == config.seq_len {
+            pending.extend(tail);
+        }
+    }
+    emit_ready_batches(config, tx, pending)
+}
+
+/// Stream-tokenize one file using sentence/paragraph packing.
+fn stream_paragraph_file_into_pending<T: TokenizerApi>(
+    path: &Path,
+    config: &StreamingConfig,
+    tokenizer: &T,
+    tx: &SyncSender<ErmResult<TokenBatch>>,
+    pending: &mut VecDeque<u32>,
+) -> bool {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!(
+                "[streaming_dataset] warning: cannot read {}: {e}",
+                path.display()
+            );
+            return true;
+        }
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    let mut span_buffer: Vec<u32> = Vec::new();
+
+    loop {
+        line.clear();
+        let read = match reader.read_line(&mut line) {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!(
+                    "[streaming_dataset] warning: read error {}: {e}",
+                    path.display()
+                );
+                break;
+            }
+        };
+        if read == 0 {
+            break;
+        }
+
+        if line.chars().all(char::is_whitespace) {
+            continue;
+        }
+        let tokens = tokenizer.encode_text(&line);
+        if tokens.is_empty() {
+            continue;
+        }
+
+        if span_buffer.len() + tokens.len() >= config.seq_len && !span_buffer.is_empty() {
+            span_buffer.truncate(config.seq_len);
+            while span_buffer.len() < config.seq_len {
+                span_buffer.push(erm_core::bpe_tokenizer::PAD_ID);
+            }
+            pending.extend(span_buffer.iter().copied());
+            span_buffer.clear();
+            if !emit_ready_batches(config, tx, pending) {
+                return false;
+            }
+        }
+        span_buffer.extend_from_slice(&tokens);
+    }
+
+    if span_buffer.len() >= config.seq_len / 4 {
+        span_buffer.truncate(config.seq_len);
+        while span_buffer.len() < config.seq_len {
+            span_buffer.push(erm_core::bpe_tokenizer::PAD_ID);
+        }
+        pending.extend(span_buffer.iter().copied());
+    }
+    emit_ready_batches(config, tx, pending)
 }
 
 // ── Path utilities ────────────────────────────────────────────────────────────
