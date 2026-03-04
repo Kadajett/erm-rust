@@ -164,3 +164,27 @@ Use this exact sequence whenever diagnosing "plateau", stalls, or regressions.
 
 - Command: `ermiotail` (alias to `ermio`) from `~/.zshrc`
 - Behavior: auto-select newest running `erm-alice-run-*` pod and stream readable `clean/corr/pred` lines from latest checkpoint json/jsonl.
+
+## Offline Playground (No Training Disturbance)
+
+- Goal: play with current weights while active training continues.
+- Rule: use CPU backend for playground (`--backend cpu`) so GPU training run is unaffected.
+
+### 1) Snapshot weights from running pod
+
+- Example snapshot flow:
+  - `pod=$(kubectl get pods -n pcn-train -l job-name=erm-alice-run-m1m-v7-sharded-3phase -o jsonpath='{.items[0].metadata.name}')`
+  - `exp=alice-run-b2-m1m-v7-sharded-3phase-r1`
+  - `ts=$(date -u +%Y%m%dT%H%M%SZ)`
+  - `out=/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/${exp}-${ts}`
+  - `kubectl cp -n pcn-train "${pod}:/workspace/erm-rust/data/experiments/${exp}/checkpoints/latest" "${out}/latest"`
+  - `kubectl cp -n pcn-train "${pod}:/workspace/erm-rust/data/experiments/${exp}/bpe_vocab.json" "${out}/bpe_vocab.json"`
+
+### 2) Run perpetual 1Hz diffusion loop
+
+- New CLI mode: `infer-live` (stop with Ctrl+C).
+- Example:
+  - `target/debug/erm infer-live --checkpoint <snapshot>/latest --length 96 --steps 2 --backend cpu --interval-ms 1000 --feedback-tokens 24 --prompt "demo prompt"`
+- Behavior:
+  - prints one diffusion output per second forever
+  - feeds back leading tokens from previous output for iterative drift

@@ -1032,5 +1032,69 @@
       },
       "notes": "Prepared scripts: prepare-reasoning-corpus.py and run-reasoning-resume.sh. Next phase will resume after 1M baseline completes."
     }
+  },
+  {
+    "id": "alice-run-b2-m1m-v7-sharded-3phase-r1-2026-03-04T05-25-00Z-live-playground-cli",
+    "created_at_utc": "2026-03-04T05:25:00Z",
+    "experiment_id": "alice-run-b2-m1m-v7-sharded-3phase-r1",
+    "tags": [
+      "theory",
+      "tooling",
+      "inference",
+      "playground",
+      "non-training"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "code_change",
+      "summary": "Add perpetual infer-live CLI for qualitative monitoring without disturbing active training, using checkpoint snapshots and CPU backend.",
+      "changes": [
+        {
+          "field": "cli_subcommand",
+          "from": null,
+          "to": "infer-live"
+        },
+        {
+          "field": "loop_behavior",
+          "from": "single infer call",
+          "to": "infinite 1Hz diffusion loop with feedback tokens"
+        },
+        {
+          "field": "safety_default",
+          "from": "n/a",
+          "to": "backend default cpu"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 1,
+      "status": "completed",
+      "stop_reason": "tool smoke-tested"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": null,
+        "resume_local_end": null
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": null,
+          "end_mean": null,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": null,
+          "used_max": null
+        },
+        "host_ram_bytes": null,
+        "oom": false
+      },
+      "notes": "Smoke test on v7 checkpoint snapshot produced iterative outputs (live iter 1..6) at ~1s interval in CPU mode while training job remained running."
+    }
   }
 ]

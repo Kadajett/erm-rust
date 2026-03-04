@@ -96,3 +96,13 @@ The builder pod uses an `nvcc` shim that reports CUDA 13.0 to cudarc's build-tim
   - pod: `/workspace/rust-pcn/data/reasoning-qa-sharded`
 - Resume helper script:
   - `scripts/run-reasoning-resume.sh`
+
+## Live Playground CLI
+
+- Command added: `erm infer-live`
+- Purpose: perpetual diffusion-on-feedback loop for qualitative inspection.
+- Safety default:
+  - `--backend cpu` by default, so active GPU training is not disturbed.
+- Typical use:
+  - snapshot current checkpoint from running pod
+  - run `infer-live` on snapshot path with `--interval-ms 1000`

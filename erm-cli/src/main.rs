@@ -269,6 +269,48 @@ enum Commands {
         backend: BackendChoice,
     },
 
+    /// Live diffusion loop: repeatedly re-diffuse a prompt forever.
+    ///
+    /// This is intentionally open-ended and prints one new output every
+    /// interval. Stop with Ctrl+C.
+    InferLive {
+        /// Path to checkpoint directory.
+        #[arg(long)]
+        checkpoint: String,
+
+        /// Output length in tokens.
+        #[arg(long, default_value = "128")]
+        length: usize,
+
+        /// Number of refinement steps K per iteration.
+        #[arg(long, default_value = "8")]
+        steps: usize,
+
+        /// Optional prompt text. If omitted, CLI will ask once on stdin.
+        #[arg(long)]
+        prompt: Option<String>,
+
+        /// Random seed.
+        #[arg(long, default_value = "42")]
+        seed: u64,
+
+        /// Path to config file (overrides checkpoint config).
+        #[arg(long)]
+        config: Option<String>,
+
+        /// Backend to use (default cpu to avoid disturbing active GPU training).
+        #[arg(long, default_value = "cpu")]
+        backend: BackendChoice,
+
+        /// Delay between iterations in milliseconds.
+        #[arg(long, default_value = "1000")]
+        interval_ms: u64,
+
+        /// Number of leading tokens from previous output to feed back as next prompt.
+        #[arg(long, default_value = "32")]
+        feedback_tokens: usize,
+    },
+
     /// Run diffusion colony training (tokens-in → tokens-out, T refinement steps).
     DiffusionTrain {
         /// Path to training data directory (containing .txt files).
@@ -458,6 +500,29 @@ fn main() {
                 seed,
                 config.as_deref(),
                 &backend,
+            );
+        }
+        Commands::InferLive {
+            checkpoint,
+            length,
+            steps,
+            prompt,
+            seed,
+            config,
+            backend,
+            interval_ms,
+            feedback_tokens,
+        } => {
+            run_infer_live(
+                &checkpoint,
+                length,
+                steps,
+                prompt.as_deref(),
+                seed,
+                config.as_deref(),
+                &backend,
+                interval_ms,
+                feedback_tokens,
             );
         }
         Commands::DiffusionTrain {
@@ -1843,6 +1908,248 @@ fn run_infer(
                 std::process::exit(1);
             }
         }
+    }
+}
+
+/// Live diffusion inference: iteratively re-diffuse prompt feedback forever.
+#[allow(clippy::too_many_arguments)]
+fn run_infer_live(
+    checkpoint_dir: &str,
+    length: usize,
+    k_steps: usize,
+    prompt: Option<&str>,
+    seed: u64,
+    config_path: Option<&str>,
+    backend: &BackendChoice,
+    interval_ms: u64,
+    feedback_tokens: usize,
+) {
+    let erm_cfg = if let Some(cp) = config_path {
+        load_config(Some(cp))
+    } else {
+        let cfg_path = format!("{checkpoint_dir}/config.json");
+        load_config(if std::path::Path::new(&cfg_path).exists() {
+            Some(&cfg_path)
+        } else {
+            None
+        })
+    };
+
+    match backend {
+        BackendChoice::Cpu => {
+            infer_live_loop::<burn_autodiff::Autodiff<burn_ndarray::NdArray<f32>>>(
+                &erm_cfg,
+                checkpoint_dir,
+                length,
+                k_steps,
+                prompt,
+                seed,
+                interval_ms,
+                feedback_tokens,
+                Default::default(),
+            );
+        }
+        BackendChoice::Gpu => {
+            #[cfg(feature = "gpu")]
+            {
+                let device = burn_wgpu::WgpuDevice::default();
+                infer_live_loop::<burn_autodiff::Autodiff<burn_wgpu::Wgpu>>(
+                    &erm_cfg,
+                    checkpoint_dir,
+                    length,
+                    k_steps,
+                    prompt,
+                    seed,
+                    interval_ms,
+                    feedback_tokens,
+                    device,
+                );
+            }
+            #[cfg(not(feature = "gpu"))]
+            {
+                eprintln!("ERROR: GPU (wgpu) support not compiled.");
+                std::process::exit(1);
+            }
+        }
+        BackendChoice::Cuda => {
+            #[cfg(feature = "cuda")]
+            {
+                let device = burn_cuda::CudaDevice::new(0);
+                println!("Backend: CUDA device 0");
+                infer_live_loop::<burn_autodiff::Autodiff<burn_cuda::Cuda>>(
+                    &erm_cfg,
+                    checkpoint_dir,
+                    length,
+                    k_steps,
+                    prompt,
+                    seed,
+                    interval_ms,
+                    feedback_tokens,
+                    device,
+                );
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                eprintln!("ERROR: CUDA support not compiled.");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_live_loop<B: burn::tensor::backend::AutodiffBackend>(
+    cfg: &erm_core::ErmConfig,
+    checkpoint_dir: &str,
+    length: usize,
+    k_steps: usize,
+    prompt: Option<&str>,
+    seed: u64,
+    interval_ms: u64,
+    feedback_tokens: usize,
+    device: B::Device,
+) {
+    use erm_train::diffusion_training::DiffusionTrainer;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+    use std::io::{self, Write};
+    use std::path::Path;
+    use std::thread;
+    use std::time::Duration;
+
+    if length < 2 {
+        eprintln!("ERROR: --length must be >= 2 for infer-live feedback mode.");
+        std::process::exit(1);
+    }
+
+    let mut cfg = cfg.clone();
+    cfg.seq_len = length;
+
+    let mut trainer = DiffusionTrainer::<B>::new(&cfg, device.clone());
+    if let Err(e) = trainer.load_checkpoint(checkpoint_dir) {
+        eprintln!("WARNING: could not load checkpoint '{checkpoint_dir}': {e}");
+        eprintln!("  (running live inference with freshly initialized weights)");
+    } else {
+        println!(
+            "Loaded checkpoint from: {checkpoint_dir} (step={})",
+            trainer.step
+        );
+    }
+
+    let bpe_tokenizer = if cfg.tokenizer_type == "bpe" {
+        let bpe_candidates = [
+            format!("{checkpoint_dir}/bpe_vocab.json"),
+            Path::new(checkpoint_dir)
+                .parent()
+                .map(|p| format!("{}/bpe_vocab.json", p.display()))
+                .unwrap_or_default(),
+            Path::new(checkpoint_dir)
+                .parent()
+                .and_then(|p| p.parent())
+                .map(|p| format!("{}/bpe_vocab.json", p.display()))
+                .unwrap_or_default(),
+            cfg.bpe_vocab_path.clone(),
+        ];
+        let found = bpe_candidates
+            .iter()
+            .find(|p| !p.is_empty() && Path::new(p).exists());
+        match found {
+            Some(path) => match erm_core::BpeTokenizer::load(path) {
+                Ok(tok) => Some(tok),
+                Err(e) => {
+                    eprintln!("WARNING: failed to load BPE vocab from '{path}': {e}");
+                    None
+                }
+            },
+            None => {
+                eprintln!(
+                    "WARNING: tokenizer_type=bpe but bpe_vocab.json was not found; \
+                     prompt will use fallback char encoding"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let prompt_input = if let Some(p) = prompt {
+        p.to_string()
+    } else {
+        print!("prompt> ");
+        let _ = io::stdout().flush();
+        let mut line = String::new();
+        if io::stdin().read_line(&mut line).is_err() {
+            eprintln!("ERROR: failed to read prompt from stdin");
+            std::process::exit(1);
+        }
+        line.trim_end().to_string()
+    };
+
+    let mut current_prompt_tokens: Vec<u32> = match bpe_tokenizer.as_ref() {
+        Some(tok) => tok.encode_text(&prompt_input),
+        None => prompt_input
+            .chars()
+            .map(|c| (c as u32) % cfg.total_vocab_size() as u32)
+            .collect(),
+    };
+    if current_prompt_tokens.is_empty() {
+        current_prompt_tokens.push(0);
+    }
+
+    let max_prompt_len = length - 1;
+    if current_prompt_tokens.len() > max_prompt_len {
+        current_prompt_tokens.truncate(max_prompt_len);
+    }
+
+    let feedback_len = feedback_tokens.max(1).min(max_prompt_len);
+
+    println!(
+        "=== Diffusion Live Loop ===\n\
+         length={length} steps={k_steps} interval_ms={interval_ms} feedback_tokens={feedback_len}\n\
+         Stop with Ctrl+C."
+    );
+
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut graph = erm_core::graph::RouteGraph::new(&cfg);
+    let sleep_dur = Duration::from_millis(interval_ms.max(1));
+
+    let mut iter_idx: u64 = 1;
+    loop {
+        let result = erm_train::diffusion_training::diffusion_infer(
+            &trainer.scorer,
+            &mut graph,
+            &cfg,
+            k_steps,
+            Some(&current_prompt_tokens),
+            length,
+            &mut rng,
+            &device,
+        );
+
+        match result {
+            Ok(tokens) => {
+                println!("\n[live iter {iter_idx}]");
+                if let Some(tok) = bpe_tokenizer.as_ref() {
+                    let decoded = tok.decode_text(&tokens);
+                    println!("{}", decoded.trim_end());
+                } else {
+                    println!("{tokens:?}");
+                }
+
+                let take_n = feedback_len.min(tokens.len().saturating_sub(1));
+                if take_n > 0 {
+                    current_prompt_tokens = tokens[..take_n].to_vec();
+                }
+            }
+            Err(e) => {
+                eprintln!("ERROR: infer-live iteration {iter_idx} failed: {e}");
+                std::process::exit(1);
+            }
+        }
+
+        iter_idx = iter_idx.saturating_add(1);
+        thread::sleep(sleep_dur);
     }
 }
 
