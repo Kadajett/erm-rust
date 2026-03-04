@@ -80,3 +80,19 @@ The builder pod uses an `nvcc` shim that reports CUDA 13.0 to cudarc's build-tim
   - copy `metrics.jsonl` locally via `kubectl cp`
   - compute fixed windows with `jq` + `awk`
   - compare windows across recent experiments before recommending changes
+
+## Reasoning Dataset Prep (Post-1M Resume)
+
+- Dataset: `nohurry/Opus-4.6-Reasoning-3000x-filtered`
+- Keep only:
+  - `problem` as input/question
+  - `solution` as output/response
+- Always ignore:
+  - `thinking` (chain-of-thought)
+- Prep script:
+  - `scripts/prepare-reasoning-corpus.py`
+- Recommended output dir:
+  - host: `/home/kadajett/dev/rust-pcn/data/reasoning-qa-sharded`
+  - pod: `/workspace/rust-pcn/data/reasoning-qa-sharded`
+- Resume helper script:
+  - `scripts/run-reasoning-resume.sh`

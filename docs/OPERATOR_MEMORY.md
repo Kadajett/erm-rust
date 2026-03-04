@@ -90,6 +90,28 @@ Notes:
   - Host: `/home/kadajett/dev/rust-pcn/data/books`
   - Pod: `/workspace/rust-pcn/data/books`
 
+- Reasoning Q/A corpus (HF `nohurry/Opus-4.6-Reasoning-3000x-filtered`)
+  - Source schema: `problem`, `thinking`, `solution`
+  - Policy: ignore `thinking`; keep only `problem` + `solution`
+  - Recommended output:
+    - Host: `/home/kadajett/dev/rust-pcn/data/reasoning-qa-sharded`
+    - Pod: `/workspace/rust-pcn/data/reasoning-qa-sharded`
+  - Prep command:
+    - `python3 scripts/prepare-reasoning-corpus.py --out-dir /home/kadajett/dev/rust-pcn/data/reasoning-qa-sharded --shard-size 20000`
+  - Format emitted per sample:
+    - `Question:\n...\n\nAnswer:\n...`
+  - Manifest:
+    - `/home/kadajett/dev/rust-pcn/data/reasoning-qa-sharded/manifest.json`
+
+## Post-1M Resume Handoff (Reasoning Phase)
+
+- Use this after the current 1M v7 run completes:
+  - `scripts/run-reasoning-resume.sh --checkpoint-dir /workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1/checkpoints --exp-id alice-run-b2-m1m-v7-reasoning-r1 --data /workspace/rust-pcn/data/reasoning-qa-sharded --add-steps 200000 --backend cuda --erm-bin /workspace/erm-rust/bin/erm.new`
+- Script ensures:
+  - resume from `checkpoints/latest`
+  - no chain-of-thought field ingestion
+  - same checkpoint continuity while changing data domain
+
 ## Canonical Pod Pull + Analysis Workflow
 
 Use this exact sequence whenever diagnosing "plateau", stalls, or regressions.
