@@ -4,8 +4,8 @@ Last updated: 2026-03-04 UTC
 
 ## Current Live Run
 
-- Job: `erm-alice-run-m1m-v6-sharded-3phase`
-- Experiment id: `alice-run-b2-m1m-v6-sharded-3phase-r1`
+- Job: `erm-alice-run-m1m-v7-sharded-3phase`
+- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1`
 - Status: running
 - Confirmed phase/data order:
   - Phase 1: `100000` steps on `/workspace/rust-pcn/data/english-frontload-sharded`

@@ -1,0 +1,375 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: erm-alice-run-m1m-v7-sharded-3phase
+  namespace: pcn-train
+  labels:
+    app: erm-diffusion
+    exp: alice-run-m1m-v7-sharded-3phase
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: erm-alice-run-m1m-v7-sharded-3phase
+        kubectl.kubernetes.io/default-logs-container: erm-alice-run-m1m-v7-sharded-3phase
+      labels:
+        app: erm-diffusion
+        exp: alice-run-m1m-v7-sharded-3phase
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: [theshire]
+      containers:
+      - name: erm-alice-run-m1m-v7-sharded-3phase
+        image: ubuntu:24.04
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -eo pipefail
+          echo "=== ERM Milestone D (sharded 3-phase v7, fresh to 1M total) ==="
+          echo "Host: $(hostname) | Start: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          apt-get update -qq 2>&1 | tail -1 || true
+          apt-get install -y -qq --no-install-recommends ca-certificates 2>&1 | tail -3 || true
+          apt-get install -y -qq --no-install-recommends python3 python3-pip python3-venv 2>&1 | tail -3 || true
+          python3 -m venv /tmp/aim-watcher-venv || true
+          /tmp/aim-watcher-venv/bin/pip install --quiet aim numpy || true
+
+          NEW_EXP="alice-run-b2-m1m-v7-sharded-3phase-r1"
+          TARGET_STEP=1000000
+          TARGET_BATCH=2
+          TARGET_DIFFUSION_T=2
+          TARGET_SEQ_LEN=128
+          TARGET_NUM_ANTS=96
+          TARGET_DEATH_STREAK=24
+          TARGET_DROPOUT=0.1
+          TARGET_PHEROMONE_EVAP=0.02
+          TARGET_LEARNING_RATE=0.0003
+          TARGET_MAX_EDITS_PER_STEP=0.12
+          TARGET_LEADER_FRACTION=0.05
+          TARGET_GAMMA_MAX=1.6
+          TARGET_MASK_RATE_MAX=0.65
+          TARGET_WARMSTART_STEPS=2000
+          TARGET_WARMSTART_DEATH_MULT=6
+          PHASE1_STEPS=100000
+          PHASE2_STEPS=200000
+          PHASE1_DATA_DIR="/workspace/rust-pcn/data/english-frontload-sharded"
+          PHASE2_DATA_DIR="/workspace/rust-pcn/data/sentence-bridge-smclm-sharded"
+          PHASE3_DATA_DIR="/workspace/rust-pcn/data/books"
+          PHASE3_STEPS=$((TARGET_STEP - PHASE1_STEPS - PHASE2_STEPS))
+          BASE_CONFIG="/workspace/erm-rust/data/experiments/alice-run-b2-m100k/resume-b2-config.json"
+          CKPT_DIR="/workspace/erm-rust/data/experiments/${NEW_EXP}/checkpoints"
+          EXP_DIR="/workspace/erm-rust/data/experiments/${NEW_EXP}"
+          RUN_CONFIG="${EXP_DIR}/train-config.json"
+          ERM_BIN="/workspace/erm-rust/bin/erm.new"
+
+          if [[ -d "${EXP_DIR}" ]]; then
+            echo "ERROR: scratch run requested but experiment dir already exists: ${EXP_DIR}"
+            echo "Pick a new NEW_EXP value for a full restart."
+            exit 1
+          fi
+          mkdir -p "${CKPT_DIR}"
+
+          if [[ ! -f "${BASE_CONFIG}" ]]; then
+            echo "ERROR: base config missing at ${BASE_CONFIG}"
+            exit 1
+          fi
+          if [[ ! -d "${PHASE1_DATA_DIR}" ]]; then
+            echo "ERROR: phase1 data dir missing at ${PHASE1_DATA_DIR}"
+            exit 1
+          fi
+          if [[ ! -d "${PHASE2_DATA_DIR}" ]]; then
+            echo "ERROR: phase2 data dir missing at ${PHASE2_DATA_DIR}"
+            exit 1
+          fi
+          if [[ ! -d "${PHASE3_DATA_DIR}" ]]; then
+            echo "ERROR: phase3 data dir missing at ${PHASE3_DATA_DIR}"
+            exit 1
+          fi
+          if [[ "${PHASE3_STEPS}" -le 0 ]]; then
+            echo "ERROR: invalid step split PHASE1_STEPS=${PHASE1_STEPS} PHASE2_STEPS=${PHASE2_STEPS} TARGET_STEP=${TARGET_STEP}"
+            exit 1
+          fi
+
+          python3 -c "import json,sys; src,dst,batch,diff_t,seq_len,num_ants,death,dropout,evap,lr,max_edits,leader_frac,gamma_max,mask_rate_max,warm_steps,warm_mult,exp,metrics=sys.argv[1:]; cfg=json.load(open(src)); cfg['batch_size']=int(batch); cfg['diffusion_steps']=int(diff_t); cfg['seq_len']=int(seq_len); cfg['num_ants']=int(num_ants); cfg['death_streak']=int(death); cfg['dropout']=float(dropout); cfg['pheromone_evap']=float(evap); cfg['learning_rate']=float(lr); cfg['max_edits_per_step']=float(max_edits); cfg['leader_fraction']=float(leader_frac); cfg['gamma_max']=float(gamma_max); cfg['mask_rate_max']=float(mask_rate_max); cfg['warmstart_steps']=int(warm_steps); cfg['warmstart_death_mult']=int(warm_mult); cfg['exp_id']=exp; cfg['metrics_path']=metrics; json.dump(cfg, open(dst, 'w'), indent=2)" \
+            "${BASE_CONFIG}" "${RUN_CONFIG}" \
+            "${TARGET_BATCH}" "${TARGET_DIFFUSION_T}" "${TARGET_SEQ_LEN}" "${TARGET_NUM_ANTS}" "${TARGET_DEATH_STREAK}" \
+            "${TARGET_DROPOUT}" "${TARGET_PHEROMONE_EVAP}" "${TARGET_LEARNING_RATE}" "${TARGET_MAX_EDITS_PER_STEP}" "${TARGET_LEADER_FRACTION}" \
+            "${TARGET_GAMMA_MAX}" "${TARGET_MASK_RATE_MAX}" "${TARGET_WARMSTART_STEPS}" "${TARGET_WARMSTART_DEATH_MULT}" \
+            "${NEW_EXP}" "${CKPT_DIR}/metrics.jsonl"
+
+          # Make vocab discoverable next to experiment outputs for io-example tooling.
+          cp /workspace/erm-rust/data/tokenizers/merged/merged_vocab.json "${EXP_DIR}/bpe_vocab.json" || true
+
+          echo "Scratch start: no checkpoint resume"
+          echo "Target steps: ${TARGET_STEP}"
+          echo "Phase 1 steps: ${PHASE1_STEPS} (${PHASE1_DATA_DIR})"
+          echo "Phase 2 steps: ${PHASE2_STEPS} (${PHASE2_DATA_DIR})"
+          echo "Phase 3 steps: ${PHASE3_STEPS} (${PHASE3_DATA_DIR})"
+          echo "Config: ${RUN_CONFIG} (batch=${TARGET_BATCH}, T=${TARGET_DIFFUSION_T}, seq_len=${TARGET_SEQ_LEN}, ants=${TARGET_NUM_ANTS}, death_streak=${TARGET_DEATH_STREAK}, dropout=${TARGET_DROPOUT}, pheromone_evap=${TARGET_PHEROMONE_EVAP}, lr=${TARGET_LEARNING_RATE}, max_edits=${TARGET_MAX_EDITS_PER_STEP}, leader_fraction=${TARGET_LEADER_FRACTION}, gamma_max=${TARGET_GAMMA_MAX}, mask_rate_max=${TARGET_MASK_RATE_MAX}, warmstart_steps=${TARGET_WARMSTART_STEPS}, warmstart_death_mult=${TARGET_WARMSTART_DEATH_MULT})"
+          echo "Checkpoint output: ${CKPT_DIR}"
+          echo "Binary: ${ERM_BIN}"
+          echo "=== Starting ${TARGET_STEP} steps at $(date -u +%H:%M:%S) ==="
+
+          # Background helper: generate io_example.json for each new checkpoint.
+          # Aim sidecar picks this up from checkpoints/latest/io_example.json.
+          IO_HELPER_PID=0
+          AIM_WATCHER_PID=0
+          cleanup_io_helper() {
+            if [[ "${IO_HELPER_PID}" -gt 0 ]] && kill -0 "${IO_HELPER_PID}" 2>/dev/null; then
+              echo "[io-helper] stopping pid=${IO_HELPER_PID}"
+              kill "${IO_HELPER_PID}" 2>/dev/null || true
+            fi
+          }
+          cleanup_aim_watcher() {
+            if [[ "${AIM_WATCHER_PID}" -gt 0 ]] && kill -0 "${AIM_WATCHER_PID}" 2>/dev/null; then
+              echo "[aim-watcher] stopping pid=${AIM_WATCHER_PID}"
+              kill "${AIM_WATCHER_PID}" 2>/dev/null || true
+            fi
+          }
+          cleanup_backgrounds() {
+            cleanup_io_helper
+            cleanup_aim_watcher
+          }
+          trap cleanup_backgrounds EXIT
+
+          io_helper_loop() {
+            local last_processed_step="-1"
+            while true; do
+              latest_step_file="${CKPT_DIR}/latest/step.json"
+              if [[ -f "${latest_step_file}" ]]; then
+                current_step=$(grep -o '"step"[[:space:]]*:[[:space:]]*[0-9]*' "${latest_step_file}" \
+                  | grep -o '[0-9]*' | head -1 || echo "")
+                if [[ -n "${current_step}" ]] && [[ "${current_step}" != "${last_processed_step}" ]]; then
+                  sample_data_dir=$(cat /tmp/current_io_data_dir 2>/dev/null || echo "${PHASE1_DATA_DIR}")
+                  echo "[io-helper] generating io samples for latest step=${current_step}"
+                  "${ERM_BIN}" io-example \
+                    --data "${sample_data_dir}" \
+                    --checkpoint "${CKPT_DIR}/latest" \
+                    --output "${CKPT_DIR}/latest/io_example.json" \
+                    --num-examples 3 \
+                    --seed 42 \
+                    >"/tmp/io-helper-latest.log" 2>&1 || true
+                  if [[ -f "${CKPT_DIR}/latest/io_example.json" ]]; then
+                    python3 - <<'PY' "${CKPT_DIR}/latest/io_example.json" "${current_step}" || true
+          import json
+          import re
+          import sys
+
+          path = sys.argv[1]
+          step = sys.argv[2]
+
+          def compact(s: str, limit: int = 120) -> str:
+              raw = (s or "")
+              collapsed = re.sub(r"\s+", " ", raw)
+              stripped = collapsed.strip()
+              if raw and not stripped:
+                  return "<ws>"
+              return stripped[:limit]
+
+          obj = json.load(open(path, "r", encoding="utf-8"))
+          examples = obj.get("examples", [])
+
+          if not examples:
+              print(f"[io-sample step={step}] no examples")
+              raise SystemExit(0)
+
+          for i, ex in enumerate(examples[:2], start=1):
+              clean = compact(ex.get("clean_string", ""))
+              corr = compact(ex.get("corrupted_string", ""))
+              preds = ex.get("position_predictions", [])
+              pred_parts = []
+              for p in preds[:2]:
+                  gt = compact(str(p.get("ground_truth_text", "")), 24)
+                  top = p.get("top_3_predictions", [])
+                  pred = compact(str(top[0].get("text", "")), 24) if top else ""
+                  pred_parts.append(
+                      f"pos{p.get('position', '?')} gt='{gt}' pred='{pred}'"
+                  )
+              pred_line = " | ".join(pred_parts) if pred_parts else "no-pos-preds"
+              print(f"[io-sample step={step} ex={i}] corrupted: {corr}")
+              print(f"[io-sample step={step} ex={i}] clean    : {clean}")
+              print(f"[io-sample step={step} ex={i}] preds    : {pred_line}")
+          PY
+                    echo "[io-helper] published latest step=${current_step}"
+                    last_processed_step="${current_step}"
+                  else
+                    echo "[io-helper] failed for latest step=${current_step} (see /tmp/io-helper-latest.log)"
+                  fi
+                fi
+              fi
+              sleep 10
+            done
+          }
+
+          io_helper_loop &
+          IO_HELPER_PID=$!
+          echo "[io-helper] started pid=${IO_HELPER_PID}"
+
+          export AIM_SERVER_HOST="aim-server.pcn-train.svc.cluster.local"
+          export AIM_SERVER_PORT="43800"
+          export AIM_EXPERIMENT="erm-training"
+          export EXPERIMENT_DIR="${EXP_DIR}"
+          export POLL_INTERVAL="1"
+          aim_watcher_loop() {
+            while true; do
+              /tmp/aim-watcher-venv/bin/python -u /scripts/aim-watcher-v2.py watch >>"${EXP_DIR}/aim-watcher.log" 2>&1 || true
+              echo "[aim-watcher] watcher exited; restarting in 5s"
+              sleep 5
+            done
+          }
+          aim_watcher_loop &
+          AIM_WATCHER_PID=$!
+          echo "[aim-watcher] started pid=${AIM_WATCHER_PID}"
+
+          LOG_FILE="${EXP_DIR}/console.log"
+          : > "${LOG_FILE}"
+          echo "${PHASE1_DATA_DIR}" > /tmp/current_io_data_dir
+
+          echo "=== Phase 1/3: English frontload (${PHASE1_STEPS} steps) ==="
+          set +e
+          "${ERM_BIN}" diffusion-train \
+            --data "${PHASE1_DATA_DIR}" \
+            --steps "${PHASE1_STEPS}" \
+            --config "${RUN_CONFIG}" \
+            --backend cuda \
+            --log-every 10 \
+            --checkpoint-every 250 \
+            --checkpoint-dir "${CKPT_DIR}" \
+            --exp-id "${NEW_EXP}" \
+            --seq-len "${TARGET_SEQ_LEN}" \
+            --num-ants "${TARGET_NUM_ANTS}" \
+            --batch "${TARGET_BATCH}" \
+            --diffusion-t "${TARGET_DIFFUSION_T}" \
+            2>&1 | tee -a "${LOG_FILE}"
+          PHASE1_EXIT=${PIPESTATUS[0]}
+          set -e
+          if [[ "${PHASE1_EXIT}" -ne 0 ]]; then
+            EXIT=${PHASE1_EXIT}
+            cleanup_backgrounds
+            echo "=== training complete (exit=${EXIT}) | $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+            exit ${EXIT}
+          fi
+          if [[ ! -f "${CKPT_DIR}/latest/step.json" ]]; then
+            echo "ERROR: phase-1 completed without latest checkpoint metadata at ${CKPT_DIR}/latest/step.json"
+            cleanup_backgrounds
+            exit 1
+          fi
+
+          echo "${PHASE2_DATA_DIR}" > /tmp/current_io_data_dir
+          echo "=== Phase 2/3: Sentence bridge resume (${PHASE2_STEPS} steps) ==="
+          set +e
+          "${ERM_BIN}" diffusion-train \
+            --data "${PHASE2_DATA_DIR}" \
+            --steps "${PHASE2_STEPS}" \
+            --config "${RUN_CONFIG}" \
+            --backend cuda \
+            --log-every 10 \
+            --checkpoint-every 250 \
+            --checkpoint-dir "${CKPT_DIR}" \
+            --resume "${CKPT_DIR}/latest" \
+            --exp-id "${NEW_EXP}" \
+            --seq-len "${TARGET_SEQ_LEN}" \
+            --num-ants "${TARGET_NUM_ANTS}" \
+            --batch "${TARGET_BATCH}" \
+            --diffusion-t "${TARGET_DIFFUSION_T}" \
+            2>&1 | tee -a "${LOG_FILE}"
+          PHASE2_EXIT=${PIPESTATUS[0]}
+          set -e
+          if [[ "${PHASE2_EXIT}" -ne 0 ]]; then
+            EXIT=${PHASE2_EXIT}
+            cleanup_backgrounds
+            echo "=== training complete (exit=${EXIT}) | $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+            exit ${EXIT}
+          fi
+          if [[ ! -f "${CKPT_DIR}/latest/step.json" ]]; then
+            echo "ERROR: phase-2 completed without latest checkpoint metadata at ${CKPT_DIR}/latest/step.json"
+            cleanup_backgrounds
+            exit 1
+          fi
+
+          echo "${PHASE3_DATA_DIR}" > /tmp/current_io_data_dir
+          echo "=== Phase 3/3: Books resume (${PHASE3_STEPS} steps) ==="
+          set +e
+          "${ERM_BIN}" diffusion-train \
+            --data "${PHASE3_DATA_DIR}" \
+            --steps "${PHASE3_STEPS}" \
+            --config "${RUN_CONFIG}" \
+            --backend cuda \
+            --log-every 10 \
+            --checkpoint-every 250 \
+            --checkpoint-dir "${CKPT_DIR}" \
+            --resume "${CKPT_DIR}/latest" \
+            --exp-id "${NEW_EXP}" \
+            --seq-len "${TARGET_SEQ_LEN}" \
+            --num-ants "${TARGET_NUM_ANTS}" \
+            --batch "${TARGET_BATCH}" \
+            --diffusion-t "${TARGET_DIFFUSION_T}" \
+            2>&1 | tee -a "${LOG_FILE}"
+          EXIT=${PIPESTATUS[0]}
+          set -e
+
+          cleanup_backgrounds
+          echo "=== training complete (exit=${EXIT}) | $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+          exit ${EXIT}
+        resources:
+          requests:
+            memory: "8Gi"
+            cpu: "2"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: "16Gi"
+            cpu: "4"
+            nvidia.com/gpu: "1"
+        env:
+        - name: LD_LIBRARY_PATH
+          value: /usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: compute,utility
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: all
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: RUST_BACKTRACE
+          value: "1"
+        volumeMounts:
+        - name: erm-rust
+          mountPath: /workspace/erm-rust
+        - name: rust-pcn
+          mountPath: /workspace/rust-pcn
+        - name: aim-watcher-scripts
+          mountPath: /scripts
+          readOnly: true
+        - name: cuda-13-0
+          mountPath: /usr/local/cuda-13.0
+          readOnly: true
+        - name: cuda-13-1
+          mountPath: /usr/local/cuda
+          readOnly: true
+      volumes:
+      - name: erm-rust
+        hostPath:
+          path: /home/kadajett/dev/erm-rust
+          type: Directory
+      - name: rust-pcn
+        hostPath:
+          path: /home/kadajett/dev/rust-pcn
+          type: Directory
+      - name: aim-watcher-scripts
+        hostPath:
+          path: /home/kadajett/.openclaw/workspace/erm-rust/scripts
+          type: Directory
+      - name: cuda-13-0
+        hostPath:
+          path: /usr/local/cuda-13.0
+      - name: cuda-13-1
+        hostPath:
+          path: /usr/local/cuda-13.1
