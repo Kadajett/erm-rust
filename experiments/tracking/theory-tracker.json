@@ -1238,5 +1238,125 @@
       },
       "notes": "Auto-loading path confirmed in erm-train/src/streaming_dataset.rs (NEW_FILE_RESCAN_INTERVAL=8) and validated with cargo test -p erm-train test_discover_new_txt_paths."
     }
+  },
+  {
+    "id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r1-2026-03-04T21-45-00Z-resume-smoke-attempt",
+    "created_at_utc": "2026-03-04T21:46:17Z",
+    "experiment_id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r1",
+    "tags": [
+      "theory",
+      "code_change",
+      "ticket-6",
+      "graph-health-metrics",
+      "resume",
+      "smoke"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "code_change",
+      "summary": "Validate new graph-health metrics on a resumed checkpoint path with a new experiment id while preserving existing AIM integration conventions.",
+      "changes": [
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v7-sharded-3phase-r1",
+          "to": "alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r1"
+        },
+        {
+          "field": "checkpoint_source",
+          "from": "live pod latest checkpoint",
+          "to": "timestamped local snapshot + resume attempt"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 6,
+      "status": "rolled_back",
+      "stop_reason": "local-cpu-resume-too-slow-with-large-runtime-vocab; switched-to-small-smoke-validation"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 158750,
+        "resume_local_end": 158750
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": null,
+          "end_mean": null,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 0,
+          "used_min": null,
+          "used_max": null
+        },
+        "host_ram_bytes": null,
+        "oom": false
+      },
+      "notes": "Resume path and experiment-id wiring validated, but CPU smoke on the large live checkpoint was too slow for a practical fixed window."
+    }
+  },
+  {
+    "id": "ticket6-graph-health-smoke-r2-2026-03-04T21-55-00Z-metrics-schema-validation",
+    "created_at_utc": "2026-03-04T21:46:17Z",
+    "experiment_id": "ticket6-graph-health-smoke-r2",
+    "tags": [
+      "theory",
+      "code_change",
+      "ticket-6",
+      "graph-health-metrics",
+      "aim-sidecar",
+      "smoke"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "code_change",
+      "summary": "Run a short CPU diffusion smoke test to verify new graph-health fields in metrics.jsonl and ensure AIM watcher tracked keys are present.",
+      "changes": [
+        {
+          "field": "metrics_schema",
+          "from": "loss/edits/mean_phi/deaths + temps/lr",
+          "to": "adds taint/age/entropy/top1/clamp/leader-survival/prune-insert metrics"
+        },
+        {
+          "field": "aim_watcher_tracked_metrics",
+          "from": 7,
+          "to": 22
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 3,
+      "status": "completed",
+      "stop_reason": "short-local-smoke-window"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 1,
+        "resume_local_end": 1
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": 7.123015,
+          "end_mean": 7.123015,
+          "last_100_mean": 7.123015,
+          "min": 7.123015,
+          "max": 7.123015
+        },
+        "vram_mb": {
+          "total": 0,
+          "used_min": 0,
+          "used_max": 0
+        },
+        "host_ram_bytes": null,
+        "oom": false
+      },
+      "notes": "metrics.jsonl contains all new graph-health fields and all AIM watcher tracked keys are present in emitted records."
+    }
   }
 ]

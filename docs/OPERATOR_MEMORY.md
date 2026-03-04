@@ -19,6 +19,16 @@ Observed early-phase behavior:
 - Entered classic early "the-stage" collapse in predictions (high-frequency stopword loops).
 - Around steps `~2k-2.5k`, loss hovered in `~7.0-7.9` band with noisy but slight net downtrend.
 
+Ticket #6 validation notes (2026-03-04 UTC):
+- Code commit on `main`: `6b6e3b2` (graph-health metrics in `metrics.jsonl` + AIM watcher tracked keys update).
+- Live snapshot captured (no interruption) at step `158750`:
+  - `/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-20260304T214242Z`
+- Resume smoke with new exp id attempted:
+  - `alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r1` (rolled back locally due CPU throughput on large runtime vocab).
+- Fast schema smoke (local CPU) completed:
+  - `ticket6-graph-health-smoke-r2`
+  - verified new fields in `metrics.jsonl`: taint/age/clamp/entropy/top1/leader-survival/prune/insert.
+
 ### Startup Latency Note
 
 - v4 startup was delayed by monolithic-file tokenization before first step emit.
