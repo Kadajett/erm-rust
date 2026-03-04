@@ -1358,5 +1358,146 @@
       },
       "notes": "metrics.jsonl contains all new graph-health fields and all AIM watcher tracked keys are present in emitted records."
     }
+  },
+  {
+    "id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r2-2026-03-04T22-05-00Z-k8s-resume-redeploy",
+    "created_at_utc": "2026-03-04T23:15:44Z",
+    "experiment_id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r2",
+    "tags": [
+      "theory",
+      "code_change",
+      "ticket-6",
+      "k8s_change",
+      "resume",
+      "aim-sidecar"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "k8s_change",
+      "summary": "Backup live checkpoint, rebuild erm.new from main, redeploy as a new resume canary experiment id, and retarget AIM sidecar to the new exp path.",
+      "changes": [
+        {
+          "field": "job_name",
+          "from": "erm-alice-run-m1m-v7-sharded-3phase",
+          "to": "erm-alice-run-m1m-v7-i06-r2-resume"
+        },
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v7-sharded-3phase-r1",
+          "to": "alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r2"
+        },
+        {
+          "field": "resume_source",
+          "from": "current live latest",
+          "to": "/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1/checkpoints/latest"
+        },
+        {
+          "field": "metrics_target",
+          "from": "old exp checkpoints/metrics.jsonl",
+          "to": "new exp checkpoints/metrics.jsonl"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 9,
+      "status": "failed",
+      "stop_reason": "canary attempts r2-r5 failed before stable training window (python bootstrap issue, then libcuda load failure)"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": null,
+        "resume_local_end": null
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": null,
+          "end_mean": null,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": null,
+          "used_max": null
+        },
+        "host_ram_bytes": null,
+        "oom": false
+      },
+      "notes": "Superseded by i06-r6 runtimeClass-based CUDA redeploy."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r6-2026-03-04T23-28-19Z-cuda-runtimeclass-fix",
+    "created_at_utc": "2026-03-04T23:32:45Z",
+    "experiment_id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r6",
+    "tags": [
+      "theory",
+      "code_change",
+      "ticket-6",
+      "k8s_change",
+      "resume",
+      "aim-sidecar",
+      "cuda"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "k8s_change",
+      "summary": "Relaunch resume canary with Burn CUDA known-good setup (`runtimeClassName: nvidia`) and retarget AIM sidecar to new experiment id.",
+      "changes": [
+        {
+          "field": "job_name",
+          "from": "erm-alice-run-m1m-v7-i06-r5-resume",
+          "to": "erm-alice-run-m1m-v7-i06-r6-resume"
+        },
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r5",
+          "to": "alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r6"
+        },
+        {
+          "field": "pod_runtime",
+          "from": "default runtime",
+          "to": "runtimeClassName=nvidia"
+        },
+        {
+          "field": "aim_sidecar_target",
+          "from": "alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r5",
+          "to": "alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r6"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 4,
+      "status": "running",
+      "stop_reason": "initial window healthy; awaiting user go-ahead for data audit"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 175260,
+        "resume_local_end": 175280
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": 5.930536,
+          "end_mean": 5.5372224,
+          "last_100_mean": 5.694505,
+          "min": 5.5372224,
+          "max": 5.930536
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": 4064,
+          "used_max": 4064
+        },
+        "host_ram_bytes": null,
+        "oom": false
+      },
+      "notes": "CUDA preflight passed, resume loaded from step 175250, metrics.jsonl and AIM watcher both writing on i06-r6."
+    }
   }
 ]

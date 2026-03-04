@@ -1,12 +1,12 @@
 # Operator Memory (Shared: Codex + Claude)
 
-Last updated: 2026-03-04 UTC
+Last updated: 2026-03-04 UTC (23:32)
 
 ## Current Live Run
 
-- Job: `erm-alice-run-m1m-v7-sharded-3phase`
-- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1`
-- Status: running
+- Job: `erm-alice-run-m1m-v7-i06-r6-resume`
+- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r6`
+- Status: running (resume canary on CUDA from step `175250`)
 - Confirmed phase/data order:
   - Phase 1: `100000` steps on `/workspace/rust-pcn/data/english-frontload-sharded`
   - Phase 2: `200000` steps on `/workspace/rust-pcn/data/sentence-bridge-smclm-sharded`
@@ -21,13 +21,32 @@ Observed early-phase behavior:
 
 Ticket #6 validation notes (2026-03-04 UTC):
 - Code commit on `main`: `6b6e3b2` (graph-health metrics in `metrics.jsonl` + AIM watcher tracked keys update).
-- Live snapshot captured (no interruption) at step `158750`:
+- Live snapshots captured (no interruption):
+  - step `158750`:
   - `/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-20260304T214242Z`
+  - step `175250`:
+  - `/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-20260304T231551Z`
 - Resume smoke with new exp id attempted:
   - `alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r1` (rolled back locally due CPU throughput on large runtime vocab).
+- Resume redeploy attempts `i06-r2`..`i06-r5` failed due container/runtime setup issues (`python3` missing and then `libcuda.so` load failure).
+- Current canary `i06-r6` is healthy:
+  - CUDA preflight passes (`libcuda.so` visible, `nvidia-smi` works).
+  - logs show `Backend: CUDA device 0` and `Resumed from checkpoint`.
+  - `metrics.jsonl` is writing from step `175260+`.
+- AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r6`.
 - Fast schema smoke (local CPU) completed:
   - `ticket6-graph-health-smoke-r2`
   - verified new fields in `metrics.jsonl`: taint/age/clamp/entropy/top1/leader-survival/prune/insert.
+
+### CUDA/Burn Setup (Known-Good)
+
+- Use `--backend cuda` for `erm.new diffusion-train` (this is the Burn CUDA path).
+- On this cluster, CUDA resume pods must include:
+  - `runtimeClassName: nvidia`
+  - `resources.requests/limits.nvidia.com/gpu: "1"`
+  - `LD_LIBRARY_PATH=/usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu`
+  - CUDA hostPath mounts for `/usr/local/cuda-13.0` and `/usr/local/cuda-13.1` (mounted at `/usr/local/cuda`)
+- Do not mount host `/usr/lib/x86_64-linux-gnu` over the container filesystem for training pods; it can break apt/package setup.
 
 ### Startup Latency Note
 
