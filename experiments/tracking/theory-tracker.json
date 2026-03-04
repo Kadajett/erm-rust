@@ -393,9 +393,262 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 0,
+      "window_minutes_actual": 36,
+      "status": "rolled_back",
+      "stop_reason": "superseded-by-v3-ants96-warmstart"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 10,
+        "resume_local_end": 6170
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": 11.516737,
+          "end_mean": 6.1056092269999995,
+          "last_100_mean": 6.1056092269999995,
+          "min": 2.7875416,
+          "max": 11.516737
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": 3967,
+          "used_max": 3967
+        },
+        "host_ram_bytes": 8251437056,
+        "oom": false
+      },
+      "notes": "v2 stayed stable without crashes, but recent loss flattened higher than target (tail_100=6.11, tail_200=5.97) and death spikes remained periodic. Replaced by v3 ants+warmstart test with compact checkpoint IO logging in pod logs."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v3-ants96-warmstart-r1-2026-03-04T02-06-31Z-launch",
+    "created_at_utc": "2026-03-04T02:06:31Z",
+    "experiment_id": "alice-run-b2-m1m-v3-ants96-warmstart-r1",
+    "tags": [
+      "theory",
+      "k8s_change",
+      "from-scratch",
+      "batch2",
+      "m1m",
+      "ants96",
+      "warmstart",
+      "log-samples"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "config_change",
+      "summary": "Increase ants for broader search while reducing synchronized death churn via higher streak threshold + warmstart gating; add compact checkpoint IO samples in server logs.",
+      "changes": [
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v2-stability",
+          "to": "alice-run-b2-m1m-v3-ants96-warmstart-r1"
+        },
+        {
+          "field": "num_ants",
+          "from": 64,
+          "to": 96
+        },
+        {
+          "field": "leader_fraction",
+          "from": 0.06,
+          "to": 0.05
+        },
+        {
+          "field": "death_streak",
+          "from": 18,
+          "to": 24
+        },
+        {
+          "field": "warmstart_steps",
+          "from": 0,
+          "to": 2000
+        },
+        {
+          "field": "warmstart_death_mult",
+          "from": 4,
+          "to": 6
+        },
+        {
+          "field": "mask_rate_max",
+          "from": 0.7,
+          "to": 0.65
+        },
+        {
+          "field": "k8s_manifest",
+          "from": "k8s/erm-alice-run-m1m-v2.yaml",
+          "to": "k8s/erm-alice-run-m1m-v3.yaml"
+        },
+        {
+          "field": "checkpoint_log_io_samples",
+          "from": "io-helper published step only",
+          "to": "compact [io-sample] corrupted/clean/preds lines"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 20,
       "status": "running",
-      "stop_reason": "training-in-progress"
+      "stop_reason": "training-in-progress-strong-early-signal"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 10,
+        "resume_local_end": 3810
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": 8.9705,
+          "end_mean": 4.617883,
+          "last_100_mean": 4.617883,
+          "min": 2.790595,
+          "max": 11.563041
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": 3967,
+          "used_max": 3967
+        },
+        "host_ram_bytes": null,
+        "oom": false
+      },
+      "notes": "Current v3 run looks great at this stage: strong early descent (first_25_mean=8.9705 -> last_100_mean=4.6179), min loss reached 2.7906, no restarts/OOM observed, and VRAM usage remains stable with headroom (3967/6144 MB)."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v4-english-frontload-r1-2026-03-04T02-47-17Z-launch-plan",
+    "created_at_utc": "2026-03-04T02:47:17Z",
+    "experiment_id": "alice-run-b2-m1m-v4-english-frontload-r1",
+    "tags": [
+      "theory",
+      "k8s_change",
+      "from-scratch",
+      "batch2",
+      "m1m",
+      "english-frontload",
+      "two-phase-data"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "config_change",
+      "summary": "Keep v3 hyperparameters unchanged and frontload high-quality plain English for 100k steps, then resume 900k on existing books corpus in the same experiment.",
+      "changes": [
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v3-ants96-warmstart-r1",
+          "to": "alice-run-b2-m1m-v4-english-frontload-r1"
+        },
+        {
+          "field": "k8s_manifest",
+          "from": "k8s/erm-alice-run-m1m-v3.yaml",
+          "to": "k8s/erm-alice-run-m1m-v4-english-frontload.yaml"
+        },
+        {
+          "field": "phase_1_data",
+          "from": "/workspace/rust-pcn/data/books",
+          "to": "/workspace/rust-pcn/data/english-frontload"
+        },
+        {
+          "field": "phase_1_steps",
+          "from": 0,
+          "to": 100000
+        },
+        {
+          "field": "phase_2_data",
+          "from": "/workspace/rust-pcn/data/books",
+          "to": "/workspace/rust-pcn/data/books"
+        },
+        {
+          "field": "phase_2_steps",
+          "from": 1000000,
+          "to": 900000
+        },
+        {
+          "field": "resume_between_phases",
+          "from": false,
+          "to": true
+        },
+        {
+          "field": "batch_size",
+          "from": 2,
+          "to": 2
+        },
+        {
+          "field": "seq_len",
+          "from": 128,
+          "to": 128
+        },
+        {
+          "field": "diffusion_steps",
+          "from": 2,
+          "to": 2
+        },
+        {
+          "field": "num_ants",
+          "from": 96,
+          "to": 96
+        },
+        {
+          "field": "learning_rate",
+          "from": 0.0003,
+          "to": 0.0003
+        },
+        {
+          "field": "death_streak",
+          "from": 24,
+          "to": 24
+        },
+        {
+          "field": "dropout",
+          "from": 0.1,
+          "to": 0.1
+        },
+        {
+          "field": "pheromone_evap",
+          "from": 0.02,
+          "to": 0.02
+        },
+        {
+          "field": "max_edits_per_step",
+          "from": 0.12,
+          "to": 0.12
+        },
+        {
+          "field": "leader_fraction",
+          "from": 0.05,
+          "to": 0.05
+        },
+        {
+          "field": "gamma_max",
+          "from": 1.6,
+          "to": 1.6
+        },
+        {
+          "field": "mask_rate_max",
+          "from": 0.65,
+          "to": 0.65
+        },
+        {
+          "field": "warmstart_steps",
+          "from": 2000,
+          "to": 2000
+        },
+        {
+          "field": "warmstart_death_mult",
+          "from": 6,
+          "to": 6
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 15,
+      "status": "running",
+      "stop_reason": "training-in-progress-with-startup-overhead-note"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
@@ -417,9 +670,162 @@
           "used_max": null
         },
         "host_ram_bytes": null,
+        "oom": null,
+        "startup_seconds_to_phase_banner": 39.85,
+        "startup_seconds_to_diffusion_loop": 40.15
+      },
+      "notes": "Theory: frontloading high-quality plain English should improve spacing/legibility priors before heavy docs/code mix, while preserving the currently strong v3 numeric profile by keeping all hyperparameters unchanged. Operational note: startup latency is higher than expected in current deploy path; measured from host start to phase banner is ~39.85s (02:59:31Z -> 03:00:10Z) and to \"Starting diffusion training\" is ~40.15s."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v5-sharded-3phase-r1-2026-03-04T03-33-34Z-launch",
+    "created_at_utc": "2026-03-04T03:33:34Z",
+    "experiment_id": "alice-run-b2-m1m-v5-sharded-3phase-r1",
+    "tags": [
+      "theory",
+      "k8s_change",
+      "from-scratch",
+      "batch2",
+      "m1m",
+      "three-phase-data",
+      "sharded-input"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "config_change",
+      "summary": "Move to three-phase sharded curriculum (english -> sentence bridge -> books) with unchanged v3/v4 numeric hyperparameters for startup reliability and continuous data progression.",
+      "changes": [
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v4-english-frontload-r1",
+          "to": "alice-run-b2-m1m-v5-sharded-3phase-r1"
+        },
+        {
+          "field": "k8s_manifest",
+          "from": "k8s/erm-alice-run-m1m-v4-english-frontload.yaml",
+          "to": "k8s/erm-alice-run-m1m-v5-sharded-3phase.yaml"
+        },
+        {
+          "field": "phase_1_data",
+          "from": "/workspace/rust-pcn/data/english-frontload",
+          "to": "/workspace/rust-pcn/data/english-frontload-sharded"
+        },
+        {
+          "field": "phase_2_data",
+          "from": "/workspace/rust-pcn/data/books",
+          "to": "/workspace/rust-pcn/data/sentence-bridge-smclm-sharded"
+        },
+        {
+          "field": "phase_3_data",
+          "from": "n/a",
+          "to": "/workspace/rust-pcn/data/books"
+        },
+        {
+          "field": "phase_steps",
+          "from": "100k + 900k",
+          "to": "100k + 200k + 700k"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 10,
+      "status": "running",
+      "stop_reason": "training-in-progress"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 10,
+        "resume_local_end": 600
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": 11.481,
+          "end_mean": 8.1292,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": null,
+          "used_max": null
+        },
+        "host_ram_bytes": null,
+        "oom": false
+      },
+      "notes": "Qualitative stage note: currently in the early \"the-stage\" collapse (high-frequency token loops). Observed sample: \"pred : the the, the the the the of the, the the of the, of the of of, the,, the of the. the,.,, the the, the the, the the the., the, the the the. the the the the the to the, the,. the the\"."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v5-sharded-3phase-r1-2026-03-04T04-05-00Z-batch2-credit-fix",
+    "created_at_utc": "2026-03-04T04:05:00Z",
+    "experiment_id": "alice-run-b2-m1m-v5-sharded-3phase-r1",
+    "tags": [
+      "theory",
+      "code_change",
+      "bugfix",
+      "batch2",
+      "credit-assignment",
+      "decode"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "code_change",
+      "summary": "Fix diffusion credit assignment to use clean supervised targets and isolate per-batch proposals (B>1), plus make mask decoding explicit to remove misleading '?' gaps in sample text.",
+      "changes": [
+        {
+          "field": "ant_delta_credit",
+          "from": "unsupervised/logit delta on edited token from corrupted base",
+          "to": "supervised CE improvement against clean target token"
+        },
+        {
+          "field": "position_delta_credit",
+          "from": "edited-token logit delta",
+          "to": "clean-target CE improvement"
+        },
+        {
+          "field": "batch_isolation_in_credit",
+          "from": "all proposals mixed across batch elements",
+          "to": "per-batch proposal slices and per-batch trace construction"
+        },
+        {
+          "field": "mask_decode_visibility",
+          "from": "dynamic mask id rendered as '?' or dropped",
+          "to": "rendered explicitly as '<mask>'"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 0,
+      "status": "pending_redeploy",
+      "stop_reason": "code-fixed-not-yet-running-in-live-binary"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": null,
+        "resume_local_end": null
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": null,
+          "end_mean": null,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": null,
+          "used_max": null
+        },
+        "host_ram_bytes": null,
         "oom": null
       },
-      "notes": "Scratch launch only (no --resume). Waiting for first metrics chunk before judging trend."
+      "notes": "This fix addresses two high-impact correctness issues in B=2 runs: cross-batch contamination in ant/pheromone credit and target mismatch during credit scoring. Treat pre-fix v5 metrics as non-comparable to post-fix runs for pheromone/credit dynamics."
     }
   }
 ]
