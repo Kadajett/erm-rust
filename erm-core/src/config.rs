@@ -112,6 +112,10 @@ pub struct ErmConfig {
     pub schedule_diversity_penalty_mult_start: f32,
     /// Diversity-penalty multiplier at the last refinement step (`t = 1`).
     pub schedule_diversity_penalty_mult_end: f32,
+    /// Enable parallel dense pheromone passes (evaporation + decay/age/clamp).
+    ///
+    /// Deposit remains sequential to preserve deterministic semantics.
+    pub pheromone_parallel_dense_updates: bool,
 
     // ── Active-set refinement ──────────────────────────────────────────
     /// Enable confidence-based active-set refinement.
@@ -256,6 +260,7 @@ impl Default for ErmConfig {
             schedule_route_lambda_mult_end: 1.0,
             schedule_diversity_penalty_mult_start: 1.0,
             schedule_diversity_penalty_mult_end: 1.0,
+            pheromone_parallel_dense_updates: false,
 
             active_set_mode: false,
             freeze_confidence_threshold: 0.9,
@@ -512,6 +517,10 @@ pub struct PheromoneConfig {
     /// `log1p(|Δ|/σ)` has better dynamic range: small improvements get
     /// proportional credit, large improvements get diminishing-but-nonzero credit.
     pub use_log_deposit: bool,
+    /// Enable parallel dense pheromone passes (evaporation + decay/age/clamp).
+    ///
+    /// Deposit remains sequential to preserve deterministic semantics.
+    pub parallel_dense_updates: bool,
 }
 
 impl Default for PheromoneConfig {
@@ -535,6 +544,7 @@ impl Default for PheromoneConfig {
             diversity_threshold: 0.9,
             diversity_penalty: 0.8,
             use_log_deposit: true,
+            parallel_dense_updates: false,
         }
     }
 }
@@ -562,6 +572,7 @@ impl PheromoneConfig {
             diversity_threshold: 0.9,
             diversity_penalty: 0.8,
             use_log_deposit: true,
+            parallel_dense_updates: config.pheromone_parallel_dense_updates,
         }
     }
 }
@@ -593,6 +604,7 @@ mod tests {
         assert_eq!(cfg.age_eta_schedule, "reciprocal");
         assert!((cfg.age_half_life - 0.0).abs() < 1e-8);
         assert_eq!(cfg.pheromone_schedule_mode, "fixed");
+        assert!(!cfg.pheromone_parallel_dense_updates);
         assert!(!cfg.active_set_mode);
         assert!((cfg.freeze_confidence_threshold - 0.9).abs() < 1e-8);
         assert_eq!(cfg.min_active_positions, 8);
@@ -694,6 +706,7 @@ mod tests {
             elite_k: 7,
             age_eta_schedule: "half_life".to_string(),
             age_half_life: 32.0,
+            pheromone_parallel_dense_updates: true,
             ..ErmConfig::default()
         };
         let p = PheromoneConfig::from_config(&cfg);
@@ -704,5 +717,6 @@ mod tests {
         assert_eq!(p.elite_k, 7);
         assert_eq!(p.age_eta_schedule, "half_life");
         assert!((p.age_half_life - 32.0).abs() < 1e-8);
+        assert!(p.parallel_dense_updates);
     }
 }

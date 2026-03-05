@@ -33,8 +33,8 @@ thiserror = "2"
 # Random number generation
 rand = "0.8"
 rand_chacha = "0.3"
+rayon = "1"
 
 # Dev dependencies
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
-

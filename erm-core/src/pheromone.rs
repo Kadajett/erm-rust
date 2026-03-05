@@ -26,6 +26,7 @@ use crate::config::PheromoneConfig;
 use crate::error::ErmResult;
 use crate::graph::{RouteGraph, EMPTY_SLOT};
 use crate::merge::SimpleEditProposal;
+use rayon::prelude::*;
 
 /// Running standard deviation accumulator for pheromone deposit normalization.
 ///
@@ -373,6 +374,7 @@ fn update_pheromones_full(
     let phi_min = config.phi_min.clamp(0.0, phi_max);
     let phi_init = config.phi_init.clamp(0.0, phi_max);
     let local_update_xi = config.local_update_xi.clamp(0.0, 1.0);
+    let parallel_dense_updates = config.parallel_dense_updates;
     let seq_len = graph.seq_len;
     let elite_mask = build_elite_mask(ant_deltas, config.elite_k);
 
@@ -400,9 +402,21 @@ fn update_pheromones_full(
     };
 
     // Step 1: Evaporation — φ *= (1 - ρ) for all valid edges.
-    for flat in 0..total {
-        if graph.nbr_idx[flat] != EMPTY_SLOT {
-            graph.phi[flat] *= 1.0 - rho;
+    if parallel_dense_updates {
+        graph
+            .phi
+            .par_iter_mut()
+            .zip(graph.nbr_idx.par_iter())
+            .for_each(|(phi, &nbr)| {
+                if nbr != EMPTY_SLOT {
+                    *phi *= 1.0 - rho;
+                }
+            });
+    } else {
+        for flat in 0..total {
+            if graph.nbr_idx[flat] != EMPTY_SLOT {
+                graph.phi[flat] *= 1.0 - rho;
+            }
         }
     }
 
@@ -497,22 +511,47 @@ fn update_pheromones_full(
     // Step 4: Taint decay — τ *= (1 - ρ_τ) for all valid edges.
     // Step 5: Age increment for all valid edges.
     // Step 6: Enforce bounds.
-    for flat in 0..total {
-        if graph.nbr_idx[flat] != EMPTY_SLOT {
-            // Taint decay.
-            graph.taint[flat] *= 1.0 - rho_tau;
+    if parallel_dense_updates {
+        graph
+            .phi
+            .par_iter_mut()
+            .zip(graph.taint.par_iter_mut())
+            .zip(graph.age.par_iter_mut())
+            .zip(graph.nbr_idx.par_iter())
+            .for_each(|(((phi, taint), age), &nbr)| {
+                if nbr != EMPTY_SLOT {
+                    // Taint decay.
+                    *taint *= 1.0 - rho_tau;
 
-            // Age increment.
-            graph.age[flat] += 1;
+                    // Age increment.
+                    *age += 1;
 
-            // Enforce φ ∈ [φ_min, φ_max] for active edges.
-            graph.phi[flat] = graph.phi[flat].clamp(phi_min, phi_max);
+                    // Enforce bounds.
+                    *phi = phi.clamp(phi_min, phi_max);
+                    *taint = taint.clamp(0.0, tau_max);
 
-            // Enforce τ ∈ [0, τ_max].
-            graph.taint[flat] = graph.taint[flat].clamp(0.0, tau_max);
+                    debug_assert!(*phi >= 0.0);
+                    debug_assert!(*taint >= 0.0 && *taint <= tau_max);
+                }
+            });
+    } else {
+        for flat in 0..total {
+            if graph.nbr_idx[flat] != EMPTY_SLOT {
+                // Taint decay.
+                graph.taint[flat] *= 1.0 - rho_tau;
 
-            debug_assert!(graph.phi[flat] >= 0.0);
-            debug_assert!(graph.taint[flat] >= 0.0 && graph.taint[flat] <= tau_max);
+                // Age increment.
+                graph.age[flat] += 1;
+
+                // Enforce φ ∈ [φ_min, φ_max] for active edges.
+                graph.phi[flat] = graph.phi[flat].clamp(phi_min, phi_max);
+
+                // Enforce τ ∈ [0, τ_max].
+                graph.taint[flat] = graph.taint[flat].clamp(0.0, tau_max);
+
+                debug_assert!(graph.phi[flat] >= 0.0);
+                debug_assert!(graph.taint[flat] >= 0.0 && graph.taint[flat] <= tau_max);
+            }
         }
     }
 
@@ -765,6 +804,7 @@ mod tests {
             diversity_threshold: 0.9,
             diversity_penalty: 0.8,
             use_log_deposit: false, // tests were written for tanh mode
+            parallel_dense_updates: false,
         }
     }
 
@@ -846,6 +886,46 @@ mod tests {
             "expected 1.8, got {}",
             graph.phi[flat1]
         );
+    }
+
+    #[test]
+    fn test_parallel_dense_updates_match_sequential() {
+        let cfg = small_config();
+        let mut graph_seq = RouteGraph::new_empty(&cfg);
+        graph_seq.add_edge(0, 0, 1, 1.0).expect("add edge");
+        graph_seq.add_edge(0, 1, 2, 0.7).expect("add edge");
+        graph_seq.add_edge(0, 2, 3, 0.4).expect("add edge");
+
+        let traces = vec![EdgeTrace {
+            ant_id: 0,
+            entries: vec![(0, 0, 0, 0.6), (0, 1, 0, 0.4)],
+        }];
+        let ant_deltas = vec![0.8_f32];
+
+        let pconfig_seq = PheromoneConfig {
+            parallel_dense_updates: false,
+            ..small_pheromone_config()
+        };
+        let pconfig_par = PheromoneConfig {
+            parallel_dense_updates: true,
+            ..small_pheromone_config()
+        };
+
+        let mut graph_par = graph_seq.clone();
+
+        let stats_seq =
+            update_pheromones(&mut graph_seq, &traces, &ant_deltas, &pconfig_seq).expect("update");
+        let stats_par =
+            update_pheromones(&mut graph_par, &traces, &ant_deltas, &pconfig_par).expect("update");
+
+        assert_eq!(graph_seq.nbr_idx, graph_par.nbr_idx);
+        assert_eq!(graph_seq.age, graph_par.age);
+        assert_eq!(graph_seq.phi, graph_par.phi);
+        assert_eq!(graph_seq.taint, graph_par.taint);
+        assert!((stats_seq.mean_phi - stats_par.mean_phi).abs() < 1e-8);
+        assert!((stats_seq.max_phi - stats_par.max_phi).abs() < 1e-8);
+        assert!((stats_seq.mean_taint - stats_par.mean_taint).abs() < 1e-8);
+        assert_eq!(stats_seq.tainted_count, stats_par.tainted_count);
     }
 
     #[test]

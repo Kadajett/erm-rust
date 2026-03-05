@@ -2009,21 +2009,21 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 26,
-      "status": "running",
-      "stop_reason": "mid-run audit window with sample-quality check"
+      "window_minutes_actual": 36,
+      "status": "completed",
+      "stop_reason": "stopped intentionally for ticket-8 rollout"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
       "step_window": {
         "resume_local_start": 218260,
-        "resume_local_end": 222420
+        "resume_local_end": 223450
       },
       "metrics": {
         "loss": {
           "start_mean": 5.6241593,
-          "end_mean": 5.222164,
-          "last_100_mean": 5.526069812000002,
+          "end_mean": 5.496307,
+          "last_100_mean": 5.509210444000002,
           "min": 4.8919654,
           "max": 5.9919558
         },
@@ -2043,7 +2043,84 @@
           "i07_punct_noise_last120": 0.24166666666666667
         }
       },
-      "notes": "i08 remains healthy and running. Graph behavior improved vs prior 100-step block (entropy 0.681 vs 0.657, top1 share 0.679 vs 0.688, leader survival 0.711). Loss is still noisy and slightly worse in the latest 100-step block (5.526 vs 5.464), but sample-level quality proxies improved vs i07 (char similarity +0.013, word jaccard +0.012, punctuation-noise lower). This matches operator observation that output strings look better despite flat/noisy loss."
+      "notes": "Completed i08 window through step 223450 before ticket-8 rollout. String-quality proxies improved versus i07 while loss remained noisy; last-100 loss mean settled to 5.509 with leader-edge activity sustained."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i09-r1-2026-03-05T05-00-21Z-ticket8-parallel-dense-pheromone",
+    "created_at_utc": "2026-03-05T05:00:21Z",
+    "experiment_id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i09-r1",
+    "tags": [
+      "theory",
+      "code_change",
+      "ticket-8",
+      "k8s_change",
+      "resume",
+      "aim-sidecar",
+      "cuda",
+      "parallel-pheromone"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "code_change",
+      "summary": "Parallelize dense pheromone update passes on CPU (evaporation + decay/age/clamp) with deterministic sequential deposit, and redeploy CUDA resume canary.",
+      "changes": [
+        {
+          "field": "code",
+          "from": "dense pheromone passes sequential over all edges",
+          "to": "rayon-based parallel dense passes with config gate; deposit path remains sequential"
+        },
+        {
+          "field": "config_fields",
+          "from": "none",
+          "to": "pheromone_parallel_dense_updates + PheromoneConfig.parallel_dense_updates"
+        },
+        {
+          "field": "job_name",
+          "from": "erm-alice-run-m1m-v7-i08-r1-resume",
+          "to": "erm-alice-run-m1m-v7-i09-r1-resume"
+        },
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v7-sharded-3phase-r1-i08-r1",
+          "to": "alice-run-b2-m1m-v7-sharded-3phase-r1-i09-r1"
+        },
+        {
+          "field": "config_overrides",
+          "from": "i08 settings (active-set + schedule/age settings)",
+          "to": "i08 settings plus pheromone_parallel_dense_updates=true"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 0,
+      "status": "proposed",
+      "stop_reason": "awaiting redeploy"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": null,
+        "resume_local_end": null
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": null,
+          "end_mean": null,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": null,
+          "used_max": null
+        },
+        "host_ram_bytes": null,
+        "oom": null
+      },
+      "notes": "Snapshot saved before rollout: /home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i08-r1-20260305T050021Z."
     }
   }
 ]
