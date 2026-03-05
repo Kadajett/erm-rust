@@ -1,12 +1,12 @@
 # Operator Memory (Shared: Codex + Claude)
 
-Last updated: 2026-03-05 UTC (04:30)
+Last updated: 2026-03-05 UTC (05:11)
 
 ## Current Live Run
 
-- Job: `erm-alice-run-m1m-v7-i08-r1-resume`
-- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i08-r1`
-- Status: running (resume canary on Burn CUDA from step `218250`; startup/tokenization phase in progress, first `metrics.jsonl` row pending)
+- Job: `erm-alice-run-m1m-v7-i10-r1-resume`
+- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1`
+- Status: running (resume canary on Burn CUDA from step `224000`; startup/tokenization phase in progress, first `metrics.jsonl` row pending)
 - Confirmed phase/data order:
   - Phase 1: `100000` steps on `/workspace/rust-pcn/data/english-frontload-sharded`
   - Phase 2: `200000` steps on `/workspace/rust-pcn/data/sentence-bridge-smclm-sharded`
@@ -156,6 +156,39 @@ Ticket #7 rollout notes (2026-03-05 UTC):
   - `min_active_positions = 16`
 - Pod resources now request/limit ephemeral storage (`2Gi`/`8Gi`) to reduce eviction risk under disk pressure.
 - AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i08-r1`.
+
+Ticket #8 rollout notes (2026-03-05 UTC):
+- Code commit on `main`: `2308184` (rayon-parallel dense pheromone passes with deterministic sequential deposit).
+- Source run before redeploy:
+  - job `erm-alice-run-m1m-v7-i08-r1-resume`, latest checkpoint step `223500`.
+- Snapshot captured before stop/rebuild:
+  - `/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i08-r1-20260305T050021Z`
+- New canary deployment:
+  - job `erm-alice-run-m1m-v7-i09-r1-resume`
+  - exp `alice-run-b2-m1m-v7-sharded-3phase-r1-i09-r1`
+  - resumed from `/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1-i08-r1/checkpoints/latest` at step `223500`
+- Ticket #8 config values injected in `train-config.json`:
+  - `pheromone_parallel_dense_updates = true`
+  - retained `active_set_mode = true`, `freeze_confidence_threshold = 0.85`, `min_active_positions = 16`
+  - retained ticket-4/5 schedule and age-half-life settings
+- AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i09-r1`.
+
+Ticket #9 rollout notes (2026-03-05 UTC):
+- Code commit on `main`: pending local commit (canonical mask policy + HF mask-sentinel export helper).
+- Source run before redeploy:
+  - job `erm-alice-run-m1m-v7-i09-r1-resume`, latest observed step window `223510 -> 223940`.
+- Snapshot captured before stop/rebuild:
+  - `/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i09-r1-20260305T050840Z`
+- New canary deployment:
+  - job `erm-alice-run-m1m-v7-i10-r1-resume`
+  - exp `alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1`
+  - resumed from `/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1-i09-r1/checkpoints/latest` at step `224000`
+- Ticket #9 config values injected in `train-config.json`:
+  - `mask_token_policy = extra_sentinel`
+  - retained `pheromone_parallel_dense_updates = true`
+  - retained `active_set_mode = true`, `freeze_confidence_threshold = 0.85`, `min_active_positions = 16`
+  - retained ticket-4/5 schedule and age-half-life settings
+- AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1`.
 
 ### CUDA/Burn Setup (Known-Good)
 

@@ -39,6 +39,8 @@ pub const MASK_ID: u32 = 1;
 pub const UNK_ID: u32 = 2;
 /// First id available for real subword merges.
 pub const FIRST_SUBWORD_ID: u32 = 3;
+/// Canonical HF-only extra sentinel token for ERM mask semantics.
+pub const HF_MASK_SENTINEL_TOKEN: &str = "<mask_sentinel>";
 
 // ── TokenizerApi trait ────────────────────────────────────────────────────────
 
@@ -588,6 +590,41 @@ impl BpeTokenizer {
         })?;
         Self::from_json(&json)
     }
+
+    /// HF-export mask sentinel id for ERM's extra-sentinel policy.
+    ///
+    /// This is one past the tokenizer's in-vocab id range.
+    #[must_use]
+    pub fn hf_mask_sentinel_id(&self) -> u32 {
+        self.vocab_size as u32
+    }
+
+    /// Build an HF-export vocab map with an explicit `<mask_sentinel>` token.
+    ///
+    /// ERM training uses `mask_token_id = vocab_size`. HF vocabularies keep
+    /// special tokens in-vocab, so this appends `<mask_sentinel>` at that id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErmError::InvalidConfig`] if `<mask_sentinel>` already exists
+    /// but has a non-canonical id.
+    pub fn hf_vocab_with_mask_sentinel(&self) -> ErmResult<HashMap<String, u32>> {
+        let sentinel_id = self.hf_mask_sentinel_id();
+        let mut vocab = self.vocab.clone();
+
+        if let Some(existing_id) = vocab.get(HF_MASK_SENTINEL_TOKEN).copied() {
+            if existing_id != sentinel_id {
+                return Err(ErmError::InvalidConfig(format!(
+                    "invalid {} id: expected {}, got {}",
+                    HF_MASK_SENTINEL_TOKEN, sentinel_id, existing_id
+                )));
+            }
+            return Ok(vocab);
+        }
+
+        vocab.insert(HF_MASK_SENTINEL_TOKEN.to_string(), sentinel_id);
+        Ok(vocab)
+    }
 }
 
 impl TokenizerApi for BpeTokenizer {
@@ -877,5 +914,45 @@ mod tests {
         let bpe = prefix_marker_tokenizer();
         let decoded = bpe.decode_text(&[3, 7]);
         assert_eq!(decoded, "hello moon");
+    }
+
+    #[test]
+    fn test_hf_vocab_with_mask_sentinel_appends_extra_token() {
+        let bpe = BpeTokenizer::train(small_corpus(), 12);
+        let hf_vocab = bpe.hf_vocab_with_mask_sentinel().unwrap();
+        let sentinel_id = bpe.hf_mask_sentinel_id();
+
+        assert_eq!(hf_vocab.get(HF_MASK_SENTINEL_TOKEN), Some(&sentinel_id));
+        assert_eq!(hf_vocab.len(), bpe.vocab_size() + 1);
+        assert_eq!(bpe.vocab_size(), bpe.vocab.len());
+    }
+
+    #[test]
+    fn test_hf_vocab_with_mask_sentinel_rejects_mismatched_existing_id() {
+        let mut vocab: HashMap<String, u32> = HashMap::new();
+        let mut id_to_token: HashMap<u32, String> = HashMap::new();
+        for (id, tok) in [
+            (PAD_ID, "<pad>"),
+            (MASK_ID, "<mask>"),
+            (UNK_ID, "<unk>"),
+            (3, "a"),
+            (4, HF_MASK_SENTINEL_TOKEN),
+        ] {
+            vocab.insert(tok.to_string(), id);
+            id_to_token.insert(id, tok.to_string());
+        }
+        let bpe = BpeTokenizer {
+            merges: Vec::new(),
+            vocab,
+            id_to_token,
+            vocab_size: 10,
+        };
+
+        let err = bpe.hf_vocab_with_mask_sentinel().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("expected 10, got 4"),
+            "unexpected error: {msg}"
+        );
     }
 }

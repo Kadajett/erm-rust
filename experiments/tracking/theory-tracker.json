@@ -2094,9 +2094,86 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
+      "window_minutes_actual": 5,
+      "status": "completed",
+      "stop_reason": "stopped intentionally for ticket-9 rollout"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 223510,
+        "resume_local_end": 223940
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": 5.40616974,
+          "end_mean": 5.40226863,
+          "last_100_mean": 5.418340438636363,
+          "min": 4.971739,
+          "max": 5.8313456
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": 3839,
+          "used_max": 3839
+        },
+        "host_ram_bytes": null,
+        "oom": false,
+        "graph_health": {
+          "leader_edges_mean": 522.6818181818181,
+          "edge_weight_entropy_mean": 0.7201228927272727,
+          "top1_edge_share_mean": 0.666836415
+        }
+      },
+      "notes": "Completed short i09 canary audit window before ticket-9 rollout; loss stayed roughly flat while leader-edge activity remained strong. Snapshot saved at /home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i09-r1-20260305T050840Z."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1-2026-03-05T05-08-40Z-ticket9-hf-mask-policy",
+    "created_at_utc": "2026-03-05T05:08:40Z",
+    "experiment_id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1",
+    "tags": [
+      "theory",
+      "code_change",
+      "ticket-9",
+      "k8s_change",
+      "resume",
+      "aim-sidecar",
+      "cuda",
+      "hf-mask-policy"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "code_change",
+      "summary": "Enforce canonical extra-sentinel mask policy and add HF tokenizer sentinel-vocab helpers, then redeploy CUDA resume canary as i10.",
+      "changes": [
+        {
+          "field": "code",
+          "from": "implicit mask sentinel semantics (config/tokenizer)",
+          "to": "explicit MaskTokenPolicy::ExtraSentinel in config + hf_vocab_with_mask_sentinel() helper and tests in BPE tokenizer"
+        },
+        {
+          "field": "job_name",
+          "from": "erm-alice-run-m1m-v7-i09-r1-resume",
+          "to": "erm-alice-run-m1m-v7-i10-r1-resume"
+        },
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v7-sharded-3phase-r1-i09-r1",
+          "to": "alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1"
+        },
+        {
+          "field": "config_overrides",
+          "from": "i09 settings",
+          "to": "i09 settings retained plus mask_token_policy=extra_sentinel in generated config"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
       "window_minutes_actual": 0,
-      "status": "proposed",
-      "stop_reason": "awaiting redeploy"
+      "status": "running",
+      "stop_reason": "deployed and warming up"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
@@ -2120,7 +2197,7 @@
         "host_ram_bytes": null,
         "oom": null
       },
-      "notes": "Snapshot saved before rollout: /home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i08-r1-20260305T050021Z."
+      "notes": "Resume source snapshot: /home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i09-r1-20260305T050840Z."
     }
   }
 ]

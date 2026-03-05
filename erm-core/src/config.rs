@@ -5,6 +5,21 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Canonical mask-id policy used by ERM configs.
+///
+/// `ExtraSentinel` preserves current ERM behavior:
+/// - `mask_token_id = vocab_size` (one-past-real-vocab)
+/// - `total_vocab_size = vocab_size + 1`
+///
+/// This is the selected HF compatibility policy for now.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskTokenPolicy {
+    /// Keep ERM's one-past-vocab sentinel semantics.
+    #[default]
+    ExtraSentinel,
+}
+
 /// Complete hyperparameter configuration for ERM.
 ///
 /// Instantiate with [`ErmConfig::default()`] for the recommended starting point,
@@ -15,6 +30,8 @@ pub struct ErmConfig {
     // ── Vocabulary & sequence ───────────────────────────────────────────
     /// Vocabulary size (excluding MASK sentinel). MASK id = `vocab_size`.
     pub vocab_size: usize,
+    /// Mask token-id policy. Canonical value: `extra_sentinel`.
+    pub mask_token_policy: MaskTokenPolicy,
     /// Maximum sequence length.
     pub seq_len: usize,
 
@@ -215,6 +232,7 @@ impl Default for ErmConfig {
     fn default() -> Self {
         Self {
             vocab_size: 0, // auto-detected from tokenizer
+            mask_token_policy: MaskTokenPolicy::ExtraSentinel,
             seq_len: 256,
 
             hidden_dim: 512,
@@ -593,6 +611,7 @@ mod tests {
     fn test_default_values() {
         let cfg = ErmConfig::default();
         assert_eq!(cfg.vocab_size, 0);
+        assert_eq!(cfg.mask_token_policy, MaskTokenPolicy::ExtraSentinel);
         assert_eq!(cfg.seq_len, 256);
         assert_eq!(cfg.hidden_dim, 512);
         assert_eq!(cfg.num_blocks, 3);
