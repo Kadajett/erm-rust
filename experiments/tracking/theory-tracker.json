@@ -2009,21 +2009,21 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 28,
+      "window_minutes_actual": 26,
       "status": "running",
-      "stop_reason": "mid-run audit window"
+      "stop_reason": "mid-run audit window with sample-quality check"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
       "step_window": {
         "resume_local_start": 218260,
-        "resume_local_end": 222120
+        "resume_local_end": 222420
       },
       "metrics": {
         "loss": {
           "start_mean": 5.6241593,
-          "end_mean": 5.5495186,
-          "last_100_mean": 5.544109251,
+          "end_mean": 5.222164,
+          "last_100_mean": 5.526069812000002,
           "min": 4.8919654,
           "max": 5.9919558
         },
@@ -2033,9 +2033,17 @@
           "used_max": 3839
         },
         "host_ram_bytes": null,
-        "oom": false
+        "oom": false,
+        "sample_quality_proxy": {
+          "i08_char_similarity_last120": 0.614594591081148,
+          "i07_char_similarity_last120": 0.6016458147937338,
+          "i08_word_jaccard_last120": 0.7806069253582772,
+          "i07_word_jaccard_last120": 0.7685590795195626,
+          "i08_punct_noise_last120": 0.175,
+          "i07_punct_noise_last120": 0.24166666666666667
+        }
       },
-      "notes": "Active-set canary is healthy and still running. Leader edges remain active (leader_edge_fraction=1.0) with survival improving vs prior 100-step block (0.708 vs 0.695), and diversity improved (entropy 0.682 vs 0.648; top1 share 0.678 vs 0.691). Loss remains noisy with the latest 100-step mean above the preceding 100-step mean (5.544 vs 5.439), so quality gain is not yet confirmed."
+      "notes": "i08 remains healthy and running. Graph behavior improved vs prior 100-step block (entropy 0.681 vs 0.657, top1 share 0.679 vs 0.688, leader survival 0.711). Loss is still noisy and slightly worse in the latest 100-step block (5.526 vs 5.464), but sample-level quality proxies improved vs i07 (char similarity +0.013, word jaccard +0.012, punctuation-noise lower). This matches operator observation that output strings look better despite flat/noisy loss."
     }
   }
 ]
