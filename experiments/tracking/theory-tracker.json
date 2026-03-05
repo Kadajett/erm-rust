@@ -1778,23 +1778,23 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 1,
+      "window_minutes_actual": 3,
       "status": "running",
-      "stop_reason": "resume verified; waiting for first metrics window"
+      "stop_reason": "initial post-redeploy audit window"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
       "step_window": {
-        "resume_local_start": null,
-        "resume_local_end": null
+        "resume_local_start": 196010,
+        "resume_local_end": 196090
       },
       "metrics": {
         "loss": {
-          "start_mean": null,
-          "end_mean": null,
-          "last_100_mean": null,
-          "min": null,
-          "max": null
+          "start_mean": 5.6150618,
+          "end_mean": 5.317663,
+          "last_100_mean": 5.407505055555556,
+          "min": 4.954361,
+          "max": 5.740832
         },
         "vram_mb": {
           "total": 6144,
@@ -1804,7 +1804,7 @@
         "host_ram_bytes": null,
         "oom": false
       },
-      "notes": "Resume log confirms CUDA backend and step restore at 196000. Metrics file created but still empty at initial audit point (startup warmup)."
+      "notes": "Resume log confirms CUDA backend and step restore at 196000. First metrics window shows lower top-1 edge share (~0.55) with higher entropy (~1.09), suggesting stronger early exploration under schedule mode, but leader-edge activity remains zero."
     }
   }
 ]
