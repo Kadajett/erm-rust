@@ -1855,33 +1855,33 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 3,
+      "window_minutes_actual": 23,
       "status": "running",
-      "stop_reason": "initial post-redeploy audit window"
+      "stop_reason": "mid-window audit refresh"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
       "step_window": {
-        "resume_local_start": 206770,
-        "resume_local_end": 206780
+        "resume_local_start": 206760,
+        "resume_local_end": 210180
       },
       "metrics": {
         "loss": {
-          "start_mean": 5.4737363,
-          "end_mean": 5.2820787,
-          "last_100_mean": 5.3779075,
-          "min": 5.2820787,
-          "max": 5.4737363
+          "start_mean": 5.625518,
+          "end_mean": 5.5760202,
+          "last_100_mean": 5.517940789000001,
+          "min": 5.047784,
+          "max": 5.9935083
         },
         "vram_mb": {
           "total": 6144,
           "used_min": 1684,
-          "used_max": 1684
+          "used_max": 3674
         },
         "host_ram_bytes": null,
         "oom": false
       },
-      "notes": "CUDA preflight passed and resume loaded from i04 latest checkpoint at step 206750. First metrics show much higher entropy (~1.27 mean) and lower top-1 share (~0.51 mean), indicating stronger exploration under half-life age decay; leader edges still zero."
+      "notes": "CUDA preflight passed and resume loaded from i04 latest checkpoint at step 206750. Exploration surge in the first few points normalized by this window (entropy mean ~0.85, top-1 share mean ~0.62), broadly matching late i04 behavior; leader edges remain zero."
     }
   }
 ]
