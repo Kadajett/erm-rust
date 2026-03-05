@@ -1778,7 +1778,7 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 4,
+      "window_minutes_actual": 5,
       "status": "running",
       "stop_reason": "initial post-redeploy audit window"
     },
@@ -1786,13 +1786,13 @@
       "reported_by_model": "gpt-5-codex",
       "step_window": {
         "resume_local_start": 196010,
-        "resume_local_end": 196230
+        "resume_local_end": 196360
       },
       "metrics": {
         "loss": {
           "start_mean": 5.6150618,
-          "end_mean": 5.7900076,
-          "last_100_mean": 5.472174739130435,
+          "end_mean": 5.4418693,
+          "last_100_mean": 5.437651794444445,
           "min": 4.954361,
           "max": 5.8401527
         },
@@ -1804,7 +1804,7 @@
         "host_ram_bytes": null,
         "oom": false
       },
-      "notes": "Resume log confirms CUDA backend and step restore at 196000. Current window remains moderately diverse (entropy mean ~0.95, top-1 share mean ~0.60) versus i02 baseline, but leader-edge activity is still zero and loss is noisy."
+      "notes": "Resume log confirms CUDA backend and step restore at 196000. Current window remains moderately diverse (entropy mean ~0.90, top-1 share mean ~0.61) versus i02 baseline, but leader-edge activity is still zero and loss is noisy."
     }
   }
 ]
