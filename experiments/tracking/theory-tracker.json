@@ -2148,6 +2148,11 @@
       "summary": "Enforce canonical extra-sentinel mask policy and add HF tokenizer sentinel-vocab helpers, then redeploy CUDA resume canary as i10.",
       "changes": [
         {
+          "field": "commit",
+          "from": "2308184",
+          "to": "f09f541"
+        },
+        {
           "field": "code",
           "from": "implicit mask sentinel semantics (config/tokenizer)",
           "to": "explicit MaskTokenPolicy::ExtraSentinel in config + hf_vocab_with_mask_sentinel() helper and tests in BPE tokenizer"
