@@ -2009,33 +2009,33 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 3,
+      "window_minutes_actual": 28,
       "status": "running",
-      "stop_reason": "redeployed and running; waiting for first metrics rows"
+      "stop_reason": "mid-run audit window"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
       "step_window": {
-        "resume_local_start": null,
-        "resume_local_end": null
+        "resume_local_start": 218260,
+        "resume_local_end": 222120
       },
       "metrics": {
         "loss": {
-          "start_mean": null,
-          "end_mean": null,
-          "last_100_mean": null,
-          "min": null,
-          "max": null
+          "start_mean": 5.6241593,
+          "end_mean": 5.5495186,
+          "last_100_mean": 5.544109251,
+          "min": 4.8919654,
+          "max": 5.9919558
         },
         "vram_mb": {
           "total": 6144,
-          "used_min": null,
-          "used_max": null
+          "used_min": 3839,
+          "used_max": 3839
         },
         "host_ram_bytes": null,
-        "oom": null
+        "oom": false
       },
-      "notes": "Redeployed successfully: CUDA backend confirmed, resumed from step 218250, AIM sidecar retargeted to i08. Run is in startup/tokenization phase and has not emitted first metrics row yet."
+      "notes": "Active-set canary is healthy and still running. Leader edges remain active (leader_edge_fraction=1.0) with survival improving vs prior 100-step block (0.708 vs 0.695), and diversity improved (entropy 0.682 vs 0.648; top1 share 0.678 vs 0.691). Loss remains noisy with the latest 100-step mean above the preceding 100-step mean (5.544 vs 5.439), so quality gain is not yet confirmed."
     }
   }
 ]
