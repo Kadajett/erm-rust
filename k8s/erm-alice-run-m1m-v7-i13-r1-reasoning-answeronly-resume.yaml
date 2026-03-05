@@ -1,0 +1,132 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: erm-alice-run-m1m-v7-i13-r1-reasoning-answeronly-resume
+  namespace: pcn-train
+  labels:
+    app: erm-diffusion
+    exp: alice-run-b2-m1m-v7-reasoning-r1-i13-r1-answeronly
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: erm-diffusion
+        exp: alice-run-b2-m1m-v7-reasoning-r1-i13-r1-answeronly
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [theshire]
+      containers:
+        - name: erm-alice-run-m1m-v7-i13-r1-reasoning-answeronly-resume
+          image: ubuntu:24.04
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              apt-get update -qq 2>&1 | tail -1 || true
+              apt-get install -y -qq --no-install-recommends ca-certificates python3 2>&1 | tail -3 || true
+
+              echo "=== ERM Resume Canary (reasoning answer-only corruption mode) ==="
+              echo "Start: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+              OLD_EXP="alice-run-b2-m1m-v7-reasoning-r1-i12-r1-answeronly"
+              NEW_EXP="alice-run-b2-m1m-v7-reasoning-r1-i13-r1-answeronly"
+              SRC_CKPT="/workspace/erm-rust/data/experiments/${OLD_EXP}/checkpoints/latest"
+              NEW_EXP_DIR="/workspace/erm-rust/data/experiments/${NEW_EXP}"
+              NEW_CKPT_DIR="${NEW_EXP_DIR}/checkpoints"
+              NEW_CONFIG="${NEW_EXP_DIR}/train-config.json"
+              DATA_DIR="/workspace/rust-pcn/data/reasoning-qa-sharded"
+              STEPS=200000
+              ERM_BIN="/workspace/erm-rust/bin/erm.new"
+
+              if [[ ! -d "${SRC_CKPT}" ]]; then
+                echo "ERROR: missing resume source checkpoint ${SRC_CKPT}"
+                exit 1
+              fi
+              if [[ -d "${NEW_EXP_DIR}" ]]; then
+                echo "ERROR: new experiment dir already exists: ${NEW_EXP_DIR}"
+                exit 1
+              fi
+
+              mkdir -p "${NEW_CKPT_DIR}"
+              cp "/workspace/erm-rust/data/experiments/${OLD_EXP}/bpe_vocab.json" "${NEW_EXP_DIR}/bpe_vocab.json" || true
+
+              python3 -c "import json,sys; src,dst,exp,metrics=sys.argv[1:5]; cfg=json.load(open(src)); cfg['exp_id']=exp; cfg['metrics_path']=metrics; cfg['local_update_xi']=float(cfg.get('local_update_xi',0.01) or 0.01); cfg['route_kappa_utility']=float(cfg.get('route_kappa_utility',0.5)); cfg['phi_min']=float(cfg.get('phi_min',1e-4)); cfg['elite_k']=int(cfg.get('elite_k',10)); cfg['pheromone_schedule_mode']='linear'; cfg['schedule_evap_mult_start']=1.5; cfg['schedule_evap_mult_end']=0.7; cfg['schedule_route_lambda_mult_start']=0.7; cfg['schedule_route_lambda_mult_end']=1.3; cfg['schedule_diversity_penalty_mult_start']=0.8; cfg['schedule_diversity_penalty_mult_end']=1.0; cfg['age_eta_schedule']='half_life'; cfg['age_half_life']=128.0; cfg['active_set_mode']=True; cfg['freeze_confidence_threshold']=0.85; cfg['min_active_positions']=16; cfg['pheromone_parallel_dense_updates']=True; cfg['mask_token_policy']='extra_sentinel'; cfg['reasoning_answer_only_mode']=True; cfg['reasoning_answer_fallback_start_frac']=0.5; json.dump(cfg, open(dst,'w'), indent=2); print('Configured pheromone_parallel_dense_updates',cfg['pheromone_parallel_dense_updates'],'active_set_mode',cfg['active_set_mode'],'mask_token_policy',cfg['mask_token_policy'],'reasoning_answer_only_mode',cfg['reasoning_answer_only_mode'])" \
+                "${SRC_CKPT}/config.json" "${NEW_CONFIG}" "${NEW_EXP}" "${NEW_CKPT_DIR}/metrics.jsonl"
+
+              echo "Resuming from: ${SRC_CKPT}"
+              echo "Checkpoint dir: ${NEW_CKPT_DIR}"
+              echo "Data dir: ${DATA_DIR}"
+              echo "Steps: ${STEPS}"
+
+              echo "CUDA preflight:"
+              ls -l /usr/lib/x86_64-linux-gnu/libcuda.so* || true
+              LD_PRELOAD=libcuda.so.1 /bin/true
+              nvidia-smi || true
+
+              "${ERM_BIN}" diffusion-train \
+                --data "${DATA_DIR}" \
+                --steps "${STEPS}" \
+                --config "${NEW_CONFIG}" \
+                --backend cuda \
+                --log-every 10 \
+                --checkpoint-every 250 \
+                --checkpoint-dir "${NEW_CKPT_DIR}" \
+                --resume "${SRC_CKPT}" \
+                --exp-id "${NEW_EXP}"
+          env:
+            - name: LD_LIBRARY_PATH
+              value: /usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: compute,utility
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+            - name: CUDA_VISIBLE_DEVICES
+              value: "0"
+            - name: RUST_BACKTRACE
+              value: "1"
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+              ephemeral-storage: "2Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "4"
+              memory: "16Gi"
+              ephemeral-storage: "8Gi"
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: erm-rust
+              mountPath: /workspace/erm-rust
+            - name: rust-pcn
+              mountPath: /workspace/rust-pcn
+            - name: cuda-13-0
+              mountPath: /usr/local/cuda-13.0
+              readOnly: true
+            - name: cuda-13-1
+              mountPath: /usr/local/cuda
+              readOnly: true
+      volumes:
+        - name: erm-rust
+          hostPath:
+            path: /home/kadajett/dev/erm-rust
+            type: Directory
+        - name: rust-pcn
+          hostPath:
+            path: /home/kadajett/dev/rust-pcn
+            type: Directory
+        - name: cuda-13-0
+          hostPath:
+            path: /usr/local/cuda-13.0
+        - name: cuda-13-1
+          hostPath:
+            path: /usr/local/cuda-13.1

@@ -1310,6 +1310,8 @@ fn io_example_loop_bpe<B: burn::tensor::backend::AutodiffBackend>(
     }
 
     let mut examples: Vec<serde_json::Value> = Vec::new();
+    let answer_marker_patterns =
+        load_answer_marker_patterns(tokenizer, cfg.reasoning_answer_only_mode);
 
     for example_idx in 0..num_examples {
         // Pick a random start position within the token stream.
@@ -1325,13 +1327,19 @@ fn io_example_loop_bpe<B: burn::tensor::backend::AutodiffBackend>(
         // Corrupt the batch at noise level t.
         let t_val = 3.min(cfg.diffusion_steps.max(1));
         let x_i32: Vec<i32> = batch_tokens.iter().map(|&tk| tk as i32).collect();
-        let corruption = match erm_core::corruption::corrupt(&x_i32, t_val, cfg, &mut rng) {
+        let mut corruption = match erm_core::corruption::corrupt(&x_i32, t_val, cfg, &mut rng) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("WARNING: corruption failed for example {example_idx}: {e}");
                 continue;
             }
         };
+        apply_answer_only_corruption_mask(
+            &x_i32,
+            &mut corruption.y_t,
+            cfg,
+            &answer_marker_patterns,
+        );
         let y_t_u32: Vec<u32> = corruption.y_t.iter().map(|&v| v as u32).collect();
 
         // Forward pass (batch=1). B is implicit from the tensor shape.
@@ -2514,6 +2522,94 @@ fn collect_sample_text(data_dir: &str, max_bytes: usize) -> String {
     sample
 }
 
+fn load_answer_marker_patterns(tokenizer: &erm_core::BpeTokenizer, enabled: bool) -> Vec<Vec<i32>> {
+    use erm_core::TokenizerApi;
+
+    if !enabled {
+        return Vec::new();
+    }
+
+    let marker_texts = [
+        "\nAnswer:\n",
+        "\nAnswer:",
+        "Answer:\n",
+        "Answer:",
+        "\nOutput:\n",
+        "\nOutput:",
+        "Output:\n",
+        "Output:",
+    ];
+
+    let mut out: Vec<Vec<i32>> = Vec::new();
+    for marker in marker_texts {
+        let ids_u32 = tokenizer.encode_text(marker);
+        let ids: Vec<i32> = ids_u32.into_iter().map(|v| v as i32).collect();
+        if ids.is_empty() {
+            continue;
+        }
+        if !out.contains(&ids) {
+            out.push(ids);
+        }
+    }
+    out
+}
+
+fn find_subsequence(haystack: &[i32], needle: &[i32]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn answer_start_pos(clean_seq: &[i32], marker_patterns: &[Vec<i32>], fallback_frac: f32) -> usize {
+    if clean_seq.is_empty() {
+        return 0;
+    }
+
+    let mut best_start: Option<usize> = None;
+    for pattern in marker_patterns {
+        if let Some(idx) = find_subsequence(clean_seq, pattern) {
+            let candidate = idx.saturating_add(pattern.len());
+            best_start = Some(match best_start {
+                Some(cur) => cur.min(candidate),
+                None => candidate,
+            });
+        }
+    }
+    if let Some(start) = best_start {
+        return start.min(clean_seq.len().saturating_sub(1));
+    }
+
+    let frac = fallback_frac.clamp(0.0, 1.0);
+    let fallback = (clean_seq.len() as f32 * frac).floor() as usize;
+    fallback.min(clean_seq.len().saturating_sub(1))
+}
+
+fn apply_answer_only_corruption_mask(
+    clean_seq: &[i32],
+    corrupted_seq: &mut [i32],
+    cfg: &erm_core::ErmConfig,
+    marker_patterns: &[Vec<i32>],
+) {
+    if !cfg.reasoning_answer_only_mode
+        || clean_seq.is_empty()
+        || clean_seq.len() != corrupted_seq.len()
+    {
+        return;
+    }
+
+    let start = answer_start_pos(
+        clean_seq,
+        marker_patterns,
+        cfg.reasoning_answer_fallback_start_frac,
+    );
+    if start > 0 {
+        corrupted_seq[..start].copy_from_slice(&clean_seq[..start]);
+    }
+}
+
 #[derive(serde::Serialize)]
 struct DiffusionSampleRecord {
     step: usize,
@@ -2565,6 +2661,7 @@ fn write_diffusion_sample<B: burn::tensor::backend::AutodiffBackend>(
     tokenizer: &erm_core::BpeTokenizer,
     batch: &erm_train::streaming_dataset::TokenBatch,
     step: usize,
+    marker_patterns: &[Vec<i32>],
     device: &B::Device,
 ) -> Result<(), String> {
     use erm_train::bridge::{tensor_to_vec, tokens_to_tensor};
@@ -2588,8 +2685,15 @@ fn write_diffusion_sample<B: burn::tensor::backend::AutodiffBackend>(
     let t_val = trainer.config.diffusion_steps.max(1).div_ceil(2);
     let mut sample_rng = ChaCha8Rng::seed_from_u64(0xD1FF_u64 ^ step as u64);
 
-    let corruption = erm_core::corruption::corrupt(&x_i32, t_val, &trainer.config, &mut sample_rng)
-        .map_err(|e| format!("sample corruption failed: {e}"))?;
+    let mut corruption =
+        erm_core::corruption::corrupt(&x_i32, t_val, &trainer.config, &mut sample_rng)
+            .map_err(|e| format!("sample corruption failed: {e}"))?;
+    apply_answer_only_corruption_mask(
+        &x_i32,
+        &mut corruption.y_t,
+        &trainer.config,
+        marker_patterns,
+    );
     let corrupted_tokens: Vec<u32> = corruption.y_t.iter().map(|&t| t as u32).collect();
     let num_corrupted_positions = clean_tokens
         .iter()
@@ -2690,6 +2794,8 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
         }
     }
     let sample_tokenizer = tokenizer.clone();
+    let sample_answer_marker_patterns =
+        load_answer_marker_patterns(&sample_tokenizer, cfg.reasoning_answer_only_mode);
     let mut dataset = StreamingDataset::new(streaming_cfg, tokenizer);
     let mut rng = ChaCha8Rng::seed_from_u64(42);
 
@@ -2815,6 +2921,7 @@ fn diffusion_train_loop<B: burn::tensor::backend::AutodiffBackend>(
                     &sample_tokenizer,
                     &batch,
                     global_step,
+                    &sample_answer_marker_patterns,
                     &device,
                 ) {
                     eprintln!("WARNING: sample write failed: {e}");

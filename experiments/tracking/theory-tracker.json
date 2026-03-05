@@ -2367,5 +2367,83 @@
       },
       "notes": "Resume source snapshot: /home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-reasoning-r1-i11-r1-20260305T054252Z."
     }
+  },
+  {
+    "id": "theory-20260305-i13-r1-answeronly-sampler-alignment-redeploy",
+    "created_at_utc": "2026-03-05T06:38:00Z",
+    "experiment_id": "alice-run-b2-m1m-v7-reasoning-r1-i13-r1-answeronly",
+    "tags": [
+      "theory",
+      "code_change",
+      "k8s_change",
+      "reasoning",
+      "answer-only",
+      "resume",
+      "cuda",
+      "aim-sidecar",
+      "logging-alignment"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "code_change",
+      "summary": "Align sample/io corruption path with reasoning answer-only training mask so logged MODEL INPUT/OUTPUT reflect the same answer-span objective used during training.",
+      "changes": [
+        {
+          "field": "source_run",
+          "from": "alice-run-b2-m1m-v7-reasoning-r1-i12-r1-answeronly",
+          "to": "alice-run-b2-m1m-v7-reasoning-r1-i13-r1-answeronly"
+        },
+        {
+          "field": "job_name",
+          "from": "erm-alice-run-m1m-v7-i12-r1-reasoning-answeronly-resume",
+          "to": "erm-alice-run-m1m-v7-i13-r1-reasoning-answeronly-resume"
+        },
+        {
+          "field": "code",
+          "from": "CLI sample/io corruption used generic full-span corruption",
+          "to": "CLI sample/io corruption applies answer-only span mask via Answer:/Output: marker detection + fallback split to mirror training"
+        },
+        {
+          "field": "resume_checkpoint",
+          "from": "/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-reasoning-r1-i11-r1/checkpoints/latest",
+          "to": "/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-reasoning-r1-i12-r1-answeronly/checkpoints/latest"
+        },
+        {
+          "field": "binary_sha256",
+          "from": null,
+          "to": "21e3842554930ae1a5c061cfb9aded040ce1814c5e2e38b1a3f60ed2b6c04580"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 0,
+      "status": "running",
+      "stop_reason": "deployed and warming up"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 238000,
+        "resume_local_end": null
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": null,
+          "end_mean": null,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": null,
+          "used_max": null
+        },
+        "host_ram_bytes": null,
+        "oom": null
+      },
+      "notes": "Pre-redeploy snapshot: /home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-reasoning-r1-i12-r1-answeronly-20260305T063324Z. AIM sidecar retargeted to i13 experiment."
+    }
   }
 ]

@@ -1,12 +1,12 @@
 # Operator Memory (Shared: Codex + Claude)
 
-Last updated: 2026-03-05 UTC (05:45)
+Last updated: 2026-03-05 UTC (06:38)
 
 ## Current Live Run
 
-- Job: `erm-alice-run-m1m-v7-i12-r1-reasoning-answeronly-resume`
-- Experiment id: `alice-run-b2-m1m-v7-reasoning-r1-i12-r1-answeronly`
-- Status: running (resume canary on Burn CUDA from step `228750`; answer-only objective enabled via `reasoning_answer_only_mode=true`; startup/tokenization phase in progress)
+- Job: `erm-alice-run-m1m-v7-i13-r1-reasoning-answeronly-resume`
+- Experiment id: `alice-run-b2-m1m-v7-reasoning-r1-i13-r1-answeronly`
+- Status: running (resume canary on Burn CUDA from step `238000`; answer-only objective enabled via `reasoning_answer_only_mode=true`)
 - Current data domain:
   - `/workspace/rust-pcn/data/reasoning-qa-sharded` (Q/A formatting, no `thinking` field)
 - Prior phase/data order before pivot:
@@ -224,6 +224,20 @@ Reasoning answer-only objective rollout (2026-03-05 UTC):
   - `reasoning_answer_fallback_start_frac = 0.5`
   - retained CUDA backend and prior schedule/active-set pheromone controls
 - AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-reasoning-r1-i12-r1-answeronly`.
+
+Reasoning answer-only sampler-alignment redeploy (2026-03-05 UTC):
+- Source run before redeploy:
+  - job `erm-alice-run-m1m-v7-i12-r1-reasoning-answeronly-resume`, latest checkpoint step `238000`.
+- Snapshot captured before stop/redeploy:
+  - `/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-reasoning-r1-i12-r1-answeronly-20260305T063324Z`
+- Builder/binary:
+  - rebuilt `erm.new` via `k8s/erm-builder-pod.yaml`
+  - output hash: `21e3842554930ae1a5c061cfb9aded040ce1814c5e2e38b1a3f60ed2b6c04580`
+- New canary deployment:
+  - job `erm-alice-run-m1m-v7-i13-r1-reasoning-answeronly-resume`
+  - exp `alice-run-b2-m1m-v7-reasoning-r1-i13-r1-answeronly`
+  - resumed from `/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-reasoning-r1-i12-r1-answeronly/checkpoints/latest` at step `238000`
+- AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-reasoning-r1-i13-r1-answeronly`.
 
 ### CUDA/Burn Setup (Known-Good)
 
