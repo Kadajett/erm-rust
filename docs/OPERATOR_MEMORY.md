@@ -103,7 +103,7 @@ Ticket #4 rollout notes (2026-03-05 UTC):
   - `schedule_route_lambda_mult_start = 0.7`, `schedule_route_lambda_mult_end = 1.3`
   - `schedule_diversity_penalty_mult_start = 0.8`, `schedule_diversity_penalty_mult_end = 1.0`
 - AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i04-r1`.
-- Initial i04 audit window (step `196010 -> 196090`) is live; early metrics show higher entropy (`~1.09`) and lower top-1 edge share (`~0.55`) than i03.
+- Initial i04 audit window (step `196010 -> 196230`) is live; early metrics show entropy `~0.95` and top-1 edge share `~0.60` (still more exploratory than i02 baseline).
 
 ### CUDA/Burn Setup (Known-Good)
 
