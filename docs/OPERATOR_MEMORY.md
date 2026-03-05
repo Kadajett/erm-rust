@@ -6,7 +6,7 @@ Last updated: 2026-03-05 UTC (05:11)
 
 - Job: `erm-alice-run-m1m-v7-i10-r1-resume`
 - Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1`
-- Status: running (resume canary on Burn CUDA from step `224000`; startup/tokenization phase in progress, first `metrics.jsonl` row pending)
+- Status: running (resume canary on Burn CUDA from step `224000`; `metrics.jsonl` is writing from step `224010+`)
 - Confirmed phase/data order:
   - Phase 1: `100000` steps on `/workspace/rust-pcn/data/english-frontload-sharded`
   - Phase 2: `200000` steps on `/workspace/rust-pcn/data/sentence-bridge-smclm-sharded`
