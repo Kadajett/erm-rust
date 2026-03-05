@@ -174,7 +174,7 @@ Ticket #8 rollout notes (2026-03-05 UTC):
 - AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i09-r1`.
 
 Ticket #9 rollout notes (2026-03-05 UTC):
-- Code commit on `main`: pending local commit (canonical mask policy + HF mask-sentinel export helper).
+- Code commit on `main`: `f09f541` (canonical mask policy + HF mask-sentinel export helper).
 - Source run before redeploy:
   - job `erm-alice-run-m1m-v7-i09-r1-resume`, latest observed step window `223510 -> 223940`.
 - Snapshot captured before stop/rebuild:
