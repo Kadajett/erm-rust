@@ -79,6 +79,13 @@ pub struct ErmConfig {
     /// Number of ants allowed to deposit pheromone each step.
     /// `0` disables elite filtering (all ants may deposit).
     pub elite_k: usize,
+    /// Age-based deposit schedule mode.
+    /// Options: `"reciprocal"` (legacy `eta/(1+age)`) or `"half_life"`.
+    pub age_eta_schedule: String,
+    /// Half-life (in steps) for age-based deposit decay when
+    /// `age_eta_schedule == "half_life"`.
+    /// `<= 0` falls back to reciprocal schedule.
+    pub age_half_life: f32,
 
     // ── RouteAggregate hyperparams ─────────────────────────────────────
     /// Epsilon added to phi before log in weight computation.
@@ -220,6 +227,8 @@ impl Default for ErmConfig {
             phi_init: 0.05,
             local_update_xi: 0.0,
             elite_k: 0,
+            age_eta_schedule: "reciprocal".to_string(),
+            age_half_life: 0.0,
 
             route_epsilon: 1e-6,
             route_lambda: 1.0,
@@ -464,6 +473,10 @@ pub struct PheromoneConfig {
     /// Number of ants allowed to deposit each step.
     /// `0` disables elite filtering (all ants may deposit).
     pub elite_k: usize,
+    /// Age-based deposit schedule mode (`"reciprocal"` or `"half_life"`).
+    pub age_eta_schedule: String,
+    /// Age half-life for `"half_life"` schedule.
+    pub age_half_life: f32,
     /// Minimum composite score `φ - λ·τ` for pruning.
     pub prune_min_score: f32,
     /// Maximum edge age before pruning.
@@ -495,6 +508,8 @@ impl Default for PheromoneConfig {
             phi_init: 0.05,
             local_update_xi: 0.0,
             elite_k: 0,
+            age_eta_schedule: "reciprocal".to_string(),
+            age_half_life: 0.0,
             prune_min_score: -1.0,
             prune_max_age: 1000,
             route_lambda: 1.0,
@@ -520,6 +535,8 @@ impl PheromoneConfig {
             phi_init: config.phi_init,
             local_update_xi: config.local_update_xi,
             elite_k: config.elite_k,
+            age_eta_schedule: config.age_eta_schedule.clone(),
+            age_half_life: config.age_half_life,
             prune_min_score: config.prune_min_score,
             prune_max_age: config.prune_max_age,
             route_lambda: config.route_lambda,
@@ -554,6 +571,8 @@ mod tests {
         assert!((cfg.phi_min - 1e-4).abs() < 1e-8);
         assert_eq!(cfg.local_update_xi, 0.0);
         assert_eq!(cfg.elite_k, 0);
+        assert_eq!(cfg.age_eta_schedule, "reciprocal");
+        assert!((cfg.age_half_life - 0.0).abs() < 1e-8);
         assert_eq!(cfg.pheromone_schedule_mode, "fixed");
         assert_eq!(cfg.mask_token_id(), 0);
         assert_eq!(cfg.total_vocab_size(), 1);
@@ -651,6 +670,8 @@ mod tests {
             phi_init: 0.07,
             local_update_xi: 0.02,
             elite_k: 7,
+            age_eta_schedule: "half_life".to_string(),
+            age_half_life: 32.0,
             ..ErmConfig::default()
         };
         let p = PheromoneConfig::from_config(&cfg);
@@ -659,5 +680,7 @@ mod tests {
         assert!((p.phi_init - 0.07).abs() < 1e-8);
         assert!((p.local_update_xi - 0.02).abs() < 1e-8);
         assert_eq!(p.elite_k, 7);
+        assert_eq!(p.age_eta_schedule, "half_life");
+        assert!((p.age_half_life - 32.0).abs() < 1e-8);
     }
 }

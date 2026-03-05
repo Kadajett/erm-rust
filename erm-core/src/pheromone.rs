@@ -340,6 +340,19 @@ fn build_elite_mask(ant_deltas: &[f32], elite_k: usize) -> Option<Vec<bool>> {
     Some(mask)
 }
 
+/// Compute per-edge deposit learning rate from age.
+///
+/// - `"reciprocal"`: `eta / (1 + age)` (legacy behavior)
+/// - `"half_life"`: `eta * 0.5^(age / half_life)` when `half_life > 0`
+/// - otherwise: fallback to reciprocal
+fn eta_for_age(base_eta: f32, age: u32, schedule: &str, half_life: f32) -> f32 {
+    if schedule == "half_life" && half_life > 0.0 {
+        base_eta * (0.5_f32).powf(age as f32 / half_life)
+    } else {
+        base_eta / (1.0 + age as f32)
+    }
+}
+
 /// Internal: full pheromone update with all optional features.
 fn update_pheromones_full(
     graph: &mut RouteGraph,
@@ -467,10 +480,13 @@ fn update_pheromones_full(
                 0.0
             };
 
-            // Per-edge learning rate decay: η / (1 + age).
-            // Older edges receive smaller deposits (diminishing returns),
-            // similar to learning rate decay in gradient-based optimizers.
-            let edge_eta = eta / (1.0 + graph.age[flat] as f32);
+            // Per-edge learning rate decay based on edge age.
+            let edge_eta = eta_for_age(
+                eta,
+                graph.age[flat].max(0) as u32,
+                &config.age_eta_schedule,
+                config.age_half_life,
+            );
             graph.phi[flat] += edge_eta * deposit_base;
 
             // Taint deposit (not age-decayed — harmful signals stay strong).
@@ -741,6 +757,8 @@ mod tests {
             phi_init: 0.05,
             local_update_xi: 0.0,
             elite_k: 0,
+            age_eta_schedule: "reciprocal".to_string(),
+            age_half_life: 0.0,
             prune_min_score: -1.0,
             prune_max_age: 1000,
             route_lambda: 1.0,
@@ -748,6 +766,58 @@ mod tests {
             diversity_penalty: 0.8,
             use_log_deposit: false, // tests were written for tanh mode
         }
+    }
+
+    #[test]
+    fn test_age_eta_half_life_changes_deposit_strength() {
+        let cfg = small_config();
+        let mut graph_recip = RouteGraph::new_empty(&cfg);
+        graph_recip.add_edge(0, 0, 1, 1.0).expect("add edge");
+        let flat = graph_recip.idx(0, 0, 0);
+        graph_recip.age[flat] = 4;
+
+        let traces = vec![EdgeTrace {
+            ant_id: 0,
+            entries: vec![(0, 0, 0, 1.0)],
+        }];
+        let ant_deltas = vec![1.0_f32];
+
+        let pconfig_recip = PheromoneConfig {
+            evaporation_rate: 0.0,
+            deposit_rate: 1.0,
+            phi_min: 0.0,
+            age_eta_schedule: "reciprocal".to_string(),
+            age_half_life: 0.0,
+            ..small_pheromone_config()
+        };
+        let mut graph_half = graph_recip.clone();
+        let pconfig_half = PheromoneConfig {
+            evaporation_rate: 0.0,
+            deposit_rate: 1.0,
+            phi_min: 0.0,
+            age_eta_schedule: "half_life".to_string(),
+            age_half_life: 2.0,
+            ..small_pheromone_config()
+        };
+
+        update_pheromones(&mut graph_recip, &traces, &ant_deltas, &pconfig_recip).expect("update");
+        update_pheromones(&mut graph_half, &traces, &ant_deltas, &pconfig_half).expect("update");
+
+        let phi_recip = graph_recip.phi[flat];
+        let phi_half = graph_half.phi[flat];
+        assert!(
+            phi_half > phi_recip,
+            "half-life eta should exceed reciprocal at age=4 (phi_half={phi_half}, phi_recip={phi_recip})"
+        );
+    }
+
+    #[test]
+    fn test_age_eta_half_life_fallback_when_non_positive() {
+        let eta = 0.7_f32;
+        let age = 10_u32;
+        let recip = eta_for_age(eta, age, "reciprocal", 0.0);
+        let fallback = eta_for_age(eta, age, "half_life", 0.0);
+        assert!((recip - fallback).abs() < 1e-8);
     }
 
     #[test]
