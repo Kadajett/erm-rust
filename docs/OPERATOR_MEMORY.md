@@ -205,6 +205,7 @@ Reasoning dataset pivot rollout (2026-03-05 UTC):
 - AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-reasoning-r1-i11-r1`.
 
 Reasoning answer-only objective rollout (2026-03-05 UTC):
+- Code commit on `main`: `38bb9b6` (answer-only reasoning corruption/editing mode).
 - Code change: diffusion trainer now supports answer-only corruption/editing for QA format:
   - `reasoning_answer_only_mode`
   - `reasoning_answer_fallback_start_frac`

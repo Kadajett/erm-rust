@@ -2306,6 +2306,11 @@
       "summary": "Enable answer-only corruption/editing for QA reasoning training so question prefix stays fixed and model learns Question->Answer mapping.",
       "changes": [
         {
+          "field": "commit",
+          "from": "b2bafc3",
+          "to": "38bb9b6"
+        },
+        {
           "field": "code",
           "from": "full-sequence corruption/editing in diffusion training",
           "to": "reasoning_answer_only_mode gates corruption/editing to answer span detected from Answer:/Output: markers with fallback split"
