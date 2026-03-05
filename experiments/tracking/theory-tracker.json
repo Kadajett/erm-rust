@@ -2176,9 +2176,90 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
+      "window_minutes_actual": 18,
+      "status": "completed",
+      "stop_reason": "stopped intentionally for reasoning-dataset pivot"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 224010,
+        "resume_local_end": 226690
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": 5.391412195,
+          "end_mean": 5.3787958399999996,
+          "last_100_mean": 5.42045406,
+          "min": 4.871299,
+          "max": 5.9344
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": 3839,
+          "used_max": 3839
+        },
+        "host_ram_bytes": null,
+        "oom": false,
+        "graph_health": {
+          "leader_edges_mean": 537.9591078066915,
+          "edge_weight_entropy_mean": 0.6826748332342008,
+          "top1_edge_share_mean": 0.6779738651301115
+        }
+      },
+      "notes": "Completed i10 bridge-data window before dataset pivot. Snapshot saved at /home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1-20260305T052852Z."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v7-reasoning-r1-i11-r1-2026-03-05T05-28-52Z-reasoning-dataset-pivot",
+    "created_at_utc": "2026-03-05T05:28:52Z",
+    "experiment_id": "alice-run-b2-m1m-v7-reasoning-r1-i11-r1",
+    "tags": [
+      "theory",
+      "k8s_change",
+      "dataset_shift",
+      "resume",
+      "aim-sidecar",
+      "cuda",
+      "reasoning"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "k8s_change",
+      "summary": "Resume current CUDA checkpoint onto reasoning-qa-sharded to shift objective from broad text continuation toward reasoning-formatted Q/A sequences.",
+      "changes": [
+        {
+          "field": "job_name",
+          "from": "erm-alice-run-m1m-v7-i10-r1-resume",
+          "to": "erm-alice-run-m1m-v7-i11-r1-reasoning-resume"
+        },
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1",
+          "to": "alice-run-b2-m1m-v7-reasoning-r1-i11-r1"
+        },
+        {
+          "field": "data_dir",
+          "from": "/workspace/rust-pcn/data/sentence-bridge-smclm-sharded",
+          "to": "/workspace/rust-pcn/data/reasoning-qa-sharded"
+        },
+        {
+          "field": "steps",
+          "from": 50000,
+          "to": 200000
+        },
+        {
+          "field": "resume_checkpoint",
+          "from": "/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1/checkpoints/latest",
+          "to": "/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1/checkpoints/latest"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
       "window_minutes_actual": 0,
       "status": "running",
-      "stop_reason": "deployed and warming up"
+      "stop_reason": "deployed and warming up on reasoning dataset"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
@@ -2202,7 +2283,7 @@
         "host_ram_bytes": null,
         "oom": null
       },
-      "notes": "Resume source snapshot: /home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i09-r1-20260305T050840Z."
+      "notes": "Resume source snapshot: /home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1-20260305T052852Z."
     }
   }
 ]

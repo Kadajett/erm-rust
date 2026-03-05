@@ -1,19 +1,18 @@
 # Operator Memory (Shared: Codex + Claude)
 
-Last updated: 2026-03-05 UTC (05:11)
+Last updated: 2026-03-05 UTC (05:30)
 
 ## Current Live Run
 
-- Job: `erm-alice-run-m1m-v7-i10-r1-resume`
-- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1`
-- Status: running (resume canary on Burn CUDA from step `224000`; `metrics.jsonl` is writing from step `224010+`)
-- Confirmed phase/data order:
+- Job: `erm-alice-run-m1m-v7-i11-r1-reasoning-resume`
+- Experiment id: `alice-run-b2-m1m-v7-reasoning-r1-i11-r1`
+- Status: running (resume canary on Burn CUDA from step `226750`; startup/tokenization phase in progress, first `metrics.jsonl` row pending)
+- Current data domain:
+  - `/workspace/rust-pcn/data/reasoning-qa-sharded` (Q/A formatting, no `thinking` field)
+- Prior phase/data order before pivot:
   - Phase 1: `100000` steps on `/workspace/rust-pcn/data/english-frontload-sharded`
   - Phase 2: `200000` steps on `/workspace/rust-pcn/data/sentence-bridge-smclm-sharded`
   - Phase 3: `700000` steps on `/workspace/rust-pcn/data/books`
-- Planned post-1M extension order:
-  - Reasoning Q/A resume corpus: `/workspace/rust-pcn/data/reasoning-qa-sharded`
-  - Million numbers curriculum (3 variants): `/workspace/rust-pcn/data/million-english-numbers-sharded/...`
 
 Observed early-phase behavior:
 - Entered classic early "the-stage" collapse in predictions (high-frequency stopword loops).
@@ -189,6 +188,21 @@ Ticket #9 rollout notes (2026-03-05 UTC):
   - retained `active_set_mode = true`, `freeze_confidence_threshold = 0.85`, `min_active_positions = 16`
   - retained ticket-4/5 schedule and age-half-life settings
 - AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1`.
+
+Reasoning dataset pivot rollout (2026-03-05 UTC):
+- Source run before redeploy:
+  - job `erm-alice-run-m1m-v7-i10-r1-resume`, latest observed window `224010 -> 226690`.
+- Snapshot captured before stop/redeploy:
+  - `/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1-20260305T052852Z`
+- New canary deployment:
+  - job `erm-alice-run-m1m-v7-i11-r1-reasoning-resume`
+  - exp `alice-run-b2-m1m-v7-reasoning-r1-i11-r1`
+  - resumed from `/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1/checkpoints/latest` at step `226750`
+- Pivot config/runtime values:
+  - `data_dir = /workspace/rust-pcn/data/reasoning-qa-sharded`
+  - `steps = 200000`
+  - retained CUDA backend and i10 pheromone/active-set schedule settings
+- AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-reasoning-r1-i11-r1`.
 
 ### CUDA/Burn Setup (Known-Good)
 
