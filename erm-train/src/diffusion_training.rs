@@ -549,8 +549,20 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             );
             total_deaths += deaths;
 
-            // Insert leader edges into graph.
-            let inserted = insert_leader_edges(&mut self.graph, &all_edge_proposals, cfg);
+            // Update leader utility on currently active leader edges.
+            let _utility_updates = self.graph.update_leader_utility(
+                &edge_weights,
+                &position_deltas,
+                cfg.leader_ema_gamma,
+            );
+
+            // Insert leader edges into graph with leader-edge marking enabled.
+            let inserted = insert_leader_edges(
+                &mut self.graph,
+                &all_edge_proposals,
+                cfg.phi_init,
+                step_schedule.route_lambda,
+            );
             total_inserted += inserted;
 
             // Keep final-level stats.
@@ -716,18 +728,10 @@ fn diffusion_ce_loss<B: AutodiffBackend>(
 fn insert_leader_edges(
     graph: &mut RouteGraph,
     edge_proposals: &[erm_core::ants::EdgeProposal],
-    cfg: &ErmConfig,
+    initial_phi: f32,
+    route_lambda: f32,
 ) -> usize {
-    let mut inserted = 0;
-    for ep in edge_proposals {
-        if graph
-            .add_edge(ep.batch_idx, ep.dst, ep.src, cfg.phi_init)
-            .is_ok()
-        {
-            inserted += 1;
-        }
-    }
-    inserted
+    graph.propose_edges(edge_proposals, initial_phi, route_lambda)
 }
 
 /// Diffusion inference: K iterative coarse-to-fine steps from a masked start.
@@ -973,5 +977,33 @@ mod tests {
         let result = diffusion_infer(&scorer, &mut graph, &cfg, 4, None, 8, &mut rng, &device);
         assert!(result.is_ok(), "infer failed: {:?}", result.err());
         assert_eq!(result.unwrap().len(), 8);
+    }
+
+    #[test]
+    fn test_insert_leader_edges_marks_leader_flag() {
+        let cfg = small_cfg();
+        let mut graph = RouteGraph::new_empty(&cfg);
+        let proposals = vec![erm_core::ants::EdgeProposal {
+            batch_idx: 0,
+            src: 1,
+            dst: 2,
+            etype: 1,
+        }];
+
+        let inserted = insert_leader_edges(&mut graph, &proposals, cfg.phi_init, cfg.route_lambda);
+        assert_eq!(inserted, 1);
+
+        let mut found = false;
+        for slot in 0..cfg.emax {
+            let flat = graph.idx(0, 2, slot);
+            if graph.nbr_idx[flat] == 1 {
+                found = true;
+                assert!(
+                    graph.leader_edge[flat],
+                    "inserted edge must be marked leader"
+                );
+            }
+        }
+        assert!(found, "expected src=1 edge on dst=2");
     }
 }
