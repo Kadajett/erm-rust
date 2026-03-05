@@ -363,11 +363,22 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 let z_t_seq = &z_t_u32[batch_idx * l..(batch_idx + 1) * l];
 
                 // Editable mask: positions corrupted from clean tokens.
-                let editable: Vec<bool> = corruption.y_t[batch_idx * l..(batch_idx + 1) * l]
+                let base_editable: Vec<bool> = corruption.y_t[batch_idx * l..(batch_idx + 1) * l]
                     .iter()
                     .zip(x_i32[batch_idx * l..(batch_idx + 1) * l].iter())
                     .map(|(y, x)| y != x)
                     .collect();
+                let editable = if cfg.active_set_mode {
+                    apply_confidence_active_set(
+                        &base_editable,
+                        seq_logits,
+                        v_rt,
+                        cfg.freeze_confidence_threshold,
+                        cfg.min_active_positions,
+                    )
+                } else {
+                    base_editable
+                };
 
                 // Follower proposals.
                 let follower_proposals = AntColony::sample_follower_proposals(
@@ -734,6 +745,82 @@ fn insert_leader_edges(
     graph.propose_edges(edge_proposals, initial_phi, route_lambda)
 }
 
+fn max_softmax_confidence(logits: &[f32]) -> f32 {
+    if logits.is_empty() {
+        return 0.0;
+    }
+    let max_logit = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if !max_logit.is_finite() {
+        return 0.0;
+    }
+    let mut sum_exp = 0.0_f32;
+    for &logit in logits {
+        sum_exp += (logit - max_logit).exp();
+    }
+    if sum_exp <= 0.0 || !sum_exp.is_finite() {
+        return 0.0;
+    }
+    1.0 / sum_exp
+}
+
+fn apply_confidence_active_set(
+    base_editable: &[bool],
+    seq_logits: &[f32],
+    vocab_size: usize,
+    freeze_threshold: f32,
+    min_active_positions: usize,
+) -> Vec<bool> {
+    let mut editable = base_editable.to_vec();
+    if base_editable.is_empty() || vocab_size == 0 {
+        return editable;
+    }
+
+    let mut candidates: Vec<(usize, f32)> = base_editable
+        .iter()
+        .enumerate()
+        .filter_map(|(pos, &is_editable)| {
+            if !is_editable {
+                return None;
+            }
+            let start = pos * vocab_size;
+            let end = start + vocab_size;
+            if end > seq_logits.len() {
+                return None;
+            }
+            let confidence = max_softmax_confidence(&seq_logits[start..end]);
+            Some((pos, confidence))
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return editable;
+    }
+
+    editable.fill(false);
+    for &(pos, confidence) in &candidates {
+        if confidence < freeze_threshold {
+            editable[pos] = true;
+        }
+    }
+
+    let mut active = editable.iter().filter(|&&v| v).count();
+    let min_keep = min_active_positions.max(1).min(candidates.len());
+    if active < min_keep {
+        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        for (pos, _) in candidates {
+            if !editable[pos] {
+                editable[pos] = true;
+                active += 1;
+                if active >= min_keep {
+                    break;
+                }
+            }
+        }
+    }
+
+    editable
+}
+
 /// Diffusion inference: K iterative coarse-to-fine steps from a masked start.
 ///
 /// No AR loop. Each step uses the scorer to fill the most uncertain masked
@@ -805,8 +892,30 @@ pub fn diffusion_infer<B: burn::tensor::backend::Backend>(
                 continue;
             }
             let pos_logits = &logits_cpu[start..end];
-            let confidence = pos_logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let confidence = max_softmax_confidence(pos_logits);
             refine_candidates.push((pos, confidence));
+        }
+
+        if cfg.active_set_mode && !refine_candidates.is_empty() {
+            let mut active_positions: Vec<(usize, f32)> = refine_candidates
+                .iter()
+                .copied()
+                .filter(|(_, confidence)| *confidence < cfg.freeze_confidence_threshold)
+                .collect();
+            let min_keep = cfg.min_active_positions.max(1).min(refine_candidates.len());
+            if active_positions.len() < min_keep {
+                let mut by_conf = refine_candidates.clone();
+                by_conf.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                for (pos, confidence) in by_conf {
+                    if active_positions.iter().all(|(p, _)| *p != pos) {
+                        active_positions.push((pos, confidence));
+                        if active_positions.len() >= min_keep {
+                            break;
+                        }
+                    }
+                }
+            }
+            refine_candidates = active_positions;
         }
 
         // Remask least-confident positions so they can be re-denoised this step.
@@ -977,6 +1086,32 @@ mod tests {
         let result = diffusion_infer(&scorer, &mut graph, &cfg, 4, None, 8, &mut rng, &device);
         assert!(result.is_ok(), "infer failed: {:?}", result.err());
         assert_eq!(result.unwrap().len(), 8);
+    }
+
+    #[test]
+    fn test_max_softmax_confidence_prefers_largest_logit() {
+        let conf = max_softmax_confidence(&[4.0, 0.0, 0.0]);
+        assert!(conf > 0.9, "expected dominant confidence, got {conf}");
+    }
+
+    #[test]
+    fn test_apply_confidence_active_set_respects_threshold_and_min_keep() {
+        // [L=4, V=2] flattened logits.
+        // pos0: confident (freeze), pos1: less confident (active), pos2: confident (freeze),
+        // pos3: less confident (active)
+        let seq_logits = vec![8.0, -8.0, 0.1, 0.0, 7.0, -7.0, 0.2, 0.0];
+        let base_editable = vec![true, true, true, true];
+
+        let editable = apply_confidence_active_set(&base_editable, &seq_logits, 2, 0.9, 2);
+        let active_positions: Vec<usize> = editable
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, &v)| if v { Some(idx) } else { None })
+            .collect();
+
+        assert_eq!(active_positions.len(), 2);
+        assert!(active_positions.contains(&1));
+        assert!(active_positions.contains(&3));
     }
 
     #[test]

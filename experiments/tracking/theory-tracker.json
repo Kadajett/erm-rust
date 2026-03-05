@@ -1932,23 +1932,23 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 7,
-      "status": "running",
-      "stop_reason": "initial post-redeploy audit window"
+      "window_minutes_actual": 44,
+      "status": "crashed",
+      "stop_reason": "k8s eviction: node disk pressure (ephemeral-storage)"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
       "step_window": {
         "resume_local_start": 211260,
-        "resume_local_end": 211390
+        "resume_local_end": 218270
       },
       "metrics": {
         "loss": {
           "start_mean": 5.6204185,
-          "end_mean": 5.3074346,
-          "last_100_mean": 5.445193571428571,
-          "min": 4.9786787,
-          "max": 5.6762705
+          "end_mean": 5.636213,
+          "last_100_mean": 5.546335474,
+          "min": 4.870202,
+          "max": 6.029235
         },
         "vram_mb": {
           "total": 6144,
@@ -1958,7 +1958,84 @@
         "host_ram_bytes": null,
         "oom": false
       },
-      "notes": "CUDA preflight passed and resume loaded from i05 latest checkpoint at step 211250. Leader-edge wiring fix is active: leader_edges mean ~522.5, leader_edge_fraction mean ~0.67, leader_survival mean ~0.71 in the first observed window."
+      "notes": "Leader-edge wiring fix remained active through step 218270 (leader_edges_last=731, leader_edge_fraction_last=1.0, leader_survival_last=0.7547), but the job was evicted by kubelet for ephemeral-storage disk pressure before the 60-minute window finished."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i08-r1-2026-03-05T04-24-38Z-ticket7-active-set-refinement",
+    "created_at_utc": "2026-03-05T04:24:38Z",
+    "experiment_id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i08-r1",
+    "tags": [
+      "theory",
+      "code_change",
+      "ticket-7",
+      "k8s_change",
+      "resume",
+      "aim-sidecar",
+      "cuda",
+      "active-set"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "code_change",
+      "summary": "Add confidence-based active-set refinement (freeze high-confidence corrupted positions with a minimum active floor) and redeploy as i08 CUDA resume canary.",
+      "changes": [
+        {
+          "field": "code",
+          "from": "all corrupted positions editable during diffusion refinement",
+          "to": "active-set gate using max-softmax confidence with freeze threshold and min-active floor in training and inference loops"
+        },
+        {
+          "field": "config_fields",
+          "from": "none",
+          "to": "active_set_mode, freeze_confidence_threshold, min_active_positions"
+        },
+        {
+          "field": "job_name",
+          "from": "erm-alice-run-m1m-v7-i07-r1-resume",
+          "to": "erm-alice-run-m1m-v7-i08-r1-resume"
+        },
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v7-sharded-3phase-r1-i07-r1",
+          "to": "alice-run-b2-m1m-v7-sharded-3phase-r1-i08-r1"
+        },
+        {
+          "field": "config_overrides",
+          "from": "i07 settings (schedule + age_half_life + leader-edge fix)",
+          "to": "i07 settings plus active_set_mode=true, freeze_confidence_threshold=0.85, min_active_positions=16 and ephemeral-storage requests on job pod"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 0,
+      "status": "proposed",
+      "stop_reason": "awaiting redeploy"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": null,
+        "resume_local_end": null
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": null,
+          "end_mean": null,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": null,
+          "used_max": null
+        },
+        "host_ram_bytes": null,
+        "oom": null
+      },
+      "notes": "Proposed immediately after disk-pressure cleanup that removed old v7 experiment directories and preserved i07-r1 for resume source."
     }
   }
 ]

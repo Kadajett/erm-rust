@@ -113,6 +113,21 @@ pub struct ErmConfig {
     /// Diversity-penalty multiplier at the last refinement step (`t = 1`).
     pub schedule_diversity_penalty_mult_end: f32,
 
+    // ── Active-set refinement ──────────────────────────────────────────
+    /// Enable confidence-based active-set refinement.
+    ///
+    /// When enabled, high-confidence corrupted positions are temporarily frozen
+    /// so ants focus edits on low-confidence positions.
+    pub active_set_mode: bool,
+    /// Freeze threshold on max-softmax confidence in `[0, 1]`.
+    ///
+    /// Corrupted positions with confidence >= threshold are frozen unless
+    /// needed to satisfy `min_active_positions`.
+    pub freeze_confidence_threshold: f32,
+    /// Minimum number of active corrupted positions per sequence when
+    /// `active_set_mode` is enabled.
+    pub min_active_positions: usize,
+
     // ── Ant lifecycle ──────────────────────────────────────────────────
     /// Consecutive no-improvement steps before an ant "dies". `K`.
     pub death_streak: usize,
@@ -241,6 +256,10 @@ impl Default for ErmConfig {
             schedule_route_lambda_mult_end: 1.0,
             schedule_diversity_penalty_mult_start: 1.0,
             schedule_diversity_penalty_mult_end: 1.0,
+
+            active_set_mode: false,
+            freeze_confidence_threshold: 0.9,
+            min_active_positions: 8,
 
             prune_min_score: -1.0,
             prune_max_age: 1000,
@@ -574,6 +593,9 @@ mod tests {
         assert_eq!(cfg.age_eta_schedule, "reciprocal");
         assert!((cfg.age_half_life - 0.0).abs() < 1e-8);
         assert_eq!(cfg.pheromone_schedule_mode, "fixed");
+        assert!(!cfg.active_set_mode);
+        assert!((cfg.freeze_confidence_threshold - 0.9).abs() < 1e-8);
+        assert_eq!(cfg.min_active_positions, 8);
         assert_eq!(cfg.mask_token_id(), 0);
         assert_eq!(cfg.total_vocab_size(), 1);
     }
