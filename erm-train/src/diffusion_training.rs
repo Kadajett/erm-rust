@@ -37,6 +37,7 @@ use erm_core::ants::{
     apply_death_respawn, follower_temperature_schedule, leader_temperature_schedule, AntColony,
     AntState, DeathMode, FollowerConfig, LeaderConfig,
 };
+use erm_core::bpe_tokenizer::BpeTokenizer;
 use erm_core::burn_scorer::{BurnScorer, BurnScorerConfig};
 use erm_core::config::{ErmConfig, PheromoneConfig};
 use erm_core::corruption::{corrupt, corrupt_spectral};
@@ -49,6 +50,7 @@ use erm_core::pheromone::{
     build_edge_traces, pheromone_rescale, prune_edges, update_pheromones_with_position_credit,
     PheromoneStats, RunningDeltaStats,
 };
+use erm_core::TokenizerApi;
 
 use crate::bridge::{tensor2d_to_vec, tensor_to_vec, tokens_to_tensor};
 use crate::streaming_dataset::TokenBatch;
@@ -120,6 +122,8 @@ pub struct DiffusionTrainer<B: AutodiffBackend> {
     device: B::Device,
     /// Total planned training steps (for temperature schedule). 0 = use fixed temps.
     pub total_steps: usize,
+    /// Tokenized answer-marker candidates for QA answer-only training mode.
+    answer_marker_patterns: Vec<Vec<i32>>,
 }
 
 impl<B: AutodiffBackend> DiffusionTrainer<B> {
@@ -151,6 +155,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
         let graph = RouteGraph::new(&config);
         let ant_state = AntState::new(&config);
         let pheromone_config = PheromoneConfig::from_config(&config);
+        let answer_marker_patterns = load_answer_marker_patterns(&config);
 
         let lr = config.learning_rate;
         Self {
@@ -165,6 +170,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             lr,
             device,
             total_steps: 0,
+            answer_marker_patterns,
         }
     }
 
@@ -218,7 +224,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
         // Iterate from heavy noise (t=big_t) down to fine (t=1).
         for t in (1..=big_t).rev() {
             // 1. Corrupt clean tokens at noise level t → z_t.
-            let corruption = if cfg.use_spectral_corruption {
+            let mut corruption = if cfg.use_spectral_corruption {
                 // Spectral corruption needs per-token surprisal; use uniform as
                 // baseline (equivalent to standard corruption but through the
                 // spectral code path). Real surprisal can be plugged in later.
@@ -227,6 +233,20 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             } else {
                 corrupt(&x_i32, t, cfg, rng)?
             };
+
+            if cfg.reasoning_answer_only_mode {
+                for batch_idx in 0..b {
+                    let seq_start = batch_idx * l;
+                    let seq_end = seq_start + l;
+                    let answer_start = answer_start_pos(
+                        &x_i32[seq_start..seq_end],
+                        &self.answer_marker_patterns,
+                        cfg.reasoning_answer_fallback_start_frac,
+                    );
+                    corruption.y_t[seq_start..seq_start + answer_start]
+                        .copy_from_slice(&x_i32[seq_start..seq_start + answer_start]);
+                }
+            }
             let z_t_u32: Vec<u32> = corruption.y_t.iter().map(|&v| v as u32).collect();
 
             // Build corruption mask: 1.0 for positions changed by corrupt(), 0.0 for clean.
@@ -821,6 +841,86 @@ fn apply_confidence_active_set(
     editable
 }
 
+fn load_answer_marker_patterns(config: &ErmConfig) -> Vec<Vec<i32>> {
+    if !config.reasoning_answer_only_mode || config.tokenizer_type != "bpe" {
+        return Vec::new();
+    }
+    if config.bpe_vocab_path.is_empty() {
+        eprintln!(
+            "[diffusion_train] warning: reasoning_answer_only_mode enabled but bpe_vocab_path is empty; using fallback answer split"
+        );
+        return Vec::new();
+    }
+
+    let tokenizer = match BpeTokenizer::load(&config.bpe_vocab_path) {
+        Ok(tok) => tok,
+        Err(e) => {
+            eprintln!(
+                "[diffusion_train] warning: cannot load BPE vocab at {} for reasoning markers: {e}",
+                config.bpe_vocab_path
+            );
+            return Vec::new();
+        }
+    };
+
+    let marker_texts = [
+        "\nAnswer:\n",
+        "\nAnswer:",
+        "Answer:\n",
+        "Answer:",
+        "\nOutput:\n",
+        "\nOutput:",
+        "Output:\n",
+        "Output:",
+    ];
+
+    let mut out: Vec<Vec<i32>> = Vec::new();
+    for marker in marker_texts {
+        let ids_u32 = tokenizer.encode_text(marker);
+        let ids: Vec<i32> = ids_u32.into_iter().map(|v| v as i32).collect();
+        if ids.is_empty() {
+            continue;
+        }
+        if !out.contains(&ids) {
+            out.push(ids);
+        }
+    }
+    out
+}
+
+fn find_subsequence(haystack: &[i32], needle: &[i32]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn answer_start_pos(clean_seq: &[i32], marker_patterns: &[Vec<i32>], fallback_frac: f32) -> usize {
+    if clean_seq.is_empty() {
+        return 0;
+    }
+
+    let mut best_start: Option<usize> = None;
+    for pattern in marker_patterns {
+        if let Some(idx) = find_subsequence(clean_seq, pattern) {
+            let candidate = idx.saturating_add(pattern.len());
+            best_start = Some(match best_start {
+                Some(cur) => cur.min(candidate),
+                None => candidate,
+            });
+        }
+    }
+    if let Some(start) = best_start {
+        return start.min(clean_seq.len().saturating_sub(1));
+    }
+
+    let frac = fallback_frac.clamp(0.0, 1.0);
+    let fallback = (clean_seq.len() as f32 * frac).floor() as usize;
+    fallback.min(clean_seq.len().saturating_sub(1))
+}
+
 /// Diffusion inference: K iterative coarse-to-fine steps from a masked start.
 ///
 /// No AR loop. Each step uses the scorer to fill the most uncertain masked
@@ -1140,5 +1240,28 @@ mod tests {
             }
         }
         assert!(found, "expected src=1 edge on dst=2");
+    }
+
+    #[test]
+    fn test_find_subsequence_basic() {
+        let hay = vec![1_i32, 2, 3, 4, 5];
+        let needle = vec![3_i32, 4];
+        assert_eq!(find_subsequence(&hay, &needle), Some(2));
+        assert_eq!(find_subsequence(&hay, &[9, 9]), None);
+    }
+
+    #[test]
+    fn test_answer_start_pos_uses_marker_when_found() {
+        let clean_seq = vec![10_i32, 11, 22, 33, 44, 55];
+        let patterns = vec![vec![22_i32, 33_i32]];
+        // Marker starts at 2, length 2 => answer starts at 4.
+        assert_eq!(answer_start_pos(&clean_seq, &patterns, 0.5), 4);
+    }
+
+    #[test]
+    fn test_answer_start_pos_uses_fraction_fallback() {
+        let clean_seq = vec![1_i32, 2, 3, 4, 5, 6, 7, 8];
+        let patterns: Vec<Vec<i32>> = Vec::new();
+        assert_eq!(answer_start_pos(&clean_seq, &patterns, 0.5), 4);
     }
 }

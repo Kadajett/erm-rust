@@ -148,6 +148,15 @@ pub struct ErmConfig {
     /// Minimum number of active corrupted positions per sequence when
     /// `active_set_mode` is enabled.
     pub min_active_positions: usize,
+    /// Restrict corruption/editing to answer spans for QA-formatted data.
+    ///
+    /// Intended for corpora formatted as:
+    /// `Question: ...` then `Answer: ...` (or `Output: ...`).
+    /// When enabled, tokens before the detected answer marker are kept fixed.
+    pub reasoning_answer_only_mode: bool,
+    /// Fallback answer start as a fraction of sequence length in `[0, 1]`
+    /// when no explicit answer marker is detected.
+    pub reasoning_answer_fallback_start_frac: f32,
 
     // ── Ant lifecycle ──────────────────────────────────────────────────
     /// Consecutive no-improvement steps before an ant "dies". `K`.
@@ -283,6 +292,8 @@ impl Default for ErmConfig {
             active_set_mode: false,
             freeze_confidence_threshold: 0.9,
             min_active_positions: 8,
+            reasoning_answer_only_mode: false,
+            reasoning_answer_fallback_start_frac: 0.5,
 
             prune_min_score: -1.0,
             prune_max_age: 1000,
@@ -627,6 +638,8 @@ mod tests {
         assert!(!cfg.active_set_mode);
         assert!((cfg.freeze_confidence_threshold - 0.9).abs() < 1e-8);
         assert_eq!(cfg.min_active_positions, 8);
+        assert!(!cfg.reasoning_answer_only_mode);
+        assert!((cfg.reasoning_answer_fallback_start_frac - 0.5).abs() < 1e-8);
         assert_eq!(cfg.mask_token_id(), 0);
         assert_eq!(cfg.total_vocab_size(), 1);
     }

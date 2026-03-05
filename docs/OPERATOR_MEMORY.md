@@ -1,12 +1,12 @@
 # Operator Memory (Shared: Codex + Claude)
 
-Last updated: 2026-03-05 UTC (05:30)
+Last updated: 2026-03-05 UTC (05:45)
 
 ## Current Live Run
 
-- Job: `erm-alice-run-m1m-v7-i11-r1-reasoning-resume`
-- Experiment id: `alice-run-b2-m1m-v7-reasoning-r1-i11-r1`
-- Status: running (resume canary on Burn CUDA from step `226750`; startup/tokenization phase in progress, first `metrics.jsonl` row pending)
+- Job: `erm-alice-run-m1m-v7-i12-r1-reasoning-answeronly-resume`
+- Experiment id: `alice-run-b2-m1m-v7-reasoning-r1-i12-r1-answeronly`
+- Status: running (resume canary on Burn CUDA from step `228750`; answer-only objective enabled via `reasoning_answer_only_mode=true`; startup/tokenization phase in progress)
 - Current data domain:
   - `/workspace/rust-pcn/data/reasoning-qa-sharded` (Q/A formatting, no `thinking` field)
 - Prior phase/data order before pivot:
@@ -203,6 +203,26 @@ Reasoning dataset pivot rollout (2026-03-05 UTC):
   - `steps = 200000`
   - retained CUDA backend and i10 pheromone/active-set schedule settings
 - AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-reasoning-r1-i11-r1`.
+
+Reasoning answer-only objective rollout (2026-03-05 UTC):
+- Code change: diffusion trainer now supports answer-only corruption/editing for QA format:
+  - `reasoning_answer_only_mode`
+  - `reasoning_answer_fallback_start_frac`
+  - answer marker detection for `Answer:` / `Output:` (BPE tokenized patterns)
+- Source run before redeploy:
+  - job `erm-alice-run-m1m-v7-i11-r1-reasoning-resume`, latest observed window `226760 -> 228660`.
+- Snapshot captured before stop/redeploy:
+  - `/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-reasoning-r1-i11-r1-20260305T054252Z`
+- New canary deployment:
+  - job `erm-alice-run-m1m-v7-i12-r1-reasoning-answeronly-resume`
+  - exp `alice-run-b2-m1m-v7-reasoning-r1-i12-r1-answeronly`
+  - resumed from `/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-reasoning-r1-i11-r1/checkpoints/latest` at step `228750`
+- Pivot config/runtime values:
+  - `data_dir = /workspace/rust-pcn/data/reasoning-qa-sharded`
+  - `reasoning_answer_only_mode = true`
+  - `reasoning_answer_fallback_start_frac = 0.5`
+  - retained CUDA backend and prior schedule/active-set pheromone controls
+- AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-reasoning-r1-i12-r1-answeronly`.
 
 ### CUDA/Burn Setup (Known-Good)
 

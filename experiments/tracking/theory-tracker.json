@@ -2257,9 +2257,86 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
+      "window_minutes_actual": 14,
+      "status": "completed",
+      "stop_reason": "stopped for answer-only reasoning objective rollout"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 226760,
+        "resume_local_end": 228660
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": 6.826982055,
+          "end_mean": 5.89117675,
+          "last_100_mean": 6.031161211,
+          "min": 4.325617,
+          "max": 8.406931
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": 3839,
+          "used_max": 3839
+        },
+        "host_ram_bytes": null,
+        "oom": false
+      },
+      "notes": "Initial reasoning-data pivot baseline. Sample outputs appeared visually repetitive due full-sequence logs and low corruption ratio, so next rollout enforces answer-only corruption/editing. Snapshot: /home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-reasoning-r1-i11-r1-20260305T054252Z."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v7-reasoning-r1-i12-r1-answeronly-2026-03-05T05-42-52Z-answer-only-corruption",
+    "created_at_utc": "2026-03-05T05:42:52Z",
+    "experiment_id": "alice-run-b2-m1m-v7-reasoning-r1-i12-r1-answeronly",
+    "tags": [
+      "theory",
+      "code_change",
+      "k8s_change",
+      "reasoning",
+      "answer-only",
+      "resume",
+      "cuda",
+      "aim-sidecar"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "code_change",
+      "summary": "Enable answer-only corruption/editing for QA reasoning training so question prefix stays fixed and model learns Question->Answer mapping.",
+      "changes": [
+        {
+          "field": "code",
+          "from": "full-sequence corruption/editing in diffusion training",
+          "to": "reasoning_answer_only_mode gates corruption/editing to answer span detected from Answer:/Output: markers with fallback split"
+        },
+        {
+          "field": "config_fields",
+          "from": "none",
+          "to": "reasoning_answer_only_mode, reasoning_answer_fallback_start_frac"
+        },
+        {
+          "field": "job_name",
+          "from": "erm-alice-run-m1m-v7-i11-r1-reasoning-resume",
+          "to": "erm-alice-run-m1m-v7-i12-r1-reasoning-answeronly-resume"
+        },
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v7-reasoning-r1-i11-r1",
+          "to": "alice-run-b2-m1m-v7-reasoning-r1-i12-r1-answeronly"
+        },
+        {
+          "field": "data_dir",
+          "from": "/workspace/rust-pcn/data/reasoning-qa-sharded",
+          "to": "/workspace/rust-pcn/data/reasoning-qa-sharded (unchanged)"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
       "window_minutes_actual": 0,
       "status": "running",
-      "stop_reason": "deployed and warming up on reasoning dataset"
+      "stop_reason": "deployed and warming up with answer-only objective"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
@@ -2283,7 +2360,7 @@
         "host_ram_bytes": null,
         "oom": null
       },
-      "notes": "Resume source snapshot: /home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i10-r1-20260305T052852Z."
+      "notes": "Resume source snapshot: /home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-reasoning-r1-i11-r1-20260305T054252Z."
     }
   }
 ]
