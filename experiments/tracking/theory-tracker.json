@@ -1855,23 +1855,23 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 2,
+      "window_minutes_actual": 3,
       "status": "running",
-      "stop_reason": "resume verified; waiting for first metrics window"
+      "stop_reason": "initial post-redeploy audit window"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
       "step_window": {
-        "resume_local_start": null,
-        "resume_local_end": null
+        "resume_local_start": 206770,
+        "resume_local_end": 206780
       },
       "metrics": {
         "loss": {
-          "start_mean": null,
-          "end_mean": null,
-          "last_100_mean": null,
-          "min": null,
-          "max": null
+          "start_mean": 5.4737363,
+          "end_mean": 5.2820787,
+          "last_100_mean": 5.3779075,
+          "min": 5.2820787,
+          "max": 5.4737363
         },
         "vram_mb": {
           "total": 6144,
@@ -1881,7 +1881,7 @@
         "host_ram_bytes": null,
         "oom": false
       },
-      "notes": "CUDA preflight passed and resume loaded from i04 latest checkpoint at step 206750. Process is active on GPU, but metrics file is still in startup warmup at the initial audit point."
+      "notes": "CUDA preflight passed and resume loaded from i04 latest checkpoint at step 206750. First metrics show much higher entropy (~1.27 mean) and lower top-1 share (~0.51 mean), indicating stronger exploration under half-life age decay; leader edges still zero."
     }
   }
 ]

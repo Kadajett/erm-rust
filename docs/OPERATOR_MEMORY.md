@@ -120,7 +120,7 @@ Ticket #5 rollout notes (2026-03-05 UTC):
   - `age_half_life = 128.0`
   - retained ticket #4 schedule controls (`linear`, evap/lambda/diversity multipliers)
 - AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i05-r1`.
-- Note: initial i05 audit point confirms CUDA resume and active GPU process; metrics writer is still in startup warmup.
+- Initial i05 audit window (`206770 -> 206780`) is live; early metrics show high entropy (`~1.27`) and low top-1 share (`~0.51`) versus i04, with leader edges still `0`.
 
 ### CUDA/Burn Setup (Known-Good)
 
