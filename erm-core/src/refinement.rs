@@ -229,7 +229,7 @@ pub fn refine_step_with_pheromones<R: Rng>(
         &hidden,
         d,
         config.route_epsilon,
-        config.route_lambda,
+        pheromone_config.route_lambda,
         config.route_mu,
         config.route_kappa_utility,
     )?;
@@ -391,7 +391,7 @@ pub fn full_colony_step<R: Rng>(
         &hidden,
         d,
         config.route_epsilon,
-        config.route_lambda,
+        pheromone_config.route_lambda,
         config.route_mu,
         config.route_kappa_utility,
     )?;
@@ -468,7 +468,11 @@ pub fn full_colony_step<R: Rng>(
     let pheromone_stats = update_pheromones(graph, &traces, &ant_deltas, pheromone_config)?;
 
     // Step 8: Insert proposed edges from leaders.
-    let edges_inserted = graph.propose_edges(&edge_proposals, config.phi_init, config.route_lambda);
+    let edges_inserted = graph.propose_edges(
+        &edge_proposals,
+        config.phi_init,
+        pheromone_config.route_lambda,
+    );
 
     // Step 9: Prune weak edges.
     let edges_pruned = prune_edges(
@@ -642,6 +646,14 @@ pub fn multi_step_refine<R: Rng>(
 
     for step in 0..multi_config.max_steps {
         let y_before = y_current.clone();
+        let t = multi_config.max_steps.saturating_sub(step);
+        let step_schedule = config.pheromone_step_schedule(t.max(1), multi_config.max_steps);
+        let step_pheromone_config = PheromoneConfig {
+            evaporation_rate: step_schedule.evaporation_rate,
+            route_lambda: step_schedule.route_lambda,
+            diversity_penalty: step_schedule.diversity_penalty,
+            ..pheromone_config.clone()
+        };
 
         // Track memory: y_current + y_before clones.
         let clone_mem = y_mem * 2 + step_stats.len() * std::mem::size_of::<StepStats>();
@@ -653,7 +665,7 @@ pub fn multi_step_refine<R: Rng>(
             graph,
             batch_idx,
             config,
-            pheromone_config,
+            &step_pheromone_config,
             editable,
             rng,
         )?;

@@ -298,13 +298,14 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
             let edit_scale = t as f32 / big_t as f32;
             let effective_max_edits =
                 ((cfg.max_edits() as f32 * edit_scale.max(0.1)).ceil() as usize).max(1);
+            let step_schedule = cfg.pheromone_step_schedule(t, big_t);
 
             // Route aggregation using hidden states.
             let (_, edge_weights) = self.graph.route_aggregate(
                 &hidden_cpu,
                 d,
                 cfg.route_epsilon,
-                cfg.route_lambda,
+                step_schedule.route_lambda,
                 cfg.route_mu,
                 cfg.route_kappa_utility,
             )?;
@@ -510,7 +511,12 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 &mut self.graph,
                 &traces,
                 &ant_deltas,
-                &self.pheromone_config,
+                &PheromoneConfig {
+                    evaporation_rate: step_schedule.evaporation_rate,
+                    route_lambda: step_schedule.route_lambda,
+                    diversity_penalty: step_schedule.diversity_penalty,
+                    ..self.pheromone_config.clone()
+                },
                 Some(&mut self.delta_stats),
                 &hidden_cpu,
                 d,
@@ -528,7 +534,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 &mut self.graph,
                 self.pheromone_config.prune_min_score,
                 self.pheromone_config.prune_max_age,
-                self.pheromone_config.route_lambda,
+                step_schedule.route_lambda,
             );
             total_pruned += pruned;
 

@@ -90,6 +90,21 @@ pub struct ErmConfig {
     /// Leader utility coefficient `κ` in route weight formula.
     /// `0.0` disables utility weighting.
     pub route_kappa_utility: f32,
+    /// Step schedule mode for pheromone/route controls.
+    /// Options: `"fixed"` (backward-compatible) or `"linear"`.
+    pub pheromone_schedule_mode: String,
+    /// Evaporation multiplier at the first refinement step (`t = T`).
+    pub schedule_evap_mult_start: f32,
+    /// Evaporation multiplier at the last refinement step (`t = 1`).
+    pub schedule_evap_mult_end: f32,
+    /// Route lambda multiplier at the first refinement step (`t = T`).
+    pub schedule_route_lambda_mult_start: f32,
+    /// Route lambda multiplier at the last refinement step (`t = 1`).
+    pub schedule_route_lambda_mult_end: f32,
+    /// Diversity-penalty multiplier at the first refinement step (`t = T`).
+    pub schedule_diversity_penalty_mult_start: f32,
+    /// Diversity-penalty multiplier at the last refinement step (`t = 1`).
+    pub schedule_diversity_penalty_mult_end: f32,
 
     // ── Ant lifecycle ──────────────────────────────────────────────────
     /// Consecutive no-improvement steps before an ant "dies". `K`.
@@ -210,6 +225,13 @@ impl Default for ErmConfig {
             route_lambda: 1.0,
             route_mu: 0.01,
             route_kappa_utility: 0.0,
+            pheromone_schedule_mode: "fixed".to_string(),
+            schedule_evap_mult_start: 1.0,
+            schedule_evap_mult_end: 1.0,
+            schedule_route_lambda_mult_start: 1.0,
+            schedule_route_lambda_mult_end: 1.0,
+            schedule_diversity_penalty_mult_start: 1.0,
+            schedule_diversity_penalty_mult_end: 1.0,
 
             prune_min_score: -1.0,
             prune_max_age: 1000,
@@ -250,6 +272,53 @@ impl Default for ErmConfig {
 }
 
 impl ErmConfig {
+    /// Scheduled pheromone/route parameters for one refinement step.
+    #[must_use]
+    pub fn pheromone_step_schedule(&self, t: usize, total_steps: usize) -> PheromoneStepSchedule {
+        let base_evap = self.pheromone_evap.clamp(0.0, 1.0);
+        let base_lambda = self.route_lambda.max(0.0);
+        let base_diversity_penalty = PheromoneConfig::default().diversity_penalty;
+
+        if self.pheromone_schedule_mode == "linear" {
+            let t_total = total_steps.max(1) as f32;
+            let t_clamped = (t as f32).clamp(1.0, t_total);
+            // s=0 at t=T (coarse), s=1 at t=1 (fine).
+            let s = if total_steps <= 1 {
+                1.0
+            } else {
+                (t_total - t_clamped) / (t_total - 1.0)
+            };
+
+            let evap_mult = lerp(
+                self.schedule_evap_mult_start,
+                self.schedule_evap_mult_end,
+                s,
+            );
+            let lambda_mult = lerp(
+                self.schedule_route_lambda_mult_start,
+                self.schedule_route_lambda_mult_end,
+                s,
+            );
+            let diversity_mult = lerp(
+                self.schedule_diversity_penalty_mult_start,
+                self.schedule_diversity_penalty_mult_end,
+                s,
+            );
+
+            return PheromoneStepSchedule {
+                evaporation_rate: (base_evap * evap_mult).clamp(0.0, 1.0),
+                route_lambda: (base_lambda * lambda_mult).max(0.0),
+                diversity_penalty: (base_diversity_penalty * diversity_mult).clamp(0.0, 1.0),
+            };
+        }
+
+        PheromoneStepSchedule {
+            evaporation_rate: base_evap,
+            route_lambda: base_lambda,
+            diversity_penalty: base_diversity_penalty,
+        }
+    }
+
     /// The MASK sentinel token id (one past the last real vocab id).
     #[must_use]
     pub fn mask_token_id(&self) -> i32 {
@@ -350,6 +419,21 @@ impl ErmConfig {
         self.replace_rate_max
             + (self.replace_rate_min - self.replace_rate_max) * (big_t - t_f) / (big_t - 1.0)
     }
+}
+
+/// Step-level schedule outputs for pheromone and route controls.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PheromoneStepSchedule {
+    /// Evaporation rate `ρ` to use at this step.
+    pub evaporation_rate: f32,
+    /// Route taint penalty coefficient `λ` to use at this step.
+    pub route_lambda: f32,
+    /// Diversity penalty multiplier to use at this step.
+    pub diversity_penalty: f32,
+}
+
+fn lerp(start: f32, end: f32, s: f32) -> f32 {
+    start + (end - start) * s
 }
 
 /// Pheromone-specific configuration extracted from [`ErmConfig`].
@@ -470,8 +554,51 @@ mod tests {
         assert!((cfg.phi_min - 1e-4).abs() < 1e-8);
         assert_eq!(cfg.local_update_xi, 0.0);
         assert_eq!(cfg.elite_k, 0);
+        assert_eq!(cfg.pheromone_schedule_mode, "fixed");
         assert_eq!(cfg.mask_token_id(), 0);
         assert_eq!(cfg.total_vocab_size(), 1);
+    }
+
+    #[test]
+    fn test_pheromone_step_schedule_fixed_mode_uses_base_values() {
+        let cfg = ErmConfig {
+            pheromone_evap: 0.2,
+            route_lambda: 1.3,
+            pheromone_schedule_mode: "fixed".to_string(),
+            ..ErmConfig::default()
+        };
+        let s = cfg.pheromone_step_schedule(4, 6);
+        assert!((s.evaporation_rate - 0.2).abs() < 1e-8);
+        assert!((s.route_lambda - 1.3).abs() < 1e-8);
+        assert!((s.diversity_penalty - PheromoneConfig::default().diversity_penalty).abs() < 1e-8);
+    }
+
+    #[test]
+    fn test_pheromone_step_schedule_linear_mode_interpolates() {
+        let cfg = ErmConfig {
+            pheromone_evap: 0.1,
+            route_lambda: 2.0,
+            pheromone_schedule_mode: "linear".to_string(),
+            schedule_evap_mult_start: 1.5,
+            schedule_evap_mult_end: 0.5,
+            schedule_route_lambda_mult_start: 0.5,
+            schedule_route_lambda_mult_end: 1.5,
+            schedule_diversity_penalty_mult_start: 1.0,
+            schedule_diversity_penalty_mult_end: 0.5,
+            ..ErmConfig::default()
+        };
+
+        // t=T (coarse) => start multipliers.
+        let s_t = cfg.pheromone_step_schedule(6, 6);
+        assert!((s_t.evaporation_rate - 0.15).abs() < 1e-8);
+        assert!((s_t.route_lambda - 1.0).abs() < 1e-8);
+        assert!((s_t.diversity_penalty - 0.8).abs() < 1e-8);
+
+        // t=1 (fine) => end multipliers.
+        let s_1 = cfg.pheromone_step_schedule(1, 6);
+        assert!((s_1.evaporation_rate - 0.05).abs() < 1e-8);
+        assert!((s_1.route_lambda - 3.0).abs() < 1e-8);
+        assert!((s_1.diversity_penalty - 0.4).abs() < 1e-8);
     }
 
     #[test]
