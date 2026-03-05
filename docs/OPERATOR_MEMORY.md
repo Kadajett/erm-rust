@@ -1,12 +1,12 @@
 # Operator Memory (Shared: Codex + Claude)
 
-Last updated: 2026-03-05 UTC (01:47)
+Last updated: 2026-03-05 UTC (02:56)
 
 ## Current Live Run
 
-- Job: `erm-alice-run-m1m-v7-i04-r1-resume`
-- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i04-r1`
-- Status: running (resume canary on Burn CUDA from step `196000`)
+- Job: `erm-alice-run-m1m-v7-i05-r1-resume`
+- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i05-r1`
+- Status: running (resume canary on Burn CUDA from step `206750`)
 - Confirmed phase/data order:
   - Phase 1: `100000` steps on `/workspace/rust-pcn/data/english-frontload-sharded`
   - Phase 2: `200000` steps on `/workspace/rust-pcn/data/sentence-bridge-smclm-sharded`
@@ -103,7 +103,24 @@ Ticket #4 rollout notes (2026-03-05 UTC):
   - `schedule_route_lambda_mult_start = 0.7`, `schedule_route_lambda_mult_end = 1.3`
   - `schedule_diversity_penalty_mult_start = 0.8`, `schedule_diversity_penalty_mult_end = 1.0`
 - AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i04-r1`.
-- Initial i04 audit window (step `196010 -> 196360`) is live; early metrics show entropy `~0.90` and top-1 edge share `~0.61` (still more exploratory than i02 baseline).
+- Final i04 canary window (step `196010 -> 206750`) stayed moderately exploratory (entropy mean `~0.85`, top-1 share mean `~0.62`) but leader edges remained `0`.
+
+Ticket #5 rollout notes (2026-03-05 UTC):
+- Code commit on `main`: `ee1f3f3` (age-based eta schedule with half-life option).
+- Source run before redeploy:
+  - job `erm-alice-run-m1m-v7-i04-r1-resume`, latest checkpoint step `206750`.
+- Snapshot captured before stop/rebuild:
+  - `/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i04-r1-20260305T025121Z`
+- New canary deployment:
+  - job `erm-alice-run-m1m-v7-i05-r1-resume`
+  - exp `alice-run-b2-m1m-v7-sharded-3phase-r1-i05-r1`
+  - resumed from `/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1-i04-r1/checkpoints/latest` at step `206750`
+- Ticket #5 config values injected in `train-config.json`:
+  - `age_eta_schedule = half_life`
+  - `age_half_life = 128.0`
+  - retained ticket #4 schedule controls (`linear`, evap/lambda/diversity multipliers)
+- AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i05-r1`.
+- Note: initial i05 audit point confirms CUDA resume and active GPU process; metrics writer is still in startup warmup.
 
 ### CUDA/Burn Setup (Known-Good)
 

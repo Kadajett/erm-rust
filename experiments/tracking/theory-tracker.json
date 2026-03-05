@@ -1778,23 +1778,23 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 5,
-      "status": "running",
-      "stop_reason": "initial post-redeploy audit window"
+      "window_minutes_actual": 63,
+      "status": "completed",
+      "stop_reason": "stopped intentionally for ticket-5 rollout after extended canary window"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
       "step_window": {
         "resume_local_start": 196010,
-        "resume_local_end": 196360
+        "resume_local_end": 206750
       },
       "metrics": {
         "loss": {
           "start_mean": 5.6150618,
-          "end_mean": 5.4418693,
-          "last_100_mean": 5.437651794444445,
+          "end_mean": 5.7790504,
+          "last_100_mean": 5.532506154,
           "min": 4.954361,
-          "max": 5.8401527
+          "max": 6.06693
         },
         "vram_mb": {
           "total": 6144,
@@ -1804,7 +1804,84 @@
         "host_ram_bytes": null,
         "oom": false
       },
-      "notes": "Resume log confirms CUDA backend and step restore at 196000. Current window remains moderately diverse (entropy mean ~0.90, top-1 share mean ~0.61) versus i02 baseline, but leader-edge activity is still zero and loss is noisy."
+      "notes": "Extended canary showed persistent exploration relative to i02 (entropy mean ~0.85, top-1 share mean ~0.62) with no collapse, but leader-edge activity remained zero and loss stayed noisy without a stable downward trend."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i05-r1-2026-03-05T02-54-02Z-ticket5-age-half-life",
+    "created_at_utc": "2026-03-05T02:54:02Z",
+    "experiment_id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i05-r1",
+    "tags": [
+      "theory",
+      "code_change",
+      "ticket-5",
+      "k8s_change",
+      "resume",
+      "aim-sidecar",
+      "cuda",
+      "age-half-life"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "code_change",
+      "summary": "Add age-based eta schedule with half-life option and redeploy CUDA resume canary with `age_eta_schedule=half_life`.",
+      "changes": [
+        {
+          "field": "commit",
+          "from": "0a4233f",
+          "to": "ee1f3f3"
+        },
+        {
+          "field": "code",
+          "from": "edge_eta = eta / (1 + age)",
+          "to": "configurable edge_eta schedule: reciprocal or half-life decay"
+        },
+        {
+          "field": "job_name",
+          "from": "erm-alice-run-m1m-v7-i04-r1-resume",
+          "to": "erm-alice-run-m1m-v7-i05-r1-resume"
+        },
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v7-sharded-3phase-r1-i04-r1",
+          "to": "alice-run-b2-m1m-v7-sharded-3phase-r1-i05-r1"
+        },
+        {
+          "field": "config_overrides",
+          "from": "age_eta_schedule=reciprocal",
+          "to": "age_eta_schedule=half_life, age_half_life=128.0 (plus existing schedule/elite settings)"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 2,
+      "status": "running",
+      "stop_reason": "resume verified; waiting for first metrics window"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": null,
+        "resume_local_end": null
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": null,
+          "end_mean": null,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": 1684,
+          "used_max": 1684
+        },
+        "host_ram_bytes": null,
+        "oom": false
+      },
+      "notes": "CUDA preflight passed and resume loaded from i04 latest checkpoint at step 206750. Process is active on GPU, but metrics file is still in startup warmup at the initial audit point."
     }
   }
 ]
