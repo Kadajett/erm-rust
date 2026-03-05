@@ -1,12 +1,12 @@
 # Operator Memory (Shared: Codex + Claude)
 
-Last updated: 2026-03-05 UTC (02:56)
+Last updated: 2026-03-05 UTC (03:28)
 
 ## Current Live Run
 
-- Job: `erm-alice-run-m1m-v7-i05-r1-resume`
-- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i05-r1`
-- Status: running (resume canary on Burn CUDA from step `206750`)
+- Job: `erm-alice-run-m1m-v7-i07-r1-resume`
+- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i07-r1`
+- Status: running (resume canary on Burn CUDA from step `211250`)
 - Confirmed phase/data order:
   - Phase 1: `100000` steps on `/workspace/rust-pcn/data/english-frontload-sharded`
   - Phase 2: `200000` steps on `/workspace/rust-pcn/data/sentence-bridge-smclm-sharded`
@@ -120,7 +120,20 @@ Ticket #5 rollout notes (2026-03-05 UTC):
   - `age_half_life = 128.0`
   - retained ticket #4 schedule controls (`linear`, evap/lambda/diversity multipliers)
 - AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i05-r1`.
-- Mid i05 audit window (`206760 -> 210180`) is live; exploration settled near i04 levels (entropy `~0.85`, top-1 share `~0.62`), with leader edges still `0`.
+- Final i05 audit window (`206760 -> 211160`) remained stable but still showed `leader_edges = 0` (entropy `~0.85`, top-1 share `~0.62`).
+
+Leader-edge wiring fix rollout (2026-03-05 UTC):
+- Code commit on `main`: `d3402ba` (diffusion loop now inserts leader edges via `propose_edges` and updates leader utility EMA each step).
+- Source run before redeploy:
+  - job `erm-alice-run-m1m-v7-i05-r1-resume`, latest checkpoint step `211000`.
+- Snapshot captured before stop/rebuild:
+  - `/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i05-r1-20260305T032350Z`
+- New canary deployment:
+  - job `erm-alice-run-m1m-v7-i07-r1-resume`
+  - exp `alice-run-b2-m1m-v7-sharded-3phase-r1-i07-r1`
+  - resumed from `/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1-i05-r1/checkpoints/latest` at step `211250`
+- AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i07-r1`.
+- Initial i07 audit window (`211260 -> 211390`) confirms leader-edge fix is working: `leader_edges` now non-zero (mean `~522`), leader-edge fraction `~0.67`, survival `~0.71`.
 
 ### CUDA/Burn Setup (Known-Good)
 

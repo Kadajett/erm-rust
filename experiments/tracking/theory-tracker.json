@@ -1855,21 +1855,21 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 23,
-      "status": "running",
-      "stop_reason": "mid-window audit refresh"
+      "window_minutes_actual": 29,
+      "status": "completed",
+      "stop_reason": "stopped intentionally for leader-edge wiring fix rollout"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
       "step_window": {
         "resume_local_start": 206760,
-        "resume_local_end": 210180
+        "resume_local_end": 211160
       },
       "metrics": {
         "loss": {
           "start_mean": 5.625518,
-          "end_mean": 5.5760202,
-          "last_100_mean": 5.517940789000001,
+          "end_mean": 5.529529,
+          "last_100_mean": 5.551712713,
           "min": 5.047784,
           "max": 5.9935083
         },
@@ -1881,7 +1881,84 @@
         "host_ram_bytes": null,
         "oom": false
       },
-      "notes": "CUDA preflight passed and resume loaded from i04 latest checkpoint at step 206750. Exploration surge in the first few points normalized by this window (entropy mean ~0.85, top-1 share mean ~0.62), broadly matching late i04 behavior; leader edges remain zero."
+      "notes": "Run resumed from i04 step 206750 and stayed stable through step 211160. Diversity/edge concentration remained similar to late i04, and leader-edge metrics stayed pinned at zero; snapshot captured at /home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i05-r1-20260305T032350Z."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i07-r1-2026-03-05T03-26-20Z-leader-edge-wiring-fix",
+    "created_at_utc": "2026-03-05T03:26:20Z",
+    "experiment_id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i07-r1",
+    "tags": [
+      "theory",
+      "code_change",
+      "ticket-leader-wiring",
+      "k8s_change",
+      "resume",
+      "aim-sidecar",
+      "cuda",
+      "leader-edge"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "code_change",
+      "summary": "Fix diffusion training to insert true leader edges and update leader utility EMA each step, then redeploy CUDA resume canary.",
+      "changes": [
+        {
+          "field": "commit",
+          "from": "31ee356",
+          "to": "d3402ba"
+        },
+        {
+          "field": "code",
+          "from": "leader proposals inserted via add_edge() and utility never updated",
+          "to": "leader proposals inserted via propose_edges() and utility updated via update_leader_utility()"
+        },
+        {
+          "field": "job_name",
+          "from": "erm-alice-run-m1m-v7-i05-r1-resume",
+          "to": "erm-alice-run-m1m-v7-i07-r1-resume"
+        },
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v7-sharded-3phase-r1-i05-r1",
+          "to": "alice-run-b2-m1m-v7-sharded-3phase-r1-i07-r1"
+        },
+        {
+          "field": "config_overrides",
+          "from": "i05 settings",
+          "to": "i05 settings retained (linear schedule + age_half_life), with leader-edge wiring fix in code"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 7,
+      "status": "running",
+      "stop_reason": "initial post-redeploy audit window"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 211260,
+        "resume_local_end": 211390
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": 5.6204185,
+          "end_mean": 5.3074346,
+          "last_100_mean": 5.445193571428571,
+          "min": 4.9786787,
+          "max": 5.6762705
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": 916,
+          "used_max": 916
+        },
+        "host_ram_bytes": null,
+        "oom": false
+      },
+      "notes": "CUDA preflight passed and resume loaded from i05 latest checkpoint at step 211250. Leader-edge wiring fix is active: leader_edges mean ~522.5, leader_edge_fraction mean ~0.67, leader_survival mean ~0.71 in the first observed window."
     }
   }
 ]
