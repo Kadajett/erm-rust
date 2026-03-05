@@ -1,12 +1,12 @@
 # Operator Memory (Shared: Codex + Claude)
 
-Last updated: 2026-03-05 UTC (01:04)
+Last updated: 2026-03-05 UTC (01:47)
 
 ## Current Live Run
 
-- Job: `erm-alice-run-m1m-v7-i02-r1-resume`
-- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i02-r1`
-- Status: running (resume canary on CUDA from step `190000`)
+- Job: `erm-alice-run-m1m-v7-i04-r1-resume`
+- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i04-r1`
+- Status: running (resume canary on Burn CUDA from step `196000`)
 - Confirmed phase/data order:
   - Phase 1: `100000` steps on `/workspace/rust-pcn/data/english-frontload-sharded`
   - Phase 2: `200000` steps on `/workspace/rust-pcn/data/sentence-bridge-smclm-sharded`
@@ -69,6 +69,41 @@ Ticket #2 rollout notes (2026-03-05 UTC):
   - `elite_k = 10`
   - `phi_min = 0.0001`
 - AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i02-r1`.
+
+Ticket #3 rollout notes (2026-03-05 UTC):
+- Code commit on `main`: `ef9b8cc` (ACS local pheromone update control).
+- Source run before redeploy:
+  - job `erm-alice-run-m1m-v7-i02-r1-resume`, latest checkpoint step `194750`.
+- Snapshot captured before stop/rebuild:
+  - `/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i02-r1-20260305T013212Z`
+- New canary deployment:
+  - job `erm-alice-run-m1m-v7-i03-r1-resume`
+  - exp `alice-run-b2-m1m-v7-sharded-3phase-r1-i03-r1`
+  - resumed from `/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1-i02-r1/checkpoints/latest` at step `195000`
+- Ticket #3 config values injected in `train-config.json`:
+  - `local_update_xi = 0.01`
+  - `route_kappa_utility = 0.5`
+  - `elite_k = 10`
+  - `phi_min = 0.0001`
+- AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i03-r1`.
+
+Ticket #4 rollout notes (2026-03-05 UTC):
+- Code commit on `main`: `5d9fafb` (step-dependent pheromone schedule hooks).
+- Source run before redeploy:
+  - job `erm-alice-run-m1m-v7-i03-r1-resume`, latest checkpoint step `195750`.
+- Snapshot captured before stop/rebuild:
+  - `/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i03-r1-20260305T014227Z`
+- New canary deployment:
+  - job `erm-alice-run-m1m-v7-i04-r1-resume`
+  - exp `alice-run-b2-m1m-v7-sharded-3phase-r1-i04-r1`
+  - resumed from `/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1-i03-r1/checkpoints/latest` at step `196000`
+- Ticket #4 config values injected in `train-config.json`:
+  - `pheromone_schedule_mode = linear`
+  - `schedule_evap_mult_start = 1.5`, `schedule_evap_mult_end = 0.7`
+  - `schedule_route_lambda_mult_start = 0.7`, `schedule_route_lambda_mult_end = 1.3`
+  - `schedule_diversity_penalty_mult_start = 0.8`, `schedule_diversity_penalty_mult_end = 1.0`
+- AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i04-r1`.
+- Note: initial audit point showed `metrics.jsonl` created but still empty during startup warmup.
 
 ### CUDA/Burn Setup (Known-Good)
 
