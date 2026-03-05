@@ -2009,9 +2009,9 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 0,
-      "status": "proposed",
-      "stop_reason": "awaiting redeploy"
+      "window_minutes_actual": 3,
+      "status": "running",
+      "stop_reason": "redeployed and running; waiting for first metrics rows"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
@@ -2035,7 +2035,7 @@
         "host_ram_bytes": null,
         "oom": null
       },
-      "notes": "Proposed immediately after disk-pressure cleanup that removed old v7 experiment directories and preserved i07-r1 for resume source."
+      "notes": "Redeployed successfully: CUDA backend confirmed, resumed from step 218250, AIM sidecar retargeted to i08. Run is in startup/tokenization phase and has not emitted first metrics row yet."
     }
   }
 ]

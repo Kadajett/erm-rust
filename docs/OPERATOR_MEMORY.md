@@ -1,12 +1,12 @@
 # Operator Memory (Shared: Codex + Claude)
 
-Last updated: 2026-03-05 UTC (03:28)
+Last updated: 2026-03-05 UTC (04:30)
 
 ## Current Live Run
 
-- Job: `erm-alice-run-m1m-v7-i07-r1-resume`
-- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i07-r1`
-- Status: running (resume canary on Burn CUDA from step `211250`)
+- Job: `erm-alice-run-m1m-v7-i08-r1-resume`
+- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i08-r1`
+- Status: running (resume canary on Burn CUDA from step `218250`; startup/tokenization phase in progress, first `metrics.jsonl` row pending)
 - Confirmed phase/data order:
   - Phase 1: `100000` steps on `/workspace/rust-pcn/data/english-frontload-sharded`
   - Phase 2: `200000` steps on `/workspace/rust-pcn/data/sentence-bridge-smclm-sharded`
@@ -134,6 +134,28 @@ Leader-edge wiring fix rollout (2026-03-05 UTC):
   - resumed from `/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1-i05-r1/checkpoints/latest` at step `211250`
 - AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i07-r1`.
 - Initial i07 audit window (`211260 -> 211390`) confirms leader-edge fix is working: `leader_edges` now non-zero (mean `~522`), leader-edge fraction `~0.67`, survival `~0.71`.
+
+Post-i07 operational note (2026-03-05 UTC):
+- i07 later failed due kubelet eviction (`ephemeral-storage` disk pressure), not model/code panic.
+- Emergency cleanup completed with root cleanup pod:
+  - removed old `alice-run-b2-m1m-v7-sharded-3phase-r1*` experiments
+  - preserved only `/home/kadajett/dev/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1-i07-r1`
+  - host disk moved from ~84% used to ~63% used.
+
+Ticket #7 rollout notes (2026-03-05 UTC):
+- Code commit on `main`: `2b2a745` (confidence-based active-set refinement in diffusion train/infer + config fields).
+- Source run before redeploy:
+  - job `erm-alice-run-m1m-v7-i07-r1-resume`, latest checkpoint step `218250`.
+- New canary deployment:
+  - job `erm-alice-run-m1m-v7-i08-r1-resume`
+  - exp `alice-run-b2-m1m-v7-sharded-3phase-r1-i08-r1`
+  - resumed from `/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1-i07-r1/checkpoints/latest` at step `218250`
+- Ticket #7 config values injected in `train-config.json`:
+  - `active_set_mode = true`
+  - `freeze_confidence_threshold = 0.85`
+  - `min_active_positions = 16`
+- Pod resources now request/limit ephemeral storage (`2Gi`/`8Gi`) to reduce eviction risk under disk pressure.
+- AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i08-r1`.
 
 ### CUDA/Burn Setup (Known-Good)
 
