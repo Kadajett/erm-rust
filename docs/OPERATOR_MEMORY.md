@@ -1,12 +1,12 @@
 # Operator Memory (Shared: Codex + Claude)
 
-Last updated: 2026-03-04 UTC (23:56)
+Last updated: 2026-03-05 UTC (01:04)
 
 ## Current Live Run
 
-- Job: `erm-alice-run-m1m-v7-i01-r1-resume`
-- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i01-r1`
-- Status: running (resume canary on CUDA from step `179000`)
+- Job: `erm-alice-run-m1m-v7-i02-r1-resume`
+- Experiment id: `alice-run-b2-m1m-v7-sharded-3phase-r1-i02-r1`
+- Status: running (resume canary on CUDA from step `190000`)
 - Confirmed phase/data order:
   - Phase 1: `100000` steps on `/workspace/rust-pcn/data/english-frontload-sharded`
   - Phase 2: `200000` steps on `/workspace/rust-pcn/data/sentence-bridge-smclm-sharded`
@@ -48,10 +48,27 @@ Ticket #1 rollout notes (2026-03-04 UTC):
   - job `erm-alice-run-m1m-v7-i01-r1-resume`
   - exp `alice-run-b2-m1m-v7-sharded-3phase-r1-i01-r1`
   - resumed from `/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1-i06-r6/checkpoints/latest` at step `179000`
+- Additional safety snapshots captured during ticket #1 run:
+  - `/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i01-r1-20260305T005035Z`
+  - `/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i01-r1-20260305T005745Z`
 - Ticket #1 config values injected in `train-config.json`:
   - `phi_min = 0.0001`
   - `elite_k = 10` (10% of 96 ants)
 - AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i01-r1`.
+
+Ticket #2 rollout notes (2026-03-05 UTC):
+- Code commit on `main`: `e3760fb` (route aggregation utility weighting).
+- Source run before redeploy:
+  - job `erm-alice-run-m1m-v7-i01-r1-resume`, latest checkpoint step `189750`.
+- New canary deployment:
+  - job `erm-alice-run-m1m-v7-i02-r1-resume`
+  - exp `alice-run-b2-m1m-v7-sharded-3phase-r1-i02-r1`
+  - resumed from `/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-sharded-3phase-r1-i01-r1/checkpoints/latest` at step `190000`
+- Ticket #2 config values injected in `train-config.json`:
+  - `route_kappa_utility = 0.5`
+  - `elite_k = 10`
+  - `phi_min = 0.0001`
+- AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-sharded-3phase-r1-i02-r1`.
 
 ### CUDA/Burn Setup (Known-Good)
 

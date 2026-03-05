@@ -1548,23 +1548,23 @@
     },
     "evaluation": {
       "window_minutes_target": 60,
-      "window_minutes_actual": 4,
-      "status": "running",
-      "stop_reason": "initial ticket-1 validation window; awaiting extended observation"
+      "window_minutes_actual": 67,
+      "status": "completed",
+      "stop_reason": "stopped intentionally for ticket-2 rollout after full-hour window"
     },
     "result": {
       "reported_by_model": "gpt-5-codex",
       "step_window": {
         "resume_local_start": 179010,
-        "resume_local_end": 179180
+        "resume_local_end": 189990
       },
       "metrics": {
         "loss": {
           "start_mean": 5.7883596,
-          "end_mean": 5.3856487,
-          "last_100_mean": 5.5552248111111115,
-          "min": 5.0177755,
-          "max": 5.7883596
+          "end_mean": 5.8334465,
+          "last_100_mean": 5.580933144,
+          "min": 4.988944,
+          "max": 6.1345286
         },
         "vram_mb": {
           "total": 6144,
@@ -1574,7 +1574,83 @@
         "host_ram_bytes": null,
         "oom": false
       },
-      "notes": "New run resumed from step 179000 with CUDA runtimeClass; metrics and AIM watcher are both active with ticket-1 config fields present in train-config.json."
+      "notes": "Snapshot captured at /home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-sharded-3phase-r1-i01-r1-20260305T005745Z before rolling to ticket-2."
+    }
+  },
+  {
+    "id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i02-r1-2026-03-05T01-01-41Z-ticket2-route-utility",
+    "created_at_utc": "2026-03-05T01:03:30Z",
+    "experiment_id": "alice-run-b2-m1m-v7-sharded-3phase-r1-i02-r1",
+    "tags": [
+      "theory",
+      "code_change",
+      "ticket-2",
+      "k8s_change",
+      "resume",
+      "aim-sidecar",
+      "cuda"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "code_change",
+      "summary": "Add leader utility term to route aggregation score and run a new CUDA resume canary with utility weighting enabled.",
+      "changes": [
+        {
+          "field": "commit",
+          "from": "57a6683",
+          "to": "e3760fb"
+        },
+        {
+          "field": "code",
+          "from": "w_raw = log(phi+eps) - lambda*taint - mu*age",
+          "to": "w_raw = log(phi+eps) + kappa*norm(utility) - lambda*taint - mu*age"
+        },
+        {
+          "field": "job_name",
+          "from": "erm-alice-run-m1m-v7-i01-r1-resume",
+          "to": "erm-alice-run-m1m-v7-i02-r1-resume"
+        },
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v7-sharded-3phase-r1-i01-r1",
+          "to": "alice-run-b2-m1m-v7-sharded-3phase-r1-i02-r1"
+        },
+        {
+          "field": "config_overrides",
+          "from": "route_kappa_utility=0.0 (implicit)",
+          "to": "route_kappa_utility=0.5, elite_k=10, phi_min=0.0001"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 3,
+      "status": "running",
+      "stop_reason": "initial ticket-2 window healthy; continue observation"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 190010,
+        "resume_local_end": 190080
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": 5.749191,
+          "end_mean": 5.7317595,
+          "last_100_mean": 5.4577475125,
+          "min": 5.1548557,
+          "max": 5.749191
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": 725,
+          "used_max": 725
+        },
+        "host_ram_bytes": null,
+        "oom": false
+      },
+      "notes": "Run resumed from step 190000; config confirms route_kappa_utility=0.5 and AIM watcher is attached to i02-r1."
     }
   }
 ]
