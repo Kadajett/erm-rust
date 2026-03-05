@@ -51,6 +51,7 @@ use erm_core::pheromone::{
     PheromoneStats, RunningDeltaStats,
 };
 use erm_core::TokenizerApi;
+use rand::Rng;
 
 use crate::bridge::{tensor2d_to_vec, tensor_to_vec, tokens_to_tensor};
 use crate::streaming_dataset::TokenBatch;
@@ -234,7 +235,19 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 corrupt(&x_i32, t, cfg, rng)?
             };
 
-            if cfg.reasoning_answer_only_mode {
+            if cfg.completion_mode {
+                let mask_id = cfg.mask_token_id();
+                for batch_idx in 0..b {
+                    let seq_start = batch_idx * l;
+                    let seq_end = seq_start + l;
+                    let completion_start = completion_start_pos(l, cfg, rng);
+                    corruption.y_t[seq_start..seq_start + completion_start]
+                        .copy_from_slice(&x_i32[seq_start..seq_start + completion_start]);
+                    for token in &mut corruption.y_t[seq_start + completion_start..seq_end] {
+                        *token = mask_id;
+                    }
+                }
+            } else if cfg.reasoning_answer_only_mode {
                 for batch_idx in 0..b {
                     let seq_start = batch_idx * l;
                     let seq_end = seq_start + l;
@@ -919,6 +932,25 @@ fn answer_start_pos(clean_seq: &[i32], marker_patterns: &[Vec<i32>], fallback_fr
     let frac = fallback_frac.clamp(0.0, 1.0);
     let fallback = (clean_seq.len() as f32 * frac).floor() as usize;
     fallback.min(clean_seq.len().saturating_sub(1))
+}
+
+fn completion_start_pos<R: Rng>(seq_len: usize, cfg: &ErmConfig, rng: &mut R) -> usize {
+    if seq_len <= 1 {
+        return 0;
+    }
+
+    let min_frac = cfg.completion_target_min_frac.clamp(0.0, 1.0);
+    let max_frac = cfg.completion_target_max_frac.clamp(min_frac, 1.0);
+    let min_len = ((seq_len as f32) * min_frac).floor() as usize;
+    let max_len = ((seq_len as f32) * max_frac).floor() as usize;
+    let min_len = min_len.clamp(1, seq_len);
+    let max_len = max_len.clamp(min_len, seq_len);
+    let target_len = if min_len == max_len {
+        min_len
+    } else {
+        rng.gen_range(min_len..=max_len)
+    };
+    seq_len.saturating_sub(target_len)
 }
 
 /// Diffusion inference: K iterative coarse-to-fine steps from a masked start.

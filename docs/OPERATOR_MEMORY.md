@@ -1,14 +1,14 @@
 # Operator Memory (Shared: Codex + Claude)
 
-Last updated: 2026-03-05 UTC (06:38)
+Last updated: 2026-03-05 UTC (18:00)
 
 ## Current Live Run
 
-- Job: `erm-alice-run-m1m-v7-i13-r1-reasoning-answeronly-resume`
-- Experiment id: `alice-run-b2-m1m-v7-reasoning-r1-i13-r1-answeronly`
-- Status: running (resume canary on Burn CUDA from step `238000`; answer-only objective enabled via `reasoning_answer_only_mode=true`)
+- Job: `erm-alice-run-m1m-v7-i14-r1-english-completion-resume`
+- Experiment id: `alice-run-b2-m1m-v7-english-r1-i14-r1-completion`
+- Status: running (resume canary on Burn CUDA from step `364000`; completion objective enabled via `completion_mode=true`; startup/tokenization phase in progress)
 - Current data domain:
-  - `/workspace/rust-pcn/data/reasoning-qa-sharded` (Q/A formatting, no `thinking` field)
+  - `/workspace/rust-pcn/data/english-frontload-sharded` (English text strings; completion-mode suffix objective)
 - Prior phase/data order before pivot:
   - Phase 1: `100000` steps on `/workspace/rust-pcn/data/english-frontload-sharded`
   - Phase 2: `200000` steps on `/workspace/rust-pcn/data/sentence-bridge-smclm-sharded`
@@ -238,6 +238,26 @@ Reasoning answer-only sampler-alignment redeploy (2026-03-05 UTC):
   - exp `alice-run-b2-m1m-v7-reasoning-r1-i13-r1-answeronly`
   - resumed from `/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-reasoning-r1-i12-r1-answeronly/checkpoints/latest` at step `238000`
 - AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-reasoning-r1-i13-r1-answeronly`.
+
+English completion-mode pivot rollout (2026-03-05 UTC):
+- Source run before redeploy:
+  - job `erm-alice-run-m1m-v7-i13-r1-reasoning-answeronly-resume`, latest checkpoint step `364000`.
+- Snapshot captured before stop/redeploy:
+  - `/home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-reasoning-r1-i13-r1-answeronly-20260305T175557Z`
+- Builder/binary:
+  - rebuilt `erm.new` via `k8s/erm-builder-pod.yaml`
+  - output hash: `1fb72615870ef73244c6d2b91ec3a2b95196ae30ab954ebb6b606a9e68b88263`
+- New canary deployment:
+  - job `erm-alice-run-m1m-v7-i14-r1-english-completion-resume`
+  - exp `alice-run-b2-m1m-v7-english-r1-i14-r1-completion`
+  - resumed from `/workspace/erm-rust/data/experiments/alice-run-b2-m1m-v7-reasoning-r1-i13-r1-answeronly/checkpoints/latest` at step `364000`
+- Pivot config/runtime values:
+  - `data_dir = /workspace/rust-pcn/data/english-frontload-sharded`
+  - `completion_mode = true`
+  - `completion_target_min_frac = 0.2`
+  - `completion_target_max_frac = 0.8`
+  - `reasoning_answer_only_mode = false`
+- AIM sidecar deployment `aim-sidecar-live-v7` is retargeted to `alice-run-b2-m1m-v7-english-r1-i14-r1-completion`.
 
 ### CUDA/Burn Setup (Known-Good)
 

@@ -1334,12 +1334,16 @@ fn io_example_loop_bpe<B: burn::tensor::backend::AutodiffBackend>(
                 continue;
             }
         };
-        apply_answer_only_corruption_mask(
-            &x_i32,
-            &mut corruption.y_t,
-            cfg,
-            &answer_marker_patterns,
-        );
+        let completion_prompt_len =
+            apply_completion_corruption_mask(&x_i32, &mut corruption.y_t, cfg, &mut rng);
+        if completion_prompt_len.is_none() {
+            apply_answer_only_corruption_mask(
+                &x_i32,
+                &mut corruption.y_t,
+                cfg,
+                &answer_marker_patterns,
+            );
+        }
         let y_t_u32: Vec<u32> = corruption.y_t.iter().map(|&v| v as u32).collect();
 
         // Forward pass (batch=1). B is implicit from the tensor shape.
@@ -1470,6 +1474,9 @@ fn io_example_loop_bpe<B: burn::tensor::backend::AutodiffBackend>(
         let example = serde_json::json!({
             "example_idx": example_idx,
             "text_offset": start,
+            "completion_mode": cfg.completion_mode,
+            "completion_prompt_len": completion_prompt_len,
+            "completion_prompt_string": completion_prompt_len.map(|n| tokenizer.decode_text(&batch_tokens[..n])),
             "clean_string": clean_string,
             "corrupted_string": corrupted_string,
             "clean_tokens": batch_tokens,
@@ -2610,11 +2617,56 @@ fn apply_answer_only_corruption_mask(
     }
 }
 
+fn completion_start_pos_for_cli<R: rand::Rng>(
+    seq_len: usize,
+    cfg: &erm_core::ErmConfig,
+    rng: &mut R,
+) -> usize {
+    if seq_len <= 1 {
+        return 0;
+    }
+    let min_frac = cfg.completion_target_min_frac.clamp(0.0, 1.0);
+    let max_frac = cfg.completion_target_max_frac.clamp(min_frac, 1.0);
+    let min_len = ((seq_len as f32) * min_frac).floor() as usize;
+    let max_len = ((seq_len as f32) * max_frac).floor() as usize;
+    let min_len = min_len.clamp(1, seq_len);
+    let max_len = max_len.clamp(min_len, seq_len);
+    let target_len = if min_len == max_len {
+        min_len
+    } else {
+        rng.gen_range(min_len..=max_len)
+    };
+    seq_len.saturating_sub(target_len)
+}
+
+fn apply_completion_corruption_mask<R: rand::Rng>(
+    clean_seq: &[i32],
+    corrupted_seq: &mut [i32],
+    cfg: &erm_core::ErmConfig,
+    rng: &mut R,
+) -> Option<usize> {
+    if !cfg.completion_mode || clean_seq.is_empty() || clean_seq.len() != corrupted_seq.len() {
+        return None;
+    }
+    let start = completion_start_pos_for_cli(clean_seq.len(), cfg, rng);
+    if start > 0 {
+        corrupted_seq[..start].copy_from_slice(&clean_seq[..start]);
+    }
+    let mask_id = cfg.mask_token_id();
+    for token in &mut corrupted_seq[start..] {
+        *token = mask_id;
+    }
+    Some(start)
+}
+
 #[derive(serde::Serialize)]
 struct DiffusionSampleRecord {
     step: usize,
     corruption_step_t: usize,
     num_corrupted_positions: usize,
+    completion_mode: bool,
+    completion_prompt_len: Option<usize>,
+    completion_prompt_string: Option<String>,
     clean_string: String,
     corrupted_string: String,
     predicted_string: String,
@@ -2688,12 +2740,20 @@ fn write_diffusion_sample<B: burn::tensor::backend::AutodiffBackend>(
     let mut corruption =
         erm_core::corruption::corrupt(&x_i32, t_val, &trainer.config, &mut sample_rng)
             .map_err(|e| format!("sample corruption failed: {e}"))?;
-    apply_answer_only_corruption_mask(
+    let completion_prompt_len = apply_completion_corruption_mask(
         &x_i32,
         &mut corruption.y_t,
         &trainer.config,
-        marker_patterns,
+        &mut sample_rng,
     );
+    if completion_prompt_len.is_none() {
+        apply_answer_only_corruption_mask(
+            &x_i32,
+            &mut corruption.y_t,
+            &trainer.config,
+            marker_patterns,
+        );
+    }
     let corrupted_tokens: Vec<u32> = corruption.y_t.iter().map(|&t| t as u32).collect();
     let num_corrupted_positions = clean_tokens
         .iter()
@@ -2741,6 +2801,10 @@ fn write_diffusion_sample<B: burn::tensor::backend::AutodiffBackend>(
         step,
         corruption_step_t: t_val,
         num_corrupted_positions,
+        completion_mode: trainer.config.completion_mode,
+        completion_prompt_len,
+        completion_prompt_string: completion_prompt_len
+            .map(|n| tokenizer.decode_text(&clean_tokens[..n])),
         clean_string: tokenizer.decode_text(&clean_tokens),
         corrupted_string: tokenizer.decode_text(&corrupted_tokens),
         predicted_string: tokenizer.decode_text(&predicted_tokens),

@@ -2445,5 +2445,82 @@
       },
       "notes": "Pre-redeploy snapshot: /home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-reasoning-r1-i12-r1-answeronly-20260305T063324Z. AIM sidecar retargeted to i13 experiment."
     }
+  },
+  {
+    "id": "theory-20260305-i14-r1-english-completion-pivot",
+    "created_at_utc": "2026-03-05T18:00:00Z",
+    "experiment_id": "alice-run-b2-m1m-v7-english-r1-i14-r1-completion",
+    "tags": [
+      "theory",
+      "code_change",
+      "k8s_change",
+      "completion",
+      "english",
+      "resume",
+      "cuda",
+      "aim-sidecar"
+    ],
+    "decision": {
+      "model": "gpt-5-codex",
+      "type": "code_change",
+      "summary": "Switch objective from answer-only denoising to completion training by masking a random suffix (input=subset prefix, target=full string) and pivot data back to english-frontload-sharded.",
+      "changes": [
+        {
+          "field": "job_name",
+          "from": "erm-alice-run-m1m-v7-i13-r1-reasoning-answeronly-resume",
+          "to": "erm-alice-run-m1m-v7-i14-r1-english-completion-resume"
+        },
+        {
+          "field": "experiment_id",
+          "from": "alice-run-b2-m1m-v7-reasoning-r1-i13-r1-answeronly",
+          "to": "alice-run-b2-m1m-v7-english-r1-i14-r1-completion"
+        },
+        {
+          "field": "data_dir",
+          "from": "/workspace/rust-pcn/data/reasoning-qa-sharded",
+          "to": "/workspace/rust-pcn/data/english-frontload-sharded"
+        },
+        {
+          "field": "objective",
+          "from": "reasoning_answer_only_mode=true",
+          "to": "completion_mode=true with random completion_target_frac in [0.2, 0.8]"
+        },
+        {
+          "field": "binary_sha256",
+          "from": null,
+          "to": "1fb72615870ef73244c6d2b91ec3a2b95196ae30ab954ebb6b606a9e68b88263"
+        }
+      ]
+    },
+    "evaluation": {
+      "window_minutes_target": 60,
+      "window_minutes_actual": 0,
+      "status": "running",
+      "stop_reason": "deployed and warming up on english completion objective"
+    },
+    "result": {
+      "reported_by_model": "gpt-5-codex",
+      "step_window": {
+        "resume_local_start": 364000,
+        "resume_local_end": null
+      },
+      "metrics": {
+        "loss": {
+          "start_mean": null,
+          "end_mean": null,
+          "last_100_mean": null,
+          "min": null,
+          "max": null
+        },
+        "vram_mb": {
+          "total": 6144,
+          "used_min": null,
+          "used_max": null
+        },
+        "host_ram_bytes": null,
+        "oom": null
+      },
+      "notes": "Pre-pivot snapshot: /home/kadajett/.openclaw/workspace/erm-rust/data/checkpoint-snapshots/alice-run-b2-m1m-v7-reasoning-r1-i13-r1-answeronly-20260305T175557Z. AIM sidecar retargeted to i14 experiment."
+    }
   }
 ]

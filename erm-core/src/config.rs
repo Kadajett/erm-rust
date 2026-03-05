@@ -157,6 +157,15 @@ pub struct ErmConfig {
     /// Fallback answer start as a fraction of sequence length in `[0, 1]`
     /// when no explicit answer marker is detected.
     pub reasoning_answer_fallback_start_frac: f32,
+    /// Enable completion-style corruption on plain text.
+    ///
+    /// When enabled, a random suffix is masked and the prefix stays visible.
+    /// This trains prompt→completion behavior instead of generic copy denoising.
+    pub completion_mode: bool,
+    /// Minimum completion target length as fraction of sequence length in `[0, 1]`.
+    pub completion_target_min_frac: f32,
+    /// Maximum completion target length as fraction of sequence length in `[0, 1]`.
+    pub completion_target_max_frac: f32,
 
     // ── Ant lifecycle ──────────────────────────────────────────────────
     /// Consecutive no-improvement steps before an ant "dies". `K`.
@@ -294,6 +303,9 @@ impl Default for ErmConfig {
             min_active_positions: 8,
             reasoning_answer_only_mode: false,
             reasoning_answer_fallback_start_frac: 0.5,
+            completion_mode: false,
+            completion_target_min_frac: 0.2,
+            completion_target_max_frac: 0.8,
 
             prune_min_score: -1.0,
             prune_max_age: 1000,
@@ -640,6 +652,9 @@ mod tests {
         assert_eq!(cfg.min_active_positions, 8);
         assert!(!cfg.reasoning_answer_only_mode);
         assert!((cfg.reasoning_answer_fallback_start_frac - 0.5).abs() < 1e-8);
+        assert!(!cfg.completion_mode);
+        assert!((cfg.completion_target_min_frac - 0.2).abs() < 1e-8);
+        assert!((cfg.completion_target_max_frac - 0.8).abs() < 1e-8);
         assert_eq!(cfg.mask_token_id(), 0);
         assert_eq!(cfg.total_vocab_size(), 1);
     }
