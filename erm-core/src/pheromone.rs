@@ -358,6 +358,8 @@ fn update_pheromones_full(
     let tau_max = config.taint_max;
     let phi_max = config.phi_max;
     let phi_min = config.phi_min.clamp(0.0, phi_max);
+    let phi_init = config.phi_init.clamp(0.0, phi_max);
+    let local_update_xi = config.local_update_xi.clamp(0.0, 1.0);
     let seq_len = graph.seq_len;
     let elite_mask = build_elite_mask(ant_deltas, config.elite_k);
 
@@ -439,6 +441,13 @@ fn update_pheromones_full(
             let flat = graph.idx(b, dst, e);
             if graph.nbr_idx[flat] == EMPTY_SLOT {
                 continue;
+            }
+
+            // ACS local update on traversed edges:
+            // phi <- (1 - xi) * phi + xi * phi_init
+            if local_update_xi > 0.0 {
+                graph.phi[flat] =
+                    (1.0 - local_update_xi) * graph.phi[flat] + local_update_xi * phi_init;
             }
 
             // Choose deposit base: per-position when available, per-ant otherwise.
@@ -729,6 +738,8 @@ mod tests {
             taint_max: 5.0,
             phi_max: 100.0,
             phi_min: 1e-4,
+            phi_init: 0.05,
+            local_update_xi: 0.0,
             elite_k: 0,
             prune_min_score: -1.0,
             prune_max_age: 1000,
@@ -788,6 +799,54 @@ mod tests {
             "expected phi floor at 0.05, got {}",
             graph.phi[flat]
         );
+    }
+
+    #[test]
+    fn test_local_update_disabled_when_xi_zero() {
+        let cfg = small_config();
+        let mut graph = RouteGraph::new_empty(&cfg);
+        graph.add_edge(0, 0, 1, 1.0).expect("add edge");
+
+        let traces = vec![EdgeTrace {
+            ant_id: 0,
+            entries: vec![(0, 0, 0, 1.0)],
+        }];
+        let ant_deltas = vec![0.0_f32];
+        let pconfig = PheromoneConfig {
+            local_update_xi: 0.0,
+            phi_min: 0.0,
+            ..small_pheromone_config()
+        };
+
+        let _stats = update_pheromones(&mut graph, &traces, &ant_deltas, &pconfig).expect("update");
+        let flat = graph.idx(0, 0, 0);
+        // No local update, no deposit -> only evaporation.
+        assert!((graph.phi[flat] - 0.9).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_local_update_moves_phi_toward_phi_init() {
+        let cfg = small_config();
+        let mut graph = RouteGraph::new_empty(&cfg);
+        graph.add_edge(0, 0, 1, 1.0).expect("add edge");
+
+        let traces = vec![EdgeTrace {
+            ant_id: 0,
+            entries: vec![(0, 0, 0, 1.0)],
+        }];
+        let ant_deltas = vec![0.0_f32];
+        let pconfig = PheromoneConfig {
+            local_update_xi: 0.1,
+            phi_init: 0.05,
+            phi_min: 0.0,
+            ..small_pheromone_config()
+        };
+
+        let _stats = update_pheromones(&mut graph, &traces, &ant_deltas, &pconfig).expect("update");
+        let flat = graph.idx(0, 0, 0);
+        // Evaporation: 1.0 -> 0.9
+        // Local update: 0.9 -> 0.9*0.9 + 0.1*0.05 = 0.815
+        assert!((graph.phi[flat] - 0.815).abs() < 1e-5);
     }
 
     #[test]

@@ -73,6 +73,9 @@ pub struct ErmConfig {
     pub phi_min: f32,
     /// Initial pheromone for new edges.
     pub phi_init: f32,
+    /// ACS local update rate `xi` for traversed edges.
+    /// `0.0` disables local update.
+    pub local_update_xi: f32,
     /// Number of ants allowed to deposit pheromone each step.
     /// `0` disables elite filtering (all ants may deposit).
     pub elite_k: usize,
@@ -200,6 +203,7 @@ impl Default for ErmConfig {
             phi_max: 100.0,
             phi_min: 1e-4,
             phi_init: 0.05,
+            local_update_xi: 0.0,
             elite_k: 0,
 
             route_epsilon: 1e-6,
@@ -368,6 +372,11 @@ pub struct PheromoneConfig {
     pub phi_max: f32,
     /// Minimum pheromone value `φ_min` for active edges.
     pub phi_min: f32,
+    /// Initial pheromone baseline for newly inserted edges.
+    pub phi_init: f32,
+    /// ACS local pheromone update rate.
+    /// `0.0` disables local update.
+    pub local_update_xi: f32,
     /// Number of ants allowed to deposit each step.
     /// `0` disables elite filtering (all ants may deposit).
     pub elite_k: usize,
@@ -399,6 +408,8 @@ impl Default for PheromoneConfig {
             taint_max: 5.0,
             phi_max: 100.0,
             phi_min: 1e-4,
+            phi_init: 0.05,
+            local_update_xi: 0.0,
             elite_k: 0,
             prune_min_score: -1.0,
             prune_max_age: 1000,
@@ -422,6 +433,8 @@ impl PheromoneConfig {
             taint_max: config.taint_max,
             phi_max: config.phi_max,
             phi_min: config.phi_min,
+            phi_init: config.phi_init,
+            local_update_xi: config.local_update_xi,
             elite_k: config.elite_k,
             prune_min_score: config.prune_min_score,
             prune_max_age: config.prune_max_age,
@@ -455,6 +468,7 @@ mod tests {
         assert_eq!(cfg.emax, 16);
         assert_eq!(cfg.route_kappa_utility, 0.0);
         assert!((cfg.phi_min - 1e-4).abs() < 1e-8);
+        assert_eq!(cfg.local_update_xi, 0.0);
         assert_eq!(cfg.elite_k, 0);
         assert_eq!(cfg.mask_token_id(), 0);
         assert_eq!(cfg.total_vocab_size(), 1);
@@ -507,12 +521,16 @@ mod tests {
         let cfg = ErmConfig {
             phi_max: 10.0,
             phi_min: 0.01,
+            phi_init: 0.07,
+            local_update_xi: 0.02,
             elite_k: 7,
             ..ErmConfig::default()
         };
         let p = PheromoneConfig::from_config(&cfg);
         assert!((p.phi_max - 10.0).abs() < 1e-8);
         assert!((p.phi_min - 0.01).abs() < 1e-8);
+        assert!((p.phi_init - 0.07).abs() < 1e-8);
+        assert!((p.local_update_xi - 0.02).abs() < 1e-8);
         assert_eq!(p.elite_k, 7);
     }
 }
