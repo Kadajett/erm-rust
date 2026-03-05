@@ -231,6 +231,7 @@ pub fn refine_step_with_pheromones<R: Rng>(
         config.route_epsilon,
         config.route_lambda,
         config.route_mu,
+        config.route_kappa_utility,
     )?;
 
     // Step 3: Follower ant proposals.
@@ -392,6 +393,7 @@ pub fn full_colony_step<R: Rng>(
         config.route_epsilon,
         config.route_lambda,
         config.route_mu,
+        config.route_kappa_utility,
     )?;
 
     // Step 3: Follower proposals.

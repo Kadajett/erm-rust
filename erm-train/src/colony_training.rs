@@ -181,6 +181,7 @@ impl<B: AutodiffBackend> ColonyTrainer<B> {
             config.route_epsilon,
             config.route_lambda,
             config.route_mu,
+            config.route_kappa_utility,
         )?;
 
         let num_followers = config.num_followers();

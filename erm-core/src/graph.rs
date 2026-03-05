@@ -303,7 +303,7 @@ impl RouteGraph {
     /// hidden states, weighted by a softmax over pheromone / taint / age scores:
     ///
     /// ```text
-    /// w_raw[b,i,e] = log(φ[b,i,e] + ε) - λ · τ[b,i,e] - μ · age[b,i,e]
+    /// w_raw[b,i,e] = log(φ[b,i,e] + ε) + κ · norm(U[b,i,e]) - λ · τ[b,i,e] - μ · age[b,i,e]
     /// w[b,i,:]     = softmax(w_raw[b,i,:])   (−∞ mask on EMPTY_SLOT entries)
     /// r[b,i,:]     = Σ_e  w[b,i,e] · h[b, nbr[b,i,e], :]
     /// ```
@@ -321,6 +321,7 @@ impl RouteGraph {
     /// * `epsilon` — additive constant for `log(phi + eps)`.  Use `1e-6`.
     /// * `lambda` — taint penalty coefficient.
     /// * `mu` — age penalty coefficient.
+    /// * `kappa_utility` — leader utility coefficient `κ`.
     ///
     /// # Returns
     ///
@@ -350,6 +351,7 @@ impl RouteGraph {
         epsilon: f32,
         lambda: f32,
         mu: f32,
+        kappa_utility: f32,
     ) -> ErmResult<(Vec<f32>, Vec<f32>)> {
         let l = self.seq_len;
         let e = self.emax;
@@ -371,8 +373,25 @@ impl RouteGraph {
 
         for bi in 0..b {
             for i in 0..l {
+                // Normalization term for utility bonus at destination (b, i).
+                let mut utility_mean = 0.0_f32;
+                let mut utility_count = 0_usize;
+                if kappa_utility != 0.0 {
+                    for ei in 0..e {
+                        let flat = self.idx(bi, i, ei);
+                        if self.nbr_idx[flat] != EMPTY_SLOT {
+                            utility_mean += self.utility[flat].max(0.0);
+                            utility_count += 1;
+                        }
+                    }
+                    if utility_count > 0 {
+                        utility_mean /= utility_count as f32;
+                    }
+                }
+
                 // --- Compute raw scores for each edge slot ---
-                // w_raw[e] = log(phi + eps) - lambda * taint - mu * age
+                // w_raw[e] = log(phi + eps) + kappa * norm(utility)
+                //            - lambda * taint - mu * age
                 // EMPTY_SLOT → -inf (masked out)
                 let mut w_raw = [f32::NEG_INFINITY; 64]; // stack array; Emax ≤ 64
                 let w_raw = &mut w_raw[..e];
@@ -390,7 +409,14 @@ impl RouteGraph {
                         let phi_v = self.phi[flat];
                         let taint_v = self.taint[flat];
                         let age_v = self.age[flat] as f32;
-                        w_raw[ei] = (phi_v + epsilon).ln() - lambda * taint_v - mu * age_v;
+                        let utility_bonus = if kappa_utility != 0.0 && utility_mean > epsilon {
+                            let norm_u = self.utility[flat].max(0.0) / (utility_mean + epsilon);
+                            kappa_utility * norm_u
+                        } else {
+                            0.0
+                        };
+                        w_raw[ei] =
+                            (phi_v + epsilon).ln() + utility_bonus - lambda * taint_v - mu * age_v;
                         any_valid = true;
                     }
                 }
@@ -606,6 +632,7 @@ mod tests {
     const EPS: f32 = 1e-6;
     const LAMBDA: f32 = 1.0;
     const MU: f32 = 0.01;
+    const KAPPA: f32 = 0.0;
 
     #[test]
     fn test_init_shapes() {
@@ -764,7 +791,9 @@ mod tests {
         let d = 8_usize;
 
         let hidden = vec![1.0_f32; b * l * d];
-        let (r, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+        let (r, ew) = g
+            .route_aggregate(&hidden, d, EPS, LAMBDA, MU, KAPPA)
+            .unwrap();
 
         assert_eq!(r.len(), b * l * d);
         assert_eq!(ew.len(), b * l * cfg.emax);
@@ -792,7 +821,9 @@ mod tests {
 
         let d = 16_usize;
         let hidden = vec![0.5_f32; cfg.batch_size * cfg.seq_len * d];
-        let (r, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+        let (r, ew) = g
+            .route_aggregate(&hidden, d, EPS, LAMBDA, MU, KAPPA)
+            .unwrap();
 
         assert_eq!(r.len(), cfg.batch_size * cfg.seq_len * d);
         assert_eq!(ew.len(), cfg.batch_size * cfg.seq_len * cfg.emax);
@@ -817,7 +848,9 @@ mod tests {
         hidden[0] = 10.0; // [b=0, pos=0, k=0]
         hidden[1] = 20.0; // [b=0, pos=0, k=1]
 
-        let (r, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+        let (r, ew) = g
+            .route_aggregate(&hidden, d, EPS, LAMBDA, MU, KAPPA)
+            .unwrap();
 
         let r_base = (bi * l + 1) * d;
         assert!((r[r_base] - 10.0).abs() < 1e-4);
@@ -827,6 +860,43 @@ mod tests {
         let ew_base = (bi * l + 1) * emax;
         assert!((ew[ew_base] - 1.0).abs() < 1e-4);
         assert_eq!(ew[ew_base + 1], 0.0);
+    }
+
+    #[test]
+    fn test_route_aggregate_utility_weighting_biases_scores() {
+        let cfg = ErmConfig {
+            batch_size: 1,
+            seq_len: 3,
+            emax: 2,
+            ..ErmConfig::default()
+        };
+        let mut g = RouteGraph::new_empty(&cfg);
+        // Two equivalent edges to destination 1.
+        g.add_edge(0, 1, 0, 1.0).unwrap();
+        g.add_edge(0, 1, 2, 1.0).unwrap();
+        let flat0 = g.idx(0, 1, 0);
+        let flat1 = g.idx(0, 1, 1);
+        g.utility[flat0] = 2.0;
+        g.utility[flat1] = 0.0;
+
+        let d = 2_usize;
+        let hidden = vec![1.0_f32; cfg.batch_size * cfg.seq_len * d];
+        let (_, ew_no_utility) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU, 0.0).unwrap();
+        let (_, ew_with_utility) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU, 1.0).unwrap();
+
+        let ew_base = (0 * cfg.seq_len + 1) * cfg.emax;
+        assert!(
+            (ew_no_utility[ew_base] - ew_no_utility[ew_base + 1]).abs() < 1e-6,
+            "kappa=0 should preserve equal weights, got {} vs {}",
+            ew_no_utility[ew_base],
+            ew_no_utility[ew_base + 1]
+        );
+        assert!(
+            ew_with_utility[ew_base] > ew_with_utility[ew_base + 1],
+            "higher utility edge should receive more weight, got {} vs {}",
+            ew_with_utility[ew_base],
+            ew_with_utility[ew_base + 1]
+        );
     }
 
     #[test]
@@ -845,7 +915,9 @@ mod tests {
         let emax: usize = 3;
         let d = 4_usize;
         let hidden = vec![1.0_f32; l * d];
-        let (_, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+        let (_, ew) = g
+            .route_aggregate(&hidden, d, EPS, LAMBDA, MU, KAPPA)
+            .unwrap();
 
         let ew_base = (bi * l + 2) * emax;
         assert!(ew[ew_base] > 0.0);
@@ -871,7 +943,9 @@ mod tests {
         let emax: usize = 4;
         let d = 8_usize;
         let hidden = vec![1.0_f32; l * d];
-        let (_, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+        let (_, ew) = g
+            .route_aggregate(&hidden, d, EPS, LAMBDA, MU, KAPPA)
+            .unwrap();
 
         let ew_base = (bi * l + 3) * emax;
         let weight_sum: f32 = ew[ew_base..ew_base + emax].iter().sum();
@@ -890,8 +964,12 @@ mod tests {
             .map(|i| i as f32 * 0.1)
             .collect();
 
-        let (r1, ew1) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
-        let (r2, ew2) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+        let (r1, ew1) = g
+            .route_aggregate(&hidden, d, EPS, LAMBDA, MU, KAPPA)
+            .unwrap();
+        let (r2, ew2) = g
+            .route_aggregate(&hidden, d, EPS, LAMBDA, MU, KAPPA)
+            .unwrap();
 
         assert_eq!(r1, r2);
         assert_eq!(ew1, ew2);
@@ -925,7 +1003,9 @@ mod tests {
             .map(|i| (i as f32) * 0.01 - 0.5)
             .collect();
 
-        let (r, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+        let (r, ew) = g
+            .route_aggregate(&hidden, d, EPS, LAMBDA, MU, KAPPA)
+            .unwrap();
 
         for (i, &v) in r.iter().enumerate() {
             assert!(!v.is_nan(), "NaN in r at index {i}");
@@ -944,7 +1024,9 @@ mod tests {
 
         // Wrong hidden length.
         let hidden = vec![1.0_f32; 5];
-        assert!(g.route_aggregate(&hidden, 8, EPS, LAMBDA, MU).is_err());
+        assert!(g
+            .route_aggregate(&hidden, 8, EPS, LAMBDA, MU, KAPPA)
+            .is_err());
     }
 
     #[test]
@@ -973,7 +1055,9 @@ mod tests {
         let hidden = vec![0.01_f32; cfg.batch_size * cfg.seq_len * d];
 
         let t0 = Instant::now();
-        let (r, ew) = g.route_aggregate(&hidden, d, EPS, LAMBDA, MU).unwrap();
+        let (r, ew) = g
+            .route_aggregate(&hidden, d, EPS, LAMBDA, MU, KAPPA)
+            .unwrap();
         let elapsed = t0.elapsed();
 
         assert_eq!(r.len(), cfg.batch_size * cfg.seq_len * d);
@@ -1103,6 +1187,7 @@ mod proptests {
     const EPS: f32 = 1e-6;
     const LAMBDA: f32 = 1.0;
     const MU: f32 = 0.01;
+    const KAPPA: f32 = 0.0;
 
     /// Strategy: generate a RouteGraph with random edges and matching hidden state.
     ///
@@ -1160,7 +1245,7 @@ mod proptests {
         /// Output shapes always match [B, L, d] and [B, L, Emax].
         #[test]
         fn prop_route_aggregate_output_shapes((ref g, ref hidden, d) in route_aggregate_inputs()) {
-            let (r, ew) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU).unwrap();
+            let (r, ew) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU, KAPPA).unwrap();
             prop_assert_eq!(r.len(), g.batch_size * g.seq_len * d);
             prop_assert_eq!(ew.len(), g.batch_size * g.seq_len * g.emax);
         }
@@ -1168,7 +1253,7 @@ mod proptests {
         /// No NaN or Inf in output.
         #[test]
         fn prop_route_aggregate_no_nan_inf((ref g, ref hidden, d) in route_aggregate_inputs()) {
-            let (r, ew) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU).unwrap();
+            let (r, ew) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU, KAPPA).unwrap();
             for &v in r.iter() {
                 prop_assert!(!v.is_nan(), "NaN in r");
                 prop_assert!(!v.is_infinite(), "Inf in r");
@@ -1183,7 +1268,7 @@ mod proptests {
         /// exactly 0.0 for destinations with no neighbors.
         #[test]
         fn prop_route_aggregate_weights_sum((ref g, ref hidden, d) in route_aggregate_inputs()) {
-            let (_, ew) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU).unwrap();
+            let (_, ew) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU, KAPPA).unwrap();
 
             for bi in 0..g.batch_size {
                 for i in 0..g.seq_len {
@@ -1211,7 +1296,7 @@ mod proptests {
         /// EMPTY_SLOT neighbors always get zero weight.
         #[test]
         fn prop_route_aggregate_empty_slot_zero_weight((ref g, ref hidden, d) in route_aggregate_inputs()) {
-            let (_, ew) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU).unwrap();
+            let (_, ew) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU, KAPPA).unwrap();
 
             for bi in 0..g.batch_size {
                 for i in 0..g.seq_len {
@@ -1234,8 +1319,8 @@ mod proptests {
         /// Deterministic: same input always produces the same output.
         #[test]
         fn prop_route_aggregate_deterministic((ref g, ref hidden, d) in route_aggregate_inputs()) {
-            let (r1, ew1) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU).unwrap();
-            let (r2, ew2) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU).unwrap();
+            let (r1, ew1) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU, KAPPA).unwrap();
+            let (r2, ew2) = g.route_aggregate(hidden, d, EPS, LAMBDA, MU, KAPPA).unwrap();
             prop_assert_eq!(&r1, &r2);
             prop_assert_eq!(&ew1, &ew2);
         }

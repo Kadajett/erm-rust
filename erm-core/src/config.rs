@@ -84,6 +84,9 @@ pub struct ErmConfig {
     pub route_lambda: f32,
     /// Age penalty coefficient `μ` in route weight formula.
     pub route_mu: f32,
+    /// Leader utility coefficient `κ` in route weight formula.
+    /// `0.0` disables utility weighting.
+    pub route_kappa_utility: f32,
 
     // ── Ant lifecycle ──────────────────────────────────────────────────
     /// Consecutive no-improvement steps before an ant "dies". `K`.
@@ -202,6 +205,7 @@ impl Default for ErmConfig {
             route_epsilon: 1e-6,
             route_lambda: 1.0,
             route_mu: 0.01,
+            route_kappa_utility: 0.0,
 
             prune_min_score: -1.0,
             prune_max_age: 1000,
@@ -449,6 +453,7 @@ mod tests {
         assert_eq!(cfg.hidden_dim, 512);
         assert_eq!(cfg.num_blocks, 3);
         assert_eq!(cfg.emax, 16);
+        assert_eq!(cfg.route_kappa_utility, 0.0);
         assert!((cfg.phi_min - 1e-4).abs() < 1e-8);
         assert_eq!(cfg.elite_k, 0);
         assert_eq!(cfg.mask_token_id(), 0);

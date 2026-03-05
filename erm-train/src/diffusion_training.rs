@@ -306,6 +306,7 @@ impl<B: AutodiffBackend> DiffusionTrainer<B> {
                 cfg.route_epsilon,
                 cfg.route_lambda,
                 cfg.route_mu,
+                cfg.route_kappa_utility,
             )?;
 
             let num_followers = cfg.num_followers();
